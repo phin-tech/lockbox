@@ -87,6 +87,11 @@ impl Phase {
         matches!(self, Phase::Stopped | Phase::Completed)
     }
 
+    /// Whether it failed, which takes a stop before it will start again.
+    pub fn needs_restart(&self) -> bool {
+        *self == Phase::Error
+    }
+
     pub fn can_stop(&self) -> bool {
         matches!(self, Phase::Ready | Phase::Provisioning)
     }
@@ -256,6 +261,12 @@ impl OpenShell {
     pub fn stop(&self, name: &str) -> Result<(), OpenShellError> {
         self.run(&format!("stop “{name}”"), &["sandbox", "stop", name])
             .map(drop)
+    }
+
+    /// Starts a sandbox that failed. OpenShell starts only a stopped one, so it's stopped first; its files are kept.
+    pub fn restart(&self, name: &str) -> Result<(), OpenShellError> {
+        self.stop(name)?;
+        self.start(name)
     }
 
     pub fn delete(&self, name: &str) -> Result<(), OpenShellError> {

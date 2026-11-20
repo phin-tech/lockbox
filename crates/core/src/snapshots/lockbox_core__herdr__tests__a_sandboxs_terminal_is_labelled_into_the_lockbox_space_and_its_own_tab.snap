@@ -1,6 +1,5 @@
 ---
 source: crates/core/src/herdr.rs
-assertion_line: 225
 expression: "args.join(\"\\n\")"
 ---
 run
@@ -14,7 +13,9 @@ run
 --label
 lockbox.sandbox=claude-patchbay
 --label
+lockbox.session=claude-patchbay.agent
+--label
 herdr.space=lockbox
 --label
-herdr.tab=lockbox-claude-patchbay
+herdr.tab=lockbox-claude-patchbay.agent
 openshell sandbox exec --name claude-patchbay --tty -- claude

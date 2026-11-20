@@ -1,10 +1,9 @@
 //! The sandboxes on OpenShell's gateway: listed every few seconds, the chosen one shown beside the list, and
 //! opening, starting, stopping and deleting it. Every call to OpenShell runs off the window's thread.
 
-use std::path::PathBuf;
 use std::time::Duration;
 
-use lockbox_core::{Herdr, Phase, open_command, open_script};
+use lockbox_core::{HerdrCore, Installed, Keep, Opened, Phase, session};
 
 use super::*;
 
@@ -15,6 +14,8 @@ const LIST_EVERY: Duration = Duration::from_secs(3);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Act {
     Start,
+    /// Starts a sandbox that failed, which takes a stop first.
+    Restart,
     Stop,
     Delete,
 }
@@ -32,7 +33,21 @@ impl MainView {
                         openshell.and_then(|openshell| openshell.sandboxes())
                     })
                     .await;
-                if this.update(cx, |this, cx| this.listed(listed, cx)).is_err() {
+                // What each agent is doing, when herdr-core keeps their sessions; nothing without it.
+                let states = cx
+                    .background_spawn(async move {
+                        HerdrCore::find()
+                            .and_then(|core| core.agent_states().ok())
+                            .unwrap_or_default()
+                    })
+                    .await;
+                if this
+                    .update(cx, |this, cx| {
+                        this.agent_states = states;
+                        this.listed(listed, cx);
+                    })
+                    .is_err()
+                {
                     break;
                 }
                 cx.background_executor().timer(LIST_EVERY).await;
@@ -126,6 +141,7 @@ impl MainView {
         };
         let can = match act {
             Act::Start => sandbox.phase.can_start(),
+            Act::Restart => sandbox.phase.needs_restart(),
             Act::Stop => sandbox.phase.can_stop(),
             Act::Delete => true,
         };
@@ -178,6 +194,7 @@ impl MainView {
         let done = cx.background_spawn(async move {
             match act {
                 Act::Start => openshell.start(&doing),
+                Act::Restart => openshell.restart(&doing),
                 Act::Stop => openshell.stop(&doing),
                 Act::Delete => openshell.delete(&doing),
             }
@@ -200,9 +217,15 @@ impl MainView {
         cx.notify();
     }
 
-    /// Opens the chosen sandbox's agent in Terminal, in the folder copied in, or a shell in a sandbox Lockbox didn't
-    /// make.
-    pub(super) fn open_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// Opens a session running `what` in the chosen sandbox, shown in `place`, or where the settings say. herdr-core
+    /// keeps it when it's installed and the settings ask; one it keeps that's open already is shown again.
+    pub(super) fn open_session(
+        &mut self,
+        place: Option<Place>,
+        what: What,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(sandbox) = self.selected_sandbox().cloned() else {
             return;
         };
@@ -218,15 +241,16 @@ impl MainView {
             }
         };
         self.failed = None;
+        let settings = crate::settings::current(cx);
+        let keep = if settings.keep_sessions {
+            Keep::InHerdrCore
+        } else {
+            Keep::Nowhere
+        };
         let name = sandbox.name.clone();
-        // In Herdr, beside the person's other terminals and agents, when it's installed; Terminal otherwise.
         let opened = cx.background_spawn(async move {
-            match Herdr::find() {
-                Some(herdr) => herdr
-                    .open(&sandbox, &open_command(openshell.binary(), &sandbox))
-                    .map_err(anyhow::Error::from),
-                None => open_in_terminal(&sandbox_script(&openshell, &sandbox)?),
-            }
+            let place = place.unwrap_or_else(|| settings.show_in.place(&Installed::now()));
+            session::open(openshell.binary(), &sandbox, what, place, keep)
         });
         let task = cx.spawn_in(window, {
             let name = name.clone();
@@ -234,14 +258,24 @@ impl MainView {
                 let opened = opened.await;
                 let _ = this.update(cx, |this, cx| {
                     this.working.remove(&name);
-                    this.failed = opened.err().map(|error| {
-                        t!(
-                            "Couldn't open “%{name}”: %{error}",
-                            name = name,
-                            error = format!("{error:#}")
-                        )
-                        .into_owned()
-                    });
+                    this.failed = match opened {
+                        Ok(Opened::AsAsked) => None,
+                        Ok(Opened::InTerminalInstead(place)) => Some(
+                            t!(
+                                "%{place} isn't installed, so it opened in Terminal.",
+                                place = place_name(place)
+                            )
+                            .into_owned(),
+                        ),
+                        Err(error) => Some(
+                            t!(
+                                "Couldn't open “%{name}”: %{error}",
+                                name = name,
+                                error = error.to_string()
+                            )
+                            .into_owned(),
+                        ),
+                    };
                     cx.notify();
                 });
             }
@@ -265,7 +299,10 @@ impl MainView {
                 .id(ElementId::from((ElementId::from("sandbox"), name.clone())))
                 .justify_between()
                 .child(div().min_w_0().truncate().child(sandbox.name.clone()))
-                .child(phase_badge(&sandbox.phase))
+                .child(state_badge(
+                    &sandbox.phase,
+                    self.agent_states.get(&sandbox.name).copied(),
+                ))
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.select(name.clone(), cx);
                     this.focus.focus(window, cx);
@@ -312,20 +349,21 @@ impl MainView {
         let actions = h_flex()
             .flex_wrap()
             .gap_2()
-            .child(
-                Button::new("open")
-                    .primary()
+            .child(open_button(
+                agent,
+                busy || !sandbox.phase.is_ready(),
+                Installed::now(),
+                cx,
+            ))
+            .child(if sandbox.phase.needs_restart() {
+                Button::new("restart")
                     .small()
-                    .disabled(busy || !sandbox.phase.is_ready())
-                    .label(match agent {
-                        Some(agent) => t!("Open %{agent}", agent = agent.name()).into_owned(),
-                        None => t!("Open").into_owned(),
-                    })
+                    .disabled(busy)
+                    .label(t!("Restart").into_owned())
                     .on_click(
-                        cx.listener(|this, _, window, cx| this.run("sandbox.open", window, cx)),
-                    ),
-            )
-            .child(if sandbox.phase.can_start() {
+                        cx.listener(|this, _, window, cx| this.run("sandbox.restart", window, cx)),
+                    )
+            } else if sandbox.phase.can_start() {
                 Button::new("start")
                     .small()
                     .disabled(busy)
@@ -452,30 +490,81 @@ fn phase_badge(phase: &Phase) -> Tag {
     shell::badge(tag).xsmall().child(words)
 }
 
-/// Writes the script that opens `sandbox`, as a `.command` file Terminal runs, and gives its path.
-fn sandbox_script(openshell: &OpenShell, sandbox: &Sandbox) -> anyhow::Result<PathBuf> {
-    use anyhow::Context as _;
-    use std::os::unix::fs::PermissionsExt as _;
-
-    let folder = std::env::temp_dir().join("lockbox");
-    std::fs::create_dir_all(&folder).context("making a folder for the script")?;
-    let path = folder.join(format!("{}.command", sandbox.name));
-    std::fs::write(&path, open_script(openshell.binary(), sandbox))
-        .context("writing the script")?;
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
-        .context("making the script runnable")?;
-    Ok(path)
+/// A place's name, as the menus give it.
+fn place_name(place: Place) -> String {
+    match place {
+        Place::HerdrApp => t!("The Herdr app").into_owned(),
+        Place::Ghostty => t!("Ghostty").into_owned(),
+        Place::Terminal => t!("Terminal").into_owned(),
+    }
 }
 
-/// Runs a `.command` script in a new Terminal window. `open` hands it to Terminal without asking to control it.
-fn open_in_terminal(script: &std::path::Path) -> anyhow::Result<()> {
-    use anyhow::Context as _;
+/// What the agent in a sandbox's sessions is doing, as a badge, or its phase when no session says.
+fn state_badge(phase: &Phase, agent: Option<AgentState>) -> Tag {
+    match (phase, agent) {
+        (Phase::Ready, Some(state)) => {
+            let (tag, words) = match state {
+                AgentState::Working => (Tag::info(), t!("Working")),
+                AgentState::Blocked => (Tag::warning(), t!("Waiting for you")),
+                AgentState::Done => (Tag::success(), t!("Done")),
+                AgentState::Idle => (Tag::secondary(), t!("Idle")),
+            };
+            shell::badge(tag).xsmall().child(words.into_owned())
+        }
+        _ => phase_badge(phase),
+    }
+}
 
-    let status = std::process::Command::new("/usr/bin/open")
-        .args(["-a", "Terminal"])
-        .arg(script)
-        .status()
-        .context("running open")?;
-    anyhow::ensure!(status.success(), "open said {status}");
-    Ok(())
+/// A menu item's action: the Command `name`.
+fn run(name: &'static str) -> Box<dyn Action> {
+    Box::new(RunAction { name })
+}
+
+/// Open, which opens a session where the settings say, with the rest of the choices for one session under its arrow.
+/// A place that isn't installed is there, but can't be chosen.
+fn open_button(
+    agent: Option<Agent>,
+    disabled: bool,
+    installed: Installed,
+    cx: &Context<MainView>,
+) -> DropdownButton {
+    let label = match agent {
+        Some(agent) => t!("Open %{agent}", agent = agent.name()).into_owned(),
+        None => t!("Open Shell").into_owned(),
+    };
+    DropdownButton::new("open")
+        .primary()
+        .small()
+        .disabled(disabled)
+        .button(
+            Button::new("open-session")
+                .label(label)
+                .on_click(cx.listener(|this, _, window, cx| this.run("sandbox.open", window, cx))),
+        )
+        .dropdown_menu(move |menu, _, _| {
+            let menu = if agent.is_some() {
+                menu.menu(
+                    t!("Continue Last Conversation").into_owned(),
+                    run("sandbox.continue"),
+                )
+                .menu(t!("Open Shell").into_owned(), run("sandbox.shell"))
+                .separator()
+            } else {
+                menu
+            };
+            menu.menu_with_disabled(
+                t!("Open in Herdr App").into_owned(),
+                run("sandbox.open-herdr"),
+                !installed.herdr_app,
+            )
+            .menu_with_disabled(
+                t!("Open in Ghostty").into_owned(),
+                run("sandbox.open-ghostty"),
+                !installed.ghostty,
+            )
+            .menu(
+                t!("Open in Terminal").into_owned(),
+                run("sandbox.open-terminal"),
+            )
+        })
 }

@@ -7,6 +7,7 @@ use crate::docker::{Docker, DockerError};
 use crate::openshell::{
     AGENT_LABEL, FOLDER_ANNOTATION, OpenShell, OpenShellError, Sandbox, WORKDIR_ANNOTATION,
 };
+use crate::session::What;
 
 /// The Claude Code release the image is built with. Raising it builds a new image the next time one is needed.
 const CLAUDE_CODE_VERSION: &str = "2.1.329";
@@ -275,30 +276,22 @@ pub fn suggested_name(agent: Agent, folder: Option<&Path>) -> String {
     name.trim_end_matches('-').to_string()
 }
 
-/// The shell line that opens the sandbox's agent in its folder, or a shell in a sandbox with no agent Lockbox knows.
-pub fn open_command(openshell: &Path, sandbox: &Sandbox) -> String {
+/// The shell line that runs `what` in the sandbox, in its agent's folder. A sandbox with no agent Lockbox knows only
+/// gets a shell, through `sandbox connect`, since its image may have no `bash`.
+pub fn open_command(openshell: &Path, sandbox: &Sandbox, what: What) -> String {
     let openshell = quote(&openshell.to_string_lossy());
     let name = quote(&sandbox.name);
-    match sandbox.agent.as_deref().and_then(Agent::from_id) {
-        Some(agent) => format!(
-            "{openshell} sandbox exec --name {name} --tty --workdir {workdir} -- {command}",
-            workdir = quote(sandbox.workdir.as_deref().unwrap_or(SANDBOX_HOME)),
-            command = agent.command(),
-        ),
-        None => format!("{openshell} sandbox connect {name}"),
-    }
-}
-
-/// [`open_command`] as a shell script, which is what Terminal runs for a `.command` file.
-pub fn open_script(openshell: &Path, sandbox: &Sandbox) -> String {
-    let what = match sandbox.agent.as_deref().and_then(Agent::from_id) {
-        Some(agent) => agent.name(),
-        None => "a shell",
+    let Some(agent) = sandbox.agent.as_deref().and_then(Agent::from_id) else {
+        return format!("{openshell} sandbox connect {name}");
+    };
+    let run = match what {
+        What::Agent => agent.command().to_string(),
+        What::Continue => format!("{} --continue", agent.command()),
+        What::Shell => "bash -l".to_string(),
     };
     format!(
-        "#!/bin/sh\n# Written by Lockbox: opens {what} in the sandbox “{}”.\nexec {}\n",
-        sandbox.name,
-        open_command(openshell, sandbox)
+        "{openshell} sandbox exec --name {name} --tty --workdir {workdir} -- {run}",
+        workdir = quote(sandbox.workdir.as_deref().unwrap_or(SANDBOX_HOME)),
     )
 }
 
@@ -311,8 +304,9 @@ pub(crate) fn quote(text: &str) -> String {
 mod tests {
     use std::path::{Path, PathBuf};
 
-    use super::{Agent, Plan, is_sandbox_name, open_script, suggested_name};
+    use super::{Agent, Plan, is_sandbox_name, open_command, suggested_name};
     use crate::openshell::{Phase, Sandbox};
+    use crate::session::What;
 
     fn plan() -> Plan {
         Plan {
@@ -368,12 +362,19 @@ mod tests {
             workdir: Some("/sandbox/Sam's App".to_string()),
         };
         let openshell = Path::new("/opt/homebrew/bin/openshell");
-        insta::assert_snapshot!(open_script(openshell, &sandbox));
+        insta::assert_snapshot!(open_command(openshell, &sandbox, What::Agent));
+        assert!(
+            open_command(openshell, &sandbox, What::Continue).ends_with("-- claude --continue")
+        );
+        assert!(open_command(openshell, &sandbox, What::Shell).ends_with("-- bash -l"));
         let theirs = Sandbox {
             agent: None,
             ..sandbox
         };
-        assert!(open_script(openshell, &theirs).ends_with("sandbox connect 'claude-patchbay'\n"));
+        assert!(
+            open_command(openshell, &theirs, What::Continue)
+                .ends_with("sandbox connect 'claude-patchbay'")
+        );
     }
 
     #[test]

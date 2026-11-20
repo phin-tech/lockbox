@@ -1,0 +1,8 @@
+---
+source: crates/core/src/session.rs
+assertion_line: 252
+expression: "script(\"'/x/hc' attach 't4r8'\")"
+---
+#!/bin/sh
+# Written by Lockbox.
+exec /bin/sh -c ''\''/x/hc'\'' attach '\''t4r8'\'''

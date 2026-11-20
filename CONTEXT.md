@@ -16,6 +16,11 @@ _Avoid_: preferences, config
 name. Lockbox labels the ones it makes with their agent.
 _Avoid_: container, VM, box
 
+**Session**: an agent, or a shell, running in a sandbox in a terminal. A sandbox outlives its sessions. herdr-core
+keeps a session when it's installed, so closing the window showing it only detaches; otherwise the window is the
+session. The Herdr app, Ghostty or Terminal shows it.
+_Avoid_: tab, window, run
+
 **Agent**: a coding agent Lockbox knows how to run in a sandbox (Claude Code), with the image it runs in and the policy
 that lets it reach its model.
 _Avoid_: client, assistant

@@ -8,6 +8,7 @@ mod tests;
 
 use std::collections::BTreeMap;
 
+use gpui_kit::component::button::DropdownButton;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::radio::Radio;
 use gpui_kit::component::tag::Tag;
@@ -18,7 +19,7 @@ use gpui_kit::component::{
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
-use lockbox_core::{Agent, OpenShell, OpenShellError, Sandbox};
+use lockbox_core::{Agent, AgentState, OpenShell, OpenShellError, Place, Sandbox, What};
 use rust_i18n::t;
 use typecase::help::{HelpEvent, KeyHelp};
 use typecase::overlay;
@@ -94,7 +95,9 @@ pub struct MainView {
     selected: Option<String>,
     /// What's being done to a sandbox, by its name, while it's done.
     working: BTreeMap<String, Task<()>>,
-    /// The last thing done that failed, until something else is done.
+    /// What the agent in each sandbox's sessions is doing, by sandbox, when herdr-core keeps them.
+    agent_states: BTreeMap<String, AgentState>,
+    /// The last thing done that failed, or a note on it, until something else is done.
     failed: Option<String>,
     making: Option<making::Making>,
     card: Option<Card>,
@@ -123,6 +126,7 @@ impl MainView {
             sandboxes: Listing::Loading,
             selected: None,
             working: BTreeMap::new(),
+            agent_states: BTreeMap::new(),
             failed: None,
             making: None,
             card: None,
@@ -136,8 +140,20 @@ impl MainView {
     fn run(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
         match name {
             "sandbox.new" => self.start_making(window, cx),
-            "sandbox.open" => self.open_selected(window, cx),
+            "sandbox.open" => self.open_session(None, What::Agent, window, cx),
+            "sandbox.open-herdr" => {
+                self.open_session(Some(Place::HerdrApp), What::Agent, window, cx)
+            }
+            "sandbox.open-ghostty" => {
+                self.open_session(Some(Place::Ghostty), What::Agent, window, cx)
+            }
+            "sandbox.open-terminal" => {
+                self.open_session(Some(Place::Terminal), What::Agent, window, cx);
+            }
+            "sandbox.continue" => self.open_session(None, What::Continue, window, cx),
+            "sandbox.shell" => self.open_session(None, What::Shell, window, cx),
             "sandbox.start" => self.act_on_selected(sandboxes::Act::Start, window, cx),
+            "sandbox.restart" => self.act_on_selected(sandboxes::Act::Restart, window, cx),
             "sandbox.stop" => self.act_on_selected(sandboxes::Act::Stop, window, cx),
             "sandbox.delete" => self.confirm_delete(window, cx),
             "sandbox.next" => self.select_next(1, cx),

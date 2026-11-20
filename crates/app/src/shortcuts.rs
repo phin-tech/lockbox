@@ -42,6 +42,8 @@ pub const SHORTCUTS: &[(&str, &str, Option<&str>)] = &[
     ("primary--", "view.smaller-text", None),
     ("primary-0", "view.actual-text", None),
     ("primary-o", "sandbox.open", None),
+    ("primary-shift-o", "sandbox.continue", None),
+    ("primary-alt-o", "sandbox.open-terminal", None),
     ("enter", "sandbox.open", Some(CONTEXT)),
     ("primary-.", "sandbox.stop", None),
     ("primary-backspace", "sandbox.delete", Some(CONTEXT)),

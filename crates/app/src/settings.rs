@@ -4,13 +4,14 @@
 
 use std::path::{Path, PathBuf};
 
+use gpui_kit::component::radio::Radio;
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, StyledExt as _, button::Button, h_flex, switch::Switch,
     v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
-use lockbox_core::{Settings, step_text_scale};
+use lockbox_core::{Installed, Settings, ShowIn, step_text_scale};
 use rust_i18n::t;
 use typecase::settings::{Section, SettingsFrame};
 
@@ -158,7 +159,9 @@ pub fn open(cx: &mut App) {
 /// The sections, in the sidebar's order.
 fn sections() -> Vec<Section> {
     vec![
-        Section::new(t!("General").into_owned(), |_, cx| general(cx)).keywords(["text", "size"]),
+        Section::new(t!("General").into_owned(), |_, cx| general(cx)).keywords([
+            "text", "size", "herdr", "ghostty", "terminal", "sessions", "agents",
+        ]),
         Section::appearance(),
         Section::new(t!("Updates").into_owned(), |_, cx| updates(cx)).keywords(["beta", "sparkle"]),
     ]
@@ -248,6 +251,7 @@ fn general(cx: &mut App) -> Div {
                     )
                 }),
         ))
+        .child(part(t!("Show Sessions In"), sessions(&settings, cx)))
         .child(part(
             t!("Text Size"),
             h_flex()
@@ -264,6 +268,86 @@ fn general(cx: &mut App) -> Div {
                         .child(format!("{:.0}%", settings.text_scale * 100.)),
                 ),
         ))
+}
+
+/// Where sessions are shown unless one is opened somewhere else, and whether herdr-core keeps them. What's installed
+/// is looked for each time this is drawn, so installing something while Settings is open shows at once.
+fn sessions(settings: &Settings, cx: &mut App) -> Div {
+    let muted = cx.theme().muted_foreground;
+    let installed = Installed::now();
+    let missing = |there: bool, said: std::borrow::Cow<str>| {
+        if there {
+            said.into_owned()
+        } else {
+            t!("Not installed: sessions open in Terminal until it is").into_owned()
+        }
+    };
+    let choice = |id: &'static str, show_in: ShowIn, label: std::borrow::Cow<str>, said: String| {
+        h_flex()
+            .gap_2()
+            .child(
+                Radio::new(id)
+                    .label(label.into_owned())
+                    .checked(settings.show_in == show_in)
+                    .on_click(move |_, _, cx| change(cx, |settings| settings.show_in = show_in)),
+            )
+            .child(div().text_sm().text_color(muted).child(said))
+    };
+    let keeps = if installed.herdr_core {
+        t!(
+            "Closing a window only detaches; the session goes on, and Lockbox sees what its agent is doing"
+        )
+    } else {
+        t!(
+            "herdr-core isn't installed, so a window is the session, and closing it ends the session"
+        )
+    };
+    v_flex()
+        .gap_2()
+        .child(choice(
+            "show-automatic",
+            ShowIn::Automatic,
+            t!("Automatic"),
+            t!("The Herdr app when it's installed, Terminal otherwise").into_owned(),
+        ))
+        .child(choice(
+            "show-herdr",
+            ShowIn::HerdrApp,
+            t!("Herdr App"),
+            missing(
+                installed.herdr_app,
+                t!("A tab for each session, in a Lockbox space"),
+            ),
+        ))
+        .child(choice(
+            "show-ghostty",
+            ShowIn::Ghostty,
+            t!("Ghostty"),
+            missing(
+                installed.ghostty,
+                t!("A Ghostty of its own for each session"),
+            ),
+        ))
+        .child(choice(
+            "show-terminal",
+            ShowIn::Terminal,
+            t!("Terminal"),
+            t!("A Terminal window for each session").into_owned(),
+        ))
+        .child(
+            v_flex()
+                .pt_2()
+                .gap_1()
+                .child(
+                    Switch::new("keep-sessions")
+                        .label(t!("Keep sessions in herdr-core").into_owned())
+                        // The Herdr app always has herdr-core keep its sessions, so the switch is moot there.
+                        .checked(settings.keep_sessions || settings.show_in == ShowIn::HerdrApp)
+                        .disabled(!installed.herdr_core || settings.show_in == ShowIn::HerdrApp)
+                        .on_click(|on, _, cx| change(cx, |settings| settings.keep_sessions = *on)),
+                )
+                .child(div().text_sm().text_color(muted).child(keeps.into_owned())),
+        )
 }
 
 fn updates(cx: &mut App) -> Div {

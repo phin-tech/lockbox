@@ -1,8 +1,6 @@
 ---
 source: crates/core/src/agent/mod.rs
-assertion_line: 364
-expression: "open_script(openshell, &sandbox)"
+assertion_line: 365
+expression: "open_command(openshell, &sandbox, What::Agent)"
 ---
-#!/bin/sh
-# Written by Lockbox: opens Claude Code in the sandbox “claude-patchbay”.
-exec '/opt/homebrew/bin/openshell' sandbox exec --name 'claude-patchbay' --tty --workdir '/sandbox/Sam'\''s App' -- claude
+'/opt/homebrew/bin/openshell' sandbox exec --name 'claude-patchbay' --tty --workdir '/sandbox/Sam'\''s App' -- claude

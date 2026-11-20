@@ -1,0 +1,290 @@
+//! The window's content: the sandboxes on OpenShell's gateway, or New Agent…'s form in their place, under the title
+//! bar, with the cards over the window (the palette and Keys).
+
+mod making;
+mod sandboxes;
+#[cfg(test)]
+mod tests;
+
+use std::collections::BTreeMap;
+
+use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::radio::Radio;
+use gpui_kit::component::tag::Tag;
+use gpui_kit::component::{
+    ActiveTheme, Disableable as _, Sizable as _, StyledExt as _, TitleBar,
+    button::{Button, ButtonVariants},
+    h_flex, v_flex,
+};
+use gpui_kit::prelude::FluentBuilder as _;
+use gpui_kit::*;
+use lockbox_core::{Agent, OpenShell, OpenShellError, Sandbox};
+use rust_i18n::t;
+use typecase::help::{HelpEvent, KeyHelp};
+use typecase::overlay;
+use typecase::palette::{CommandPalette, PaletteEvent};
+use typecase::shell::{self, Footer, Lead};
+
+use crate::commands::{self, COMMANDS};
+use crate::shortcuts::{CONTEXT, RunAction};
+use crate::{about, palette, restore, theme};
+
+/// A Typecase card over the window, which holds the keyboard until it's done.
+enum Card {
+    Palette(Entity<CommandPalette>),
+    Keys(Entity<KeyHelp>),
+}
+
+/// Opens a window on the app; with `remembered`, where the last one was when the app quit.
+pub fn open(remembered: bool, cx: &mut App) -> Option<AnyWindowHandle> {
+    open_with(remembered, cx, MainView::new)
+}
+
+/// Opens a window on the view `build` makes.
+pub fn open_with(
+    remembered: bool,
+    cx: &mut App,
+    build: impl FnOnce(&mut Window, &mut Context<MainView>) -> MainView,
+) -> Option<AnyWindowHandle> {
+    // `LOCKBOX_WIDTH` narrows a capture, for checking a layout at a width of its own.
+    let width = std::env::var("LOCKBOX_WIDTH")
+        .ok()
+        .filter(|_| cfg!(feature = "screenshot"))
+        .and_then(|width| width.parse().ok())
+        .unwrap_or(900.);
+    let centered = WindowBounds::Windowed(Bounds::centered(None, size(px(width), px(640.)), cx));
+    let restored = remembered && !cfg!(feature = "screenshot");
+    let bounds = restored.then(|| restore::bounds(cx)).flatten();
+    let options = WindowOptions {
+        window_bounds: Some(bounds.unwrap_or(centered)),
+        window_min_size: Some(size(px(480.), px(320.))),
+        titlebar: Some(TitlebarOptions {
+            title: Some("Lockbox".into()),
+            ..TitleBar::title_bar_options()
+        }),
+        // Captures run hidden, so they never take over the screen.
+        show: !cfg!(feature = "screenshot"),
+        focus: !cfg!(feature = "screenshot"),
+        ..TitleBar::window_options()
+    };
+    match gpui_kit::open_window(options, cx, |window, cx| cx.new(|cx| build(window, cx))) {
+        Ok((handle, _view)) => Some(handle),
+        Err(error) => {
+            tracing::error!("no window: {error}");
+            None
+        }
+    }
+}
+
+/// Whether a view asks OpenShell for its sandboxes. Tests give a view its sandboxes instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Watch {
+    OpenShell,
+    Nothing,
+}
+
+pub struct MainView {
+    focus: FocusHandle,
+    /// The `openshell` command, or why there isn't one, looked for again at each refresh until it's found.
+    openshell: Result<OpenShell, OpenShellError>,
+    watch: Watch,
+    /// The sandboxes as last listed, or why they couldn't be.
+    sandboxes: Listing,
+    /// The chosen sandbox, by name, which the Sandbox menu's Commands act on.
+    selected: Option<String>,
+    /// What's being done to a sandbox, by its name, while it's done.
+    working: BTreeMap<String, Task<()>>,
+    /// The last thing done that failed, until something else is done.
+    failed: Option<String>,
+    making: Option<making::Making>,
+    card: Option<Card>,
+    _watching: Option<Task<()>>,
+    _appearance: Subscription,
+    _bounds: Subscription,
+}
+
+impl MainView {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        Self::watching(Watch::OpenShell, window, cx)
+    }
+
+    /// A view that lists OpenShell's sandboxes, or, with [`Watch::Nothing`], whatever it's given.
+    pub fn watching(watch: Watch, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let appearance = theme::follow_system(window, cx);
+        let bounds =
+            cx.observe_window_bounds(window, |_, window, cx| restore::remember(window, cx));
+        let focus = cx.focus_handle();
+        focus.focus(window, cx);
+        let watching = (watch == Watch::OpenShell).then(|| Self::watch_sandboxes(window, cx));
+        Self {
+            focus,
+            openshell: OpenShell::find(),
+            watch,
+            sandboxes: Listing::Loading,
+            selected: None,
+            working: BTreeMap::new(),
+            failed: None,
+            making: None,
+            card: None,
+            _watching: watching,
+            _appearance: appearance,
+            _bounds: bounds,
+        }
+    }
+
+    /// Does what a menu item or a shortcut named: the Commands that are this view's own, then the rest.
+    fn run(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
+        match name {
+            "sandbox.new" => self.start_making(window, cx),
+            "sandbox.open" => self.open_selected(cx),
+            "sandbox.start" => self.act_on_selected(sandboxes::Act::Start, window, cx),
+            "sandbox.stop" => self.act_on_selected(sandboxes::Act::Stop, window, cx),
+            "sandbox.delete" => self.confirm_delete(window, cx),
+            "sandbox.next" => self.select_next(1, cx),
+            "sandbox.previous" => self.select_next(-1, cx),
+            "sandboxes.refresh" => self.refresh(window, cx),
+            "app.palette" => self.open_palette(window, cx),
+            "app.keys" => self.open_keys(window, cx),
+            _ => {
+                let ran = commands::run(name, window, cx);
+                debug_assert!(ran || !COMMANDS.contains(&name), "{name} has no case here");
+            }
+        }
+    }
+
+    /// Shows the palette over the window. What's chosen runs here, as if from its menu, once the palette has gone
+    /// and given focus back.
+    fn open_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let palette = cx.new(|cx| CommandPalette::new(&t!("run"), palette::commands(), window, cx));
+        cx.subscribe_in(
+            &palette,
+            window,
+            |this, _, event: &PaletteEvent, window, cx| match event {
+                PaletteEvent::Run(name) => {
+                    this.close_card(cx);
+                    this.run(&name.clone(), window, cx);
+                }
+                PaletteEvent::Dismissed => this.close_card(cx),
+                _ => {}
+            },
+        )
+        .detach();
+        self.card = Some(Card::Palette(palette));
+        cx.notify();
+    }
+
+    /// Shows Keys over the window: every key, by its menu, narrowed by typing.
+    fn open_keys(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let keys = cx.new(|cx| KeyHelp::new(&t!("Keys"), about::key_sections(), window, cx));
+        cx.subscribe_in(&keys, window, |this, _, _: &HelpEvent, _, cx| {
+            this.close_card(cx)
+        })
+        .detach();
+        self.card = Some(Card::Keys(keys));
+        cx.notify();
+    }
+
+    fn close_card(&mut self, cx: &mut Context<Self>) {
+        self.card = None;
+        cx.notify();
+    }
+}
+
+/// How wide the list of sandboxes is.
+const LIST_WIDTH: f32 = 240. / 13.;
+
+/// The sandboxes, as far as they're known.
+enum Listing {
+    Loading,
+    Listed(Vec<Sandbox>),
+    Failed(String),
+}
+
+impl MainView {
+    /// A panel's heading: its title, and whatever goes beside it on the right.
+    fn panel_header(title: impl Into<SharedString>, cx: &App) -> Div {
+        h_flex()
+            .flex_none()
+            .justify_between()
+            .gap_2()
+            .px_3()
+            .h(rems(36. / 13.))
+            .border_b_1()
+            .border_color(cx.theme().border)
+            // The title gives way to what's beside it, so a button is never pushed out of a narrow panel.
+            .child(
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .font_semibold()
+                    .child(title.into()),
+            )
+    }
+}
+
+/// Something in a detail panel: a small heading and what's under it.
+fn section(title: impl Into<SharedString>, cx: &App) -> Div {
+    v_flex().gap_2().child(
+        div()
+            .text_sm()
+            .font_semibold()
+            .text_color(cx.theme().muted_foreground)
+            .child(title.into()),
+    )
+}
+
+/// A line saying what something means, small and quiet.
+fn hint(text: impl Into<SharedString>, cx: &App) -> Div {
+    div()
+        .text_sm()
+        .text_color(cx.theme().muted_foreground)
+        .child(text.into())
+}
+
+/// A one-line field at the kit's small size. The kit's Input fills whatever height it's offered, so it's given one.
+fn small_field(state: &Entity<InputState>) -> Input {
+    Input::new(state).small().h(rems(24. / 13.))
+}
+
+impl Render for MainView {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let detail = match &self.making {
+            Some(making) => self.making_panel(making, cx),
+            None => self.sandbox_detail(cx),
+        };
+        shell::window(cx)
+            .relative()
+            .track_focus(&self.focus)
+            // The view's own keys only while it has focus itself: a binding here would otherwise take its letter
+            // before a text field inside the view sees it.
+            .key_context(if self.focus.is_focused(window) {
+                CONTEXT
+            } else {
+                "Typing"
+            })
+            .on_action(cx.listener(|this, action: &RunAction, window, cx| {
+                this.run(action.name, window, cx);
+            }))
+            .child(shell::title_bar(cx).child("Lockbox"))
+            .child(
+                shell::columns(Lead::Panel)
+                    .child(
+                        shell::panel(false, cx)
+                            .flex_none()
+                            .w(rems(LIST_WIDTH))
+                            .child(self.sandbox_list(cx)),
+                    )
+                    .child(shell::panel(false, cx).flex_1().child(detail)),
+            )
+            // Last, so it's over everything; a click outside it closes it.
+            .when_some(self.card.as_ref(), |this, card| {
+                let card = match card {
+                    Card::Palette(palette) => palette.clone().into_any_element(),
+                    Card::Keys(keys) => keys.clone().into_any_element(),
+                };
+                this.child(
+                    overlay(card).on_dismiss(cx.listener(|this, _, _, cx| this.close_card(cx))),
+                )
+            })
+    }
+}

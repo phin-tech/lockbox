@@ -102,9 +102,9 @@ mod tests {
             .iter()
             .find(|(menu, _)| menu == "File")
             .expect("a File group");
-        let new = "New Window";
         assert!(
-            file.1.contains(&(new.to_string(), "⌘N".to_string())),
+            file.1
+                .contains(&("New Agent".to_string(), "⌘N".to_string())),
             "{:?}",
             file.1
         );

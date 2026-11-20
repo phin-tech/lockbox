@@ -36,6 +36,10 @@ shot name="app" appearance="light":
     LOCKBOX_APPEARANCE={{appearance}} LOCKBOX_SHOT="$(cd "${CARGO_TARGET_DIR:-target}/shots" && pwd)/{{name}}.png" \
         cargo run -p lockbox --features screenshot
 
+# Make a Claude Code sandbox on the real OpenShell gateway and ask Claude Code something in it, with the provider named
+openshell-test provider:
+    LOCKBOX_TEST_PROVIDER={{provider}} cargo test -p lockbox-core --test openshell -- --ignored
+
 # Build Lockbox.app and put it in /Applications, signed only for this Mac
 install-local:
     scripts/install-local.sh

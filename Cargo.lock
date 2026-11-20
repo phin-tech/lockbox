@@ -4609,6 +4609,7 @@ dependencies = [
  "insta",
  "jiff 0.2.46",
  "serde",
+ "serde_json",
  "thiserror 2.0.21",
  "toml 1.2.1+spec-1.1.0",
 ]

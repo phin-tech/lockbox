@@ -1,0 +1,16 @@
+{
+  "next_page_token": "",
+  "sandboxes": [
+    {
+      "name": "lb-idle",
+      "phase": "Ready",
+      "created_at": "2026-11-20 03:08:15",
+      "labels": {
+        "lockbox.agent": "claude-code"
+      },
+      "annotations": {
+        "lockbox.image": "lockbox-claude-code:probe"
+      }
+    }
+  ]
+}

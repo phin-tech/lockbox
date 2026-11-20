@@ -5,7 +5,7 @@ headless; `crates/app` is the GPUI front end. Read `CONTEXT.md` before naming an
 
 ## Where things are
 
-- `crates/app/src/commands.rs`: every Command, in `COMMANDS`, and the ones any window runs. `view.rs` runs the main
+- `crates/app/src/commands.rs`: every Command, in `COMMANDS`, and the ones any window runs. `view/mod.rs` runs the main
   view's own and hands it the rest. `shortcuts.rs`: keys. `menus.rs`: the menu bar, which the command palette
   (`palette.rs`, ⌘K, Typecase's, shown over the main view) lists too. Tests hold every menu item and key to `COMMANDS`, and every Command to having a case in
   a `run` and a place in a menu or a key.
@@ -19,6 +19,10 @@ headless; `crates/app` is the GPUI front end. Read `CONTEXT.md` before naming an
   `~/Library/Logs/tech.phin.lockbox/`; `crash.rs` writes a report there on a panic and says so at the next launch.
   `theme.rs`: the look, Typecase's themes, which follow the appearance, theme and text size set there.
 - `update.rs`: Sparkle, which only the released app carries; Check for Updates… and Settings ask it.
+- `view/`: the window. `sandboxes.rs` lists OpenShell's sandboxes and acts on the chosen one, `making.rs` is
+  New Agent…. Every call to OpenShell or Docker runs off the window's thread.
+- `crates/core/src/openshell/`: the `openshell` command, whose JSON it reads; `agent/` each agent's image, policy and
+  how a sandbox is made for it; `docker.rs` builds images. `just openshell-test <provider>` makes a real sandbox.
 - `crates/cli`: the command line, which the app's own binary answers before any window opens.
 - `DEVELOPMENT.md`: building, checking, CI, releasing.
 

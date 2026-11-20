@@ -71,10 +71,23 @@ struct Terminal {
     status: Option<Status>,
 }
 
+/// A terminal's status: just the word in `hc ls`, or the word with the program that reported it in `hc get`.
 #[derive(Deserialize)]
-struct Status {
-    #[serde(default)]
-    state: String,
+#[serde(untagged)]
+enum Status {
+    Word(String),
+    Reported {
+        #[serde(default)]
+        state: String,
+    },
+}
+
+impl Status {
+    fn word(&self) -> &str {
+        match self {
+            Status::Word(word) | Status::Reported { state: word } => word,
+        }
+    }
 }
 
 /// The first of `places` that's a file. An app opened from the Finder has no shell's `PATH`, so programs are looked for
@@ -135,26 +148,7 @@ impl HerdrCore {
 
     /// What the agent in each sandbox's sessions is doing, by sandbox: the most pressing, when it has several.
     pub fn agent_states(&self) -> Result<BTreeMap<String, AgentState>, HerdrError> {
-        let mut states = BTreeMap::new();
-        for terminal in self.terminals(&[])? {
-            if terminal.state != "live" {
-                continue;
-            }
-            let (Some(sandbox), Some(status)) =
-                (terminal.labels.get(SANDBOX_LABEL), terminal.status)
-            else {
-                continue;
-            };
-            let state = match status.state.as_str() {
-                "working" => AgentState::Working,
-                "blocked" => AgentState::Blocked,
-                "done" => AgentState::Done,
-                _ => AgentState::Idle,
-            };
-            let kept = states.entry(sandbox.clone()).or_insert(state);
-            *kept = (*kept).max(state);
-        }
-        Ok(states)
+        Ok(states(self.terminals(&[])?))
     }
 
     fn terminals(&self, filter: &[String]) -> Result<Vec<Terminal>, HerdrError> {
@@ -215,6 +209,29 @@ impl HerdrApp {
         }
         Ok(())
     }
+}
+
+/// What the agent in each sandbox's live sessions is doing, by sandbox: the most pressing, when it has several.
+fn states(terminals: Vec<Terminal>) -> BTreeMap<String, AgentState> {
+    let mut states = BTreeMap::new();
+    for terminal in terminals {
+        if terminal.state != "live" {
+            continue;
+        }
+        let (Some(sandbox), Some(status)) = (terminal.labels.get(SANDBOX_LABEL), terminal.status)
+        else {
+            continue;
+        };
+        let state = match status.word() {
+            "working" => AgentState::Working,
+            "blocked" => AgentState::Blocked,
+            "done" => AgentState::Done,
+            _ => AgentState::Idle,
+        };
+        let kept = states.entry(sandbox.clone()).or_insert(state);
+        *kept = (*kept).max(state);
+    }
+    states
 }
 
 /// The session running `what` in the sandbox `name`: `claude-patchbay.agent`.
@@ -282,7 +299,7 @@ fn run(program: &Path, doing: &str, args: &[String]) -> Result<String, HerdrErro
 
 #[cfg(test)]
 mod tests {
-    use super::run_args;
+    use super::{AgentState, Listed, run_args, states};
     use crate::openshell::{Phase, Sandbox};
     use crate::session::What;
 
@@ -303,5 +320,28 @@ mod tests {
             "/Users/sam",
         );
         insta::assert_snapshot!(args.join("\n"));
+    }
+
+    #[test]
+    fn a_status_is_read_as_hc_ls_and_hc_get_each_give_it() {
+        let listed: Listed = serde_json::from_str(
+            r#"{"terminals": [
+                {"address": "t1", "state": "live", "status": "idle", "labels": {"lockbox.sandbox": "a"}},
+                {"address": "t2", "state": "live", "status": {"app": "claude-code", "state": "blocked"},
+                 "labels": {"lockbox.sandbox": "a"}},
+                {"address": "t3", "state": "live", "status": "working", "labels": {"lockbox.sandbox": "b"}},
+                {"address": "t4", "state": "finished", "status": "working", "labels": {"lockbox.sandbox": "c"}},
+                {"address": "t5", "state": "live", "status": null, "labels": {}}
+            ]}"#,
+        )
+        .unwrap();
+        let states = states(listed.terminals);
+        assert_eq!(
+            states.get("a"),
+            Some(&AgentState::Blocked),
+            "the most pressing"
+        );
+        assert_eq!(states.get("b"), Some(&AgentState::Working));
+        assert_eq!(states.get("c"), None, "a finished session says nothing");
     }
 }

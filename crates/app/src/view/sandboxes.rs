@@ -35,15 +35,30 @@ impl MainView {
                     .await;
                 // What each agent is doing, when herdr-core keeps their sessions; nothing without it.
                 let states = cx
-                    .background_spawn(async move {
-                        HerdrCore::find()
-                            .and_then(|core| core.agent_states().ok())
-                            .unwrap_or_default()
-                    })
+                    .background_spawn(
+                        async move { HerdrCore::find().map(|core| core.agent_states()) },
+                    )
                     .await;
                 if this
                     .update(cx, |this, cx| {
-                        this.agent_states = states;
+                        this.agent_states = match states {
+                            Some(Ok(states)) => {
+                                this.herdr_failed = None;
+                                states
+                            }
+                            // Logged once, not every few seconds, since it's asked again every few seconds.
+                            Some(Err(error)) => {
+                                let error = error.to_string();
+                                if this.herdr_failed.as_ref() != Some(&error) {
+                                    tracing::warn!(
+                                        "herdr-core's sessions couldn't be read: {error}"
+                                    );
+                                    this.herdr_failed = Some(error);
+                                }
+                                BTreeMap::new()
+                            }
+                            None => BTreeMap::new(),
+                        };
                         this.listed(listed, cx);
                     })
                     .is_err()
@@ -87,7 +102,14 @@ impl MainView {
                 }
                 Listing::Listed(sandboxes)
             }
-            Err(error) => Listing::Failed(error.to_string()),
+            Err(error) => {
+                let error = error.to_string();
+                // Logged once, not every few seconds, since it's asked again every few seconds.
+                if !matches!(&self.sandboxes, Listing::Failed(before) if *before == error) {
+                    tracing::warn!("the sandboxes couldn't be listed: {error}");
+                }
+                Listing::Failed(error)
+            }
         };
         cx.notify();
     }
@@ -190,6 +212,7 @@ impl MainView {
             }
         };
         self.failed = None;
+        tracing::info!(sandbox = %name, ?act, "acting on a sandbox");
         let doing = name.clone();
         let done = cx.background_spawn(async move {
             match act {
@@ -205,8 +228,12 @@ impl MainView {
                 let done = done.await;
                 let _ = this.update_in(cx, |this, window, cx| {
                     this.working.remove(&name);
-                    if let Err(error) = done {
-                        this.failed = Some(error.to_string());
+                    match done {
+                        Ok(()) => tracing::info!(sandbox = %name, ?act, "done"),
+                        Err(error) => {
+                            tracing::warn!(sandbox = %name, ?act, "failed: {error}");
+                            this.failed = Some(error.to_string());
+                        }
                     }
                     this.refresh(window, cx);
                     cx.notify();
@@ -248,6 +275,7 @@ impl MainView {
             Keep::Nowhere
         };
         let name = sandbox.name.clone();
+        tracing::info!(sandbox = %name, ?what, ?place, ?keep, "opening a session");
         let opened = cx.background_spawn(async move {
             let place = place.unwrap_or_else(|| settings.show_in.place(&Installed::now()));
             session::open(openshell.binary(), &sandbox, what, place, keep)
@@ -258,6 +286,13 @@ impl MainView {
                 let opened = opened.await;
                 let _ = this.update(cx, |this, cx| {
                     this.working.remove(&name);
+                    match &opened {
+                        Ok(Opened::AsAsked) => tracing::info!(sandbox = %name, "opened a session"),
+                        Ok(Opened::InTerminalInstead(place)) => {
+                            tracing::info!(sandbox = %name, ?place, "not installed, so opened in Terminal");
+                        }
+                        Err(error) => tracing::warn!(sandbox = %name, "couldn't open a session: {error}"),
+                    }
                     this.failed = match opened {
                         Ok(Opened::AsAsked) => None,
                         Ok(Opened::InTerminalInstead(place)) => Some(

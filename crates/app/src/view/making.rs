@@ -194,12 +194,14 @@ impl MainView {
             })?;
             anyhow::Ok(())
         });
+        tracing::info!(sandbox = %name, "making a sandbox");
         making.state = MakeState::Working(Step::Creating);
         making._making = Some(cx.spawn_in(window, async move |this, cx| {
             // The steps end when making does, since it holds the only sender.
             while let Some(step) = stepped.next().await {
                 let _ = this.update(cx, |this, cx| {
                     if let Some(making) = &mut this.making {
+                        tracing::info!(sandbox = %making.name.read(cx).value(), ?step, "making a sandbox");
                         making.state = MakeState::Working(step);
                         cx.notify();
                     }
@@ -208,12 +210,14 @@ impl MainView {
             let made = made.await;
             let _ = this.update_in(cx, |this, window, cx| match made {
                 Ok(()) => {
+                    tracing::info!(sandbox = %name, "made a sandbox");
                     this.cancel_making(window, cx);
                     this.selected = Some(name);
                     this.refresh(window, cx);
                     cx.notify();
                 }
                 Err(error) => {
+                    tracing::warn!(sandbox = %name, "couldn't make a sandbox: {error:#}");
                     if let Some(making) = &mut this.making {
                         making.state = MakeState::Failed(format!("{error:#}"));
                         cx.notify();

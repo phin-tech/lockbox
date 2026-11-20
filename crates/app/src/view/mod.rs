@@ -95,6 +95,8 @@ pub struct MainView {
     selected: Option<String>,
     /// What's being done to a sandbox, by its name, while it's done.
     working: BTreeMap<String, Task<()>>,
+    /// Why herdr-core's sessions couldn't be read last time, so it's logged once rather than every few seconds.
+    herdr_failed: Option<String>,
     /// What the agent in each sandbox's sessions is doing, by sandbox, when herdr-core keeps them.
     agent_states: BTreeMap<String, AgentState>,
     /// The last thing done that failed, or a note on it, until something else is done.
@@ -127,6 +129,7 @@ impl MainView {
             selected: None,
             working: BTreeMap::new(),
             agent_states: BTreeMap::new(),
+            herdr_failed: None,
             failed: None,
             making: None,
             card: None,

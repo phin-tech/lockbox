@@ -415,6 +415,43 @@ Notes on that rule:
   https://github.com/NVIDIA/OpenShell, a Rust workspace with crates for the CLI, gateway, supervisor, sandbox,
   drivers, prover, TUI and SDK. The Go SDK is in https://github.com/ai-openshell/sdk-go.
 
+## Tested on this Mac, 2026-11-19
+
+OpenShell 0.1.8 from Homebrew (one patch behind the version read above), its gateway as a Homebrew service, no
+`compute_driver` set, so sandboxes ran on Docker, which here is **OrbStack**, not Docker Desktop. The image was the
+default, `nvcr.io/nvidia/base/ubuntu:24.04`, which has bash and Perl but no curl or Python. The policy:
+
+```yaml
+version: 1
+network_policies:
+  patchbay:
+    endpoints:
+      - host: host.openshell.internal
+        port: 7399
+    binaries:
+      - path: /usr/bin/bash
+```
+
+What happened, each from a fresh `openshell sandbox create --no-keep --policy … -- <command>`:
+
+- **A server bound only to macOS `127.0.0.1:7399` is reachable** as `host.openshell.internal:7399`, with bash's
+  `/dev/tcp`. The server saw the request come from `127.0.0.1`. So on OrbStack the open question in Q1 is settled: a
+  host service can stay on loopback.
+- **Nothing else is.** From the same sandbox, `host.openshell.internal:17670` (OpenShell's own gateway) and
+  `api.github.com:443` were refused with `Permission denied`, and `127.0.0.1:7399` with `Connection refused`.
+- **A rule is held to its binary.** Perl run as the sandbox's own command was refused the same host and port.
+  Perl started from bash got through, as the docs say: a rule covers a listed binary's children. So a rule naming an
+  agent's shell or interpreter covers whatever it runs.
+- **Patchbay's gateway answers MCP from the sandbox once it accepts the name.** rmcp's HTTP server only accepts a
+  `Host` of `localhost`, `127.0.0.1` or `::1`, and answered `403` to `Host: host.openshell.internal:7399`. Sending
+  `Host: 127.0.0.1:7399` instead is refused by OpenShell itself (`403`, even with a wrong token), since it checks a
+  request's Host against where it's going. With `host.openshell.internal` added to the gateway's allowed hosts
+  (`StreamableHttpServerConfig::with_allowed_hosts`, a local change not kept), bash in the sandbox initialized an
+  MCP session, listed Patchbay's tools (`fetch__fetch`), and a wrong token still got `401`.
+
+So for Patchbay the change is small: accept `host.openshell.internal` as a Host (opt-in, as LAN access is planned),
+and give sandbox clients an entry that uses that name. Docker Desktop and the MicroVM driver were not tried.
+
 ## Not established by these sources
 
 - Whether Docker Desktop host networking, or bridge mode through `host.docker.internal`, carries a sandbox

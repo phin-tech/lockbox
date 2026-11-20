@@ -5,15 +5,19 @@ mod agent;
 pub mod crash;
 mod docker;
 mod files;
+mod herdr;
 mod links;
 mod locale;
 mod openshell;
 mod settings;
 mod state;
 
-pub use agent::{Agent, MakeError, Plan, Step, is_sandbox_name, open_script, suggested_name};
+pub use agent::{
+    Agent, MakeError, Plan, Step, is_sandbox_name, open_command, open_script, suggested_name,
+};
 pub use docker::{Docker, DockerError};
 pub use files::write_atomically;
+pub use herdr::{Herdr, HerdrError};
 pub use links::{link_target, path_from_file_url};
 pub use locale::best_locale;
 pub use openshell::{OpenShell, OpenShellError, Phase, Provider, Sandbox};

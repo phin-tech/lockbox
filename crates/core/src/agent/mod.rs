@@ -275,28 +275,35 @@ pub fn suggested_name(agent: Agent, folder: Option<&Path>) -> String {
     name.trim_end_matches('-').to_string()
 }
 
-/// A shell script that opens the sandbox's agent in its folder, or a shell in a sandbox with no agent Lockbox knows,
-/// in a terminal: what Terminal runs for a `.command` file.
-pub fn open_script(openshell: &Path, sandbox: &Sandbox) -> String {
+/// The shell line that opens the sandbox's agent in its folder, or a shell in a sandbox with no agent Lockbox knows.
+pub fn open_command(openshell: &Path, sandbox: &Sandbox) -> String {
     let openshell = quote(&openshell.to_string_lossy());
     let name = quote(&sandbox.name);
     match sandbox.agent.as_deref().and_then(Agent::from_id) {
         Some(agent) => format!(
-            "#!/bin/sh\n# Written by Lockbox: opens {agent} in the sandbox “{shown}”.\nexec {openshell} sandbox exec --name {name} --tty --workdir {workdir} -- {command}\n",
-            agent = agent.name(),
-            shown = sandbox.name,
+            "{openshell} sandbox exec --name {name} --tty --workdir {workdir} -- {command}",
             workdir = quote(sandbox.workdir.as_deref().unwrap_or(SANDBOX_HOME)),
             command = agent.command(),
         ),
-        None => format!(
-            "#!/bin/sh\n# Written by Lockbox: opens a shell in the sandbox “{shown}”.\nexec {openshell} sandbox connect {name}\n",
-            shown = sandbox.name,
-        ),
+        None => format!("{openshell} sandbox connect {name}"),
     }
 }
 
+/// [`open_command`] as a shell script, which is what Terminal runs for a `.command` file.
+pub fn open_script(openshell: &Path, sandbox: &Sandbox) -> String {
+    let what = match sandbox.agent.as_deref().and_then(Agent::from_id) {
+        Some(agent) => agent.name(),
+        None => "a shell",
+    };
+    format!(
+        "#!/bin/sh\n# Written by Lockbox: opens {what} in the sandbox “{}”.\nexec {}\n",
+        sandbox.name,
+        open_command(openshell, sandbox)
+    )
+}
+
 /// `text` as one word to a POSIX shell.
-fn quote(text: &str) -> String {
+pub(crate) fn quote(text: &str) -> String {
     format!("'{}'", text.replace('\'', r"'\''"))
 }
 

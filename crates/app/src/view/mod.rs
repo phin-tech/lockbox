@@ -136,7 +136,7 @@ impl MainView {
     fn run(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
         match name {
             "sandbox.new" => self.start_making(window, cx),
-            "sandbox.open" => self.open_selected(cx),
+            "sandbox.open" => self.open_selected(window, cx),
             "sandbox.start" => self.act_on_selected(sandboxes::Act::Start, window, cx),
             "sandbox.stop" => self.act_on_selected(sandboxes::Act::Stop, window, cx),
             "sandbox.delete" => self.confirm_delete(window, cx),

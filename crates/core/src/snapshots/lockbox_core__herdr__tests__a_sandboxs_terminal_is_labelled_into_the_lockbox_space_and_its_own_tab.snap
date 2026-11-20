@@ -1,0 +1,20 @@
+---
+source: crates/core/src/herdr.rs
+assertion_line: 225
+expression: "args.join(\"\\n\")"
+---
+run
+--bg
+--json
+--keep
+--no-parent
+--no-notify
+--cwd
+/Users/sam
+--label
+lockbox.sandbox=claude-patchbay
+--label
+herdr.space=lockbox
+--label
+herdr.tab=lockbox-claude-patchbay
+openshell sandbox exec --name claude-patchbay --tty -- claude

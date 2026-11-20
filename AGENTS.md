@@ -22,7 +22,8 @@ headless; `crates/app` is the GPUI front end. Read `CONTEXT.md` before naming an
 - `view/`: the window. `sandboxes.rs` lists OpenShell's sandboxes and acts on the chosen one, `making.rs` is
   New Agent…. Every call to OpenShell or Docker runs off the window's thread.
 - `crates/core/src/openshell/`: the `openshell` command, whose JSON it reads; `agent/` each agent's image, policy and
-  how a sandbox is made for it; `docker.rs` builds images. `just openshell-test <provider>` makes a real sandbox.
+  how a sandbox is made for it; `docker.rs` builds images; `herdr.rs` opens a sandbox's
+  agent in a Herdr terminal, labelled `herdr.space`/`herdr.tab` so the Herdr app shows it. `just openshell-test <provider>` makes a real sandbox.
 - `crates/cli`: the command line, which the app's own binary answers before any window opens.
 - `DEVELOPMENT.md`: building, checking, CI, releasing.
 

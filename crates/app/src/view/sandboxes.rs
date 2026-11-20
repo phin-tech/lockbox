@@ -4,7 +4,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use lockbox_core::{Phase, open_script};
+use lockbox_core::{Herdr, Phase, open_command, open_script};
 
 use super::*;
 
@@ -202,24 +202,51 @@ impl MainView {
 
     /// Opens the chosen sandbox's agent in Terminal, in the folder copied in, or a shell in a sandbox Lockbox didn't
     /// make.
-    pub(super) fn open_selected(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn open_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(sandbox) = self.selected_sandbox().cloned() else {
             return;
         };
-        if !sandbox.phase.is_ready() {
+        if !sandbox.phase.is_ready() || self.working.contains_key(&sandbox.name) {
             return;
         }
-        let opened = self
-            .openshell()
-            .map_err(anyhow::Error::from)
-            .and_then(|openshell| open_in_terminal(&sandbox_script(&openshell, &sandbox)?));
-        self.failed = opened.err().map(|error| {
-            t!(
-                "Couldn't open Terminal: %{error}",
-                error = format!("{error:#}")
-            )
-            .into_owned()
+        let openshell = match self.openshell() {
+            Ok(openshell) => openshell,
+            Err(error) => {
+                self.failed = Some(error.to_string());
+                cx.notify();
+                return;
+            }
+        };
+        self.failed = None;
+        let name = sandbox.name.clone();
+        // In Herdr, beside the person's other terminals and agents, when it's installed; Terminal otherwise.
+        let opened = cx.background_spawn(async move {
+            match Herdr::find() {
+                Some(herdr) => herdr
+                    .open(&sandbox, &open_command(openshell.binary(), &sandbox))
+                    .map_err(anyhow::Error::from),
+                None => open_in_terminal(&sandbox_script(&openshell, &sandbox)?),
+            }
         });
+        let task = cx.spawn_in(window, {
+            let name = name.clone();
+            async move |this, cx| {
+                let opened = opened.await;
+                let _ = this.update(cx, |this, cx| {
+                    this.working.remove(&name);
+                    this.failed = opened.err().map(|error| {
+                        t!(
+                            "Couldn't open “%{name}”: %{error}",
+                            name = name,
+                            error = format!("{error:#}")
+                        )
+                        .into_owned()
+                    });
+                    cx.notify();
+                });
+            }
+        });
+        self.working.insert(name, task);
         cx.notify();
     }
 

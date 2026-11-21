@@ -1,27 +1,50 @@
-//! New Agent…: a sandbox made for an agent, in place of the chosen sandbox. The person names it, chooses a folder to
+//! New Agent…: a sandbox made for an agent, in place of the chosen sandbox. The person names it, chooses folders to
 //! copy in and the provider holding the model's key; making it runs off the window's thread, a step at a time.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::Context as _;
 use futures::StreamExt as _;
 use futures::channel::mpsc;
+use gpui_kit::component::IndexPath;
+use gpui_kit::component::searchable_list::SearchableVec;
+use gpui_kit::component::select::{Select, SelectEvent, SelectItem, SelectState};
 use playpen_core::{Docker, Plan, Provider, Step, suggested_name};
 
 use super::*;
 
+/// An agent, as the Agent menu lists it.
+#[derive(Clone)]
+struct AgentChoice(Agent);
+
+impl SelectItem for AgentChoice {
+    type Value = Agent;
+
+    fn title(&self) -> SharedString {
+        self.0.name().into()
+    }
+
+    fn value(&self) -> &Agent {
+        &self.0
+    }
+}
+
 /// A sandbox being made for an agent.
 pub struct Making {
     agent: Agent,
+    /// The Agent menu, searchable, since there may be more agents than fit in a row.
+    agents: Entity<SelectState<SearchableVec<AgentChoice>>>,
     name: Entity<InputState>,
-    /// The name Playpen last suggested, which choosing a folder may change while the person hasn't typed another.
+    /// The name Playpen last suggested, which choosing folders may change while the person hasn't typed another.
     suggested: String,
-    folder: Option<PathBuf>,
+    /// The folders to copy in, in the order they were added.
+    folders: Vec<PathBuf>,
     /// Every provider, once OpenShell has listed them, of which the agent can use some.
     listed: Option<Result<Vec<Provider>, String>>,
     provider: Option<String>,
     pub(super) state: MakeState,
     _changed: Subscription,
+    _chose: Subscription,
     _listing: Task<()>,
     _making: Option<Task<()>>,
 }
@@ -40,7 +63,7 @@ impl MainView {
             return;
         }
         let agent = Agent::ClaudeCode;
-        let suggested = suggested_name(agent, None);
+        let suggested = suggested_name(agent, &[]);
         let name = cx.new(|cx| {
             let mut state = InputState::new(window, cx).placeholder(suggested.clone());
             state.set_value(suggested.clone(), window, cx);
@@ -51,6 +74,26 @@ impl MainView {
                 this.make(window, cx);
             }
         });
+        let chosen = Agent::ALL.iter().position(|known| *known == agent);
+        let agents = cx.new(|cx| {
+            SelectState::new(
+                SearchableVec::new(Agent::ALL.map(AgentChoice).to_vec()),
+                chosen.map(IndexPath::new),
+                window,
+                cx,
+            )
+            .searchable(true)
+        });
+        let chose = cx.subscribe_in(
+            &agents,
+            window,
+            |this, _, event: &SelectEvent<_>, window, cx| {
+                let SelectEvent::Confirm(Some(agent)) = event else {
+                    return;
+                };
+                this.choose_agent(*agent, window, cx);
+            },
+        );
         name.read(cx).focus_handle(cx).focus(window, cx);
         let openshell = self.openshell();
         let watching = self.watch;
@@ -69,17 +112,26 @@ impl MainView {
         });
         self.making = Some(Making {
             agent,
+            agents,
             name,
             suggested,
-            folder: None,
+            folders: Vec::new(),
             listed: None,
             provider: None,
             state: MakeState::Choosing,
             _changed: changed,
+            _chose: chose,
             _listing: listing,
             _making: None,
         });
         self.failed = None;
+        // `PLAYPEN_SHOT_FOLDERS`, separated by colons, fills the form's folders in a capture, which can't pick any.
+        if cfg!(feature = "screenshot")
+            && let Some(folders) = std::env::var_os("PLAYPEN_SHOT_FOLDERS")
+        {
+            let folders = std::env::split_paths(&folders).collect();
+            self.folders_added(folders, window, cx);
+        }
         cx.notify();
     }
 
@@ -110,15 +162,12 @@ impl MainView {
         if making.agent == agent {
             return;
         }
-        let typed = making.name.read(cx).value().trim().to_string();
-        if typed == making.suggested || typed.is_empty() {
-            let suggested = suggested_name(agent, making.folder.as_deref());
-            making
-                .name
-                .update(cx, |name, cx| name.set_value(suggested.clone(), window, cx));
-            making.suggested = suggested;
-        }
         making.agent = agent;
+        making.suggest_name(window, cx);
+        // The menu shows the agent however it was chosen, from the menu or not.
+        making.agents.update(cx, |agents, cx| {
+            agents.set_selected_value(&agent, window, cx);
+        });
         making.choose_first_provider();
         cx.notify();
     }
@@ -130,46 +179,57 @@ impl MainView {
         cx.notify();
     }
 
-    /// Asks for the folder to copy in, and names the sandbox after it unless the person has named it.
-    fn choose_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// Asks for folders to copy in, as many as the person picks, and names the sandbox after them unless they've
+    /// named it.
+    fn choose_folders(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let chosen = cx.prompt_for_paths(PathPromptOptions {
             files: false,
             directories: true,
-            multiple: false,
-            prompt: Some(t!("Choose").into_owned().into()),
+            multiple: true,
+            prompt: Some(t!("Add").into_owned().into()),
         });
         cx.spawn_in(window, async move |this, cx| {
-            let Ok(Ok(Some(paths))) = chosen.await else {
-                return;
-            };
-            let Some(folder) = paths.into_iter().next() else {
+            let Ok(Ok(Some(folders))) = chosen.await else {
                 return;
             };
             let _ = this.update_in(cx, |this, window, cx| {
-                this.folder_chosen(folder, window, cx)
+                this.folders_added(folders, window, cx);
             });
         })
         .detach();
     }
 
-    pub(super) fn folder_chosen(
+    /// Adds folders after those chosen already, leaving out any that's there.
+    pub(super) fn folders_added(
         &mut self,
-        folder: PathBuf,
+        folders: Vec<PathBuf>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let Some(making) = &mut self.making else {
             return;
         };
-        let typed = making.name.read(cx).value().trim().to_string();
-        if typed == making.suggested || typed.is_empty() {
-            let suggested = suggested_name(making.agent, Some(&folder));
-            making
-                .name
-                .update(cx, |name, cx| name.set_value(suggested.clone(), window, cx));
-            making.suggested = suggested;
+        for folder in folders {
+            if !making.folders.contains(&folder) {
+                making.folders.push(folder);
+            }
         }
-        making.folder = Some(folder);
+        making.suggest_name(window, cx);
+        cx.notify();
+    }
+
+    /// Leaves out a folder chosen before.
+    pub(super) fn remove_folder(
+        &mut self,
+        folder: &Path,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(making) = &mut self.making else {
+            return;
+        };
+        making.folders.retain(|chosen| chosen != folder);
+        making.suggest_name(window, cx);
         cx.notify();
     }
 
@@ -202,7 +262,7 @@ impl MainView {
             agent: making.agent,
             provider: making.provider.clone(),
             account,
-            folder: making.folder.clone(),
+            folders: making.folders.clone(),
         };
         if !playpen_core::is_sandbox_name(&plan.name) {
             making.state = MakeState::Failed(playpen_core::MakeError::Name(plan.name).to_string());
@@ -278,20 +338,45 @@ impl MainView {
                         .on_click(cx.listener(|this, _, window, cx| this.make(window, cx))),
                 ),
         );
-        let folder = h_flex()
-            .gap_2()
-            .child(match &making.folder {
-                Some(folder) => h_flex()
-                    .min_w_0()
-                    .child(shell::code_chip(folder.display().to_string(), cx)),
-                None => hint(t!("None: it starts empty"), cx),
+        // Each folder on a line of its own, with a button to leave it out, and Add Folders… under them.
+        let folders = v_flex()
+            .gap_1p5()
+            .when(making.folders.is_empty(), |list| {
+                list.child(hint(t!("None: it starts empty"), cx))
             })
+            .children(making.folders.iter().map(|folder| {
+                let shown = folder.display().to_string();
+                let leaving = folder.clone();
+                h_flex()
+                    .gap_1()
+                    .child(
+                        h_flex()
+                            .min_w_0()
+                            .child(shell::code_chip(shown.clone(), cx)),
+                    )
+                    .child(
+                        Button::new(ElementId::from((ElementId::from("remove-folder"), shown)))
+                            .ghost()
+                            .xsmall()
+                            .disabled(working)
+                            .icon(assets::IconName::X)
+                            .tooltip(t!("Leave Out").into_owned())
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.remove_folder(&leaving, window, cx);
+                            })),
+                    )
+            }))
             .child(
-                Button::new("choose-folder")
-                    .xsmall()
-                    .disabled(working)
-                    .label(t!("Choose…").into_owned())
-                    .on_click(cx.listener(|this, _, window, cx| this.choose_folder(window, cx))),
+                h_flex().child(
+                    Button::new("choose-folders")
+                        .xsmall()
+                        .disabled(working)
+                        .icon(assets::IconName::FolderPlus)
+                        .label(t!("Add Folders…").into_owned())
+                        .on_click(
+                            cx.listener(|this, _, window, cx| this.choose_folders(window, cx)),
+                        ),
+                ),
             );
         let providers = match making.usable() {
             None => hint(t!("Asking OpenShell…"), cx),
@@ -326,7 +411,7 @@ impl MainView {
         let state = match &making.state {
             MakeState::Choosing => hint(
                 t!(
-                    "The folder is copied in, leaving out what its .gitignore does, so the agent works on the copy. The provider's key never enters the sandbox: OpenShell puts it on the agent's requests to its model, and the agent can reach nothing else."
+                    "The folders are copied in, leaving out what each .gitignore does, so the agent works on copies; with several, it works in the folder above them. The provider's key never enters the sandbox: OpenShell puts it on the agent's requests to its model, and the agent can reach nothing else."
                 ),
                 cx,
             ),
@@ -336,7 +421,7 @@ impl MainView {
                     agent = making.agent.name()
                 ),
                 Step::Creating => t!("Making the sandbox…"),
-                Step::Copying => t!("Copying the folder in…"),
+                Step::Copying => t!("Copying the folders in…"),
                 Step::Preparing => t!("Setting up %{agent}…", agent = making.agent.name()),
             }
             .into_owned())),
@@ -346,22 +431,19 @@ impl MainView {
             .gap_5()
             .p_4()
             .child(
-                section(t!("Agent"), cx).child(h_flex().gap_4().children(Agent::ALL.map(
-                    |agent| {
-                        Radio::new(ElementId::from((ElementId::from("agent"), agent.id())))
-                            .label(agent.name())
-                            .checked(making.agent == agent)
-                            .disabled(working)
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.choose_agent(agent, window, cx);
-                            }))
-                    },
-                ))),
+                section(t!("Agent"), cx).child(
+                    div().w(rems(20.)).child(
+                        Select::new(&making.agents)
+                            .small()
+                            .search_placeholder(t!("Search").into_owned())
+                            .disabled(working),
+                    ),
+                ),
             )
             .child(
                 section(t!("Name"), cx).child(div().w(rems(20.)).child(small_field(&making.name))),
             )
-            .child(section(t!("Folder"), cx).child(folder))
+            .child(section(t!("Folders"), cx).child(folders))
             .child(section(t!("Model key"), cx).child(providers))
             .child(state);
         v_flex()
@@ -373,6 +455,17 @@ impl MainView {
 }
 
 impl Making {
+    /// Names the sandbox after the agent and the folders, unless the person has typed a name of their own.
+    fn suggest_name(&mut self, window: &mut Window, cx: &mut App) {
+        let typed = self.name.read(cx).value().trim().to_string();
+        if typed == self.suggested || typed.is_empty() {
+            let suggested = suggested_name(self.agent, &self.folders);
+            self.name
+                .update(cx, |name, cx| name.set_value(suggested.clone(), window, cx));
+            self.suggested = suggested;
+        }
+    }
+
     /// The providers whose key the agent can use, once OpenShell has listed them.
     fn usable(&self) -> Option<Result<Vec<&Provider>, &String>> {
         let kinds = self.agent.provider_kinds();

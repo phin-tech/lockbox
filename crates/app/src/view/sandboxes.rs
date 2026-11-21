@@ -632,8 +632,16 @@ impl MainView {
                 text_value(state_words(&sandbox.phase, state)),
             ),
         ];
-        if let Some(folder) = sandbox.folder.clone() {
-            info.push((t!("Copied from").into_owned(), shell::code_chip(folder, cx)));
+        if !sandbox.folders.is_empty() {
+            info.push((
+                t!("Copied from").into_owned(),
+                v_flex().min_w_0().gap_1().items_end().children(
+                    sandbox
+                        .folders
+                        .iter()
+                        .map(|folder| shell::code_chip(folder.clone(), cx)),
+                ),
+            ));
         }
         if let Some(workdir) = sandbox.workdir.clone() {
             info.push((t!("Works in").into_owned(), shell::code_chip(workdir, cx)));
@@ -714,7 +722,9 @@ pub(super) fn stand_ins() -> Vec<Sandbox> {
         phase,
         created: "2026-11-21 09:41:00".to_string(),
         agent: agent.map(str::to_string),
-        folder: agent.map(|_| "/Users/sam/src/Patchbay".to_string()),
+        folders: agent
+            .map(|_| vec!["/Users/sam/src/Patchbay".to_string()])
+            .unwrap_or_default(),
         workdir: agent.map(|_| "/sandbox/Patchbay".to_string()),
     };
     vec![

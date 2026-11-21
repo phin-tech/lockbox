@@ -24,7 +24,7 @@ const CODEX_BINARY: &str = if cfg!(target_arch = "aarch64") {
     "/usr/local/lib/node_modules/@openai/codex/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex"
 };
 
-/// Where a sandbox's own files are, and where a folder is copied to.
+/// Where a sandbox's own files are, and where the folders are copied to.
 const SANDBOX_HOME: &str = "/sandbox";
 
 /// An agent Playpen knows how to run.
@@ -169,8 +169,9 @@ pub struct Plan {
     pub provider: Option<String>,
     /// The ChatGPT account, when the provider is a ChatGPT subscription.
     pub account: Option<Account>,
-    /// A folder on the Mac to copy in, for it to work on.
-    pub folder: Option<PathBuf>,
+    /// Folders on the Mac to copy in, for it to work on: none, one, or several, such as the repositories of one
+    /// piece of work.
+    pub folders: Vec<PathBuf>,
 }
 
 /// How far making a sandbox has got, for showing while it waits.
@@ -179,7 +180,7 @@ pub enum Step {
     /// Building the agent's image, which happens once for each version.
     Building,
     Creating,
-    /// Copying the folder in.
+    /// Copying the folders in.
     Copying,
     /// Writing the agent's settings in the sandbox.
     Preparing,
@@ -198,15 +199,33 @@ pub enum MakeError {
         "“{0}” can't name a sandbox: use lowercase letters, digits and dashes, starting with a letter."
     )]
     Name(String),
+    #[error(
+        "Two of the folders are called “{0}”, and each is copied in under its own name. Leave one out, or rename it."
+    )]
+    SameFolderName(String),
 }
 
 impl Plan {
-    /// Where the agent works in the sandbox: the copied folder, or the sandbox's home.
+    /// Where the agent works in the sandbox: the one folder copied in, or the sandbox's home, where several are side
+    /// by side.
     pub fn workdir(&self) -> String {
-        match self.folder.as_deref().and_then(Path::file_name) {
-            Some(name) => format!("{SANDBOX_HOME}/{}", name.to_string_lossy()),
-            None => SANDBOX_HOME.to_string(),
+        match self.folders.as_slice() {
+            [folder] => match folder.file_name() {
+                Some(name) => format!("{SANDBOX_HOME}/{}", name.to_string_lossy()),
+                None => SANDBOX_HOME.to_string(),
+            },
+            _ => SANDBOX_HOME.to_string(),
         }
+    }
+
+    /// A name two of the folders share, which would put one on top of the other in the sandbox.
+    fn shared_folder_name(&self) -> Option<String> {
+        let mut seen = std::collections::BTreeSet::new();
+        self.folders
+            .iter()
+            .filter_map(|folder| folder.file_name())
+            .find(|name| !seen.insert(*name))
+            .map(|name| name.to_string_lossy().into_owned())
     }
 
     /// What follows `openshell sandbox create`, with the policy at `policy`. The sandbox starts with no command and
@@ -236,10 +255,16 @@ impl Plan {
         for (name, value) in self.agent.env() {
             args.extend(["--env".to_string(), format!("{name}={value}")]);
         }
-        if let Some(folder) = &self.folder {
+        // One a line, which OpenShell keeps as it's given.
+        if !self.folders.is_empty() {
+            let folders: Vec<String> = self
+                .folders
+                .iter()
+                .map(|folder| folder.display().to_string())
+                .collect();
             args.extend([
                 "--annotation".to_string(),
-                format!("{FOLDER_ANNOTATION}={}", folder.display()),
+                format!("{FOLDER_ANNOTATION}={}", folders.join("\n")),
             ]);
         }
         if let Some(provider) = &self.provider {
@@ -259,6 +284,9 @@ impl Plan {
         if !is_sandbox_name(&self.name) {
             return Err(MakeError::Name(self.name.clone()));
         }
+        if let Some(name) = self.shared_folder_name() {
+            return Err(MakeError::SameFolderName(name));
+        }
         let image = self.agent.image();
         if !docker.has_image(&image)? {
             step(Step::Building);
@@ -275,10 +303,12 @@ impl Plan {
         let created = openshell.create(&self.name, &self.create_args(&policy));
         let _ = std::fs::remove_file(&policy);
         created?;
-        // A sandbox without its folder or its settings isn't what was asked for, and would keep the name from being
+        // A sandbox without its folders or its settings isn't what was asked for, and would keep the name from being
         // tried again.
-        if let Some(folder) = &self.folder {
+        if !self.folders.is_empty() {
             step(Step::Copying);
+        }
+        for folder in &self.folders {
             if let Err(error) = openshell.upload(&self.name, folder, SANDBOX_HOME) {
                 let _ = openshell.delete(&self.name);
                 return Err(error.into());
@@ -371,19 +401,21 @@ pub fn is_sandbox_name(name: &str) -> bool {
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
-/// A sandbox name made from a folder's name, for `agent`: `claude-patchbay` for a folder `Patchbay`.
-pub fn suggested_name(agent: Agent, folder: Option<&Path>) -> String {
-    let prefix = agent.command();
-    let Some(folder) = folder.and_then(Path::file_name) else {
-        return prefix.to_string();
-    };
-    let mut name = format!("{prefix}-");
-    for c in folder.to_string_lossy().chars() {
-        let c = c.to_ascii_lowercase();
-        if c.is_ascii_lowercase() || c.is_ascii_digit() {
-            name.push(c);
-        } else if !name.ends_with('-') {
+/// A sandbox name made from the folders' names, for `agent`: `claude-patchbay` for a folder `Patchbay`, and
+/// `claude-patchbay-typecase` for that and `Typecase`.
+pub fn suggested_name(agent: Agent, folders: &[PathBuf]) -> String {
+    let mut name = agent.command().to_string();
+    for folder in folders.iter().filter_map(|folder| folder.file_name()) {
+        if !name.ends_with('-') {
             name.push('-');
+        }
+        for c in folder.to_string_lossy().chars() {
+            let c = c.to_ascii_lowercase();
+            if c.is_ascii_lowercase() || c.is_ascii_digit() {
+                name.push(c);
+            } else if !name.ends_with('-') {
+                name.push('-');
+            }
         }
     }
     name.truncate(63);
@@ -438,7 +470,7 @@ mod tests {
             agent: Agent::ClaudeCode,
             provider: Some("claude-sub".to_string()),
             account: None,
-            folder: Some(PathBuf::from("/Users/sam/src/Patchbay")),
+            folders: vec![PathBuf::from("/Users/sam/src/Patchbay")],
         }
     }
 
@@ -488,18 +520,56 @@ mod tests {
     fn the_agent_works_in_the_folder_copied_in() {
         assert_eq!(plan().workdir(), "/sandbox/Patchbay");
         let none = Plan {
-            folder: None,
+            folders: Vec::new(),
             ..plan()
         };
         assert_eq!(none.workdir(), "/sandbox");
     }
 
     #[test]
+    fn several_folders_are_copied_in_side_by_side_and_the_agent_works_above_them() {
+        let several = Plan {
+            folders: vec![
+                PathBuf::from("/Users/sam/src/Patchbay"),
+                PathBuf::from("/Users/sam/src/Typecase"),
+            ],
+            ..plan()
+        };
+        assert_eq!(several.workdir(), "/sandbox");
+        assert!(several.create_args(Path::new("/tmp/policy.yaml")).contains(
+            &"playpen.folder=/Users/sam/src/Patchbay\n/Users/sam/src/Typecase".to_string()
+        ));
+        assert_eq!(several.shared_folder_name(), None);
+    }
+
+    #[test]
+    fn two_folders_of_one_name_are_refused_before_anything_is_made() {
+        let clashing = Plan {
+            folders: vec![
+                PathBuf::from("/Users/sam/src/app"),
+                PathBuf::from("/Users/sam/work/app"),
+            ],
+            ..plan()
+        };
+        assert_eq!(clashing.shared_folder_name().as_deref(), Some("app"));
+    }
+
+    #[test]
     fn a_folders_name_becomes_a_sandboxs() {
-        let named = |folder: &str| suggested_name(Agent::ClaudeCode, Some(Path::new(folder)));
+        let named = |folder: &str| suggested_name(Agent::ClaudeCode, &[PathBuf::from(folder)]);
         assert_eq!(named("/src/Patchbay"), "claude-patchbay");
         assert_eq!(named("/src/my app (2)"), "claude-my-app-2");
-        assert_eq!(suggested_name(Agent::ClaudeCode, None), "claude");
+        assert_eq!(suggested_name(Agent::ClaudeCode, &[]), "claude");
+        assert_eq!(
+            suggested_name(
+                Agent::ClaudeCode,
+                &[
+                    PathBuf::from("/src/Patchbay"),
+                    PathBuf::from("/src/Typecase")
+                ]
+            ),
+            "claude-patchbay-typecase"
+        );
         assert!(is_sandbox_name(&named("/src/Playpen")));
         assert!(!is_sandbox_name("Claude"));
         assert!(!is_sandbox_name("1claude"));
@@ -514,7 +584,7 @@ mod tests {
             phase: Phase::Ready,
             created: String::new(),
             agent: Some("claude-code".to_string()),
-            folder: None,
+            folders: Vec::new(),
             workdir: Some("/sandbox/Sam's App".to_string()),
         };
         let openshell = Path::new("/opt/homebrew/bin/openshell");
@@ -540,7 +610,7 @@ mod tests {
             phase: Phase::Ready,
             created: String::new(),
             agent: Some("codex".to_string()),
-            folder: None,
+            folders: Vec::new(),
             workdir: Some("/sandbox/Patchbay".to_string()),
         };
         let openshell = Path::new("/opt/homebrew/bin/openshell");

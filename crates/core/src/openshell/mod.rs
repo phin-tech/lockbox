@@ -15,7 +15,7 @@ use crate::provider::{CHATGPT_CLIENT_ID, Kind, NewProvider};
 /// The label Playpen puts on a sandbox it made, naming its [`crate::Agent`].
 pub const AGENT_LABEL: &str = "playpen.agent";
 
-/// The annotation holding the folder on the Mac that was copied into a sandbox.
+/// The annotation holding the folders on the Mac that were copied into a sandbox, one a line.
 pub const FOLDER_ANNOTATION: &str = "playpen.folder";
 
 /// The annotation holding where the agent works in a sandbox: the copied folder, under `/sandbox`.
@@ -46,8 +46,8 @@ pub struct Sandbox {
     pub created: String,
     /// The agent Playpen made it for, by the label's value; none for a sandbox made some other way.
     pub agent: Option<String>,
-    /// The folder on the Mac copied into it.
-    pub folder: Option<String>,
+    /// The folders on the Mac copied into it.
+    pub folders: Vec<String>,
     /// Where its agent works in it.
     pub workdir: Option<String>,
 }
@@ -172,7 +172,11 @@ pub fn parse_sandboxes(json: &str) -> Result<Vec<Sandbox>, OpenShellError> {
             phase: Phase::from_name(&listed.phase),
             created: listed.created_at,
             agent: listed.labels.remove(AGENT_LABEL),
-            folder: listed.annotations.remove(FOLDER_ANNOTATION),
+            folders: listed
+                .annotations
+                .remove(FOLDER_ANNOTATION)
+                .map(|folders| folders.lines().map(str::to_string).collect())
+                .unwrap_or_default(),
             workdir: listed.annotations.remove(WORKDIR_ANNOTATION),
             name: listed.name,
         })
@@ -618,6 +622,17 @@ mod tests {
         assert_eq!(sandbox.phase, Phase::Ready);
         assert_eq!(sandbox.agent.as_deref(), Some("claude-code"));
         assert_eq!(sandbox.created, "2026-11-20 03:08:15");
+    }
+
+    #[test]
+    fn the_folders_copied_in_are_read_one_a_line() {
+        let json = r#"{"sandboxes": [
+            {"name": "a", "phase": "Ready", "annotations": {"playpen.folder": "/src/Patchbay\n/src/Typecase"}},
+            {"name": "b", "phase": "Ready"}
+        ]}"#;
+        let sandboxes = parse_sandboxes(json).unwrap();
+        assert_eq!(sandboxes[0].folders, ["/src/Patchbay", "/src/Typecase"]);
+        assert!(sandboxes[1].folders.is_empty());
     }
 
     #[test]

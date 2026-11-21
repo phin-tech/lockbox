@@ -310,7 +310,7 @@ mod tests {
             phase: Phase::Ready,
             created: String::new(),
             agent: Some("claude-code".to_string()),
-            folder: None,
+            folders: Vec::new(),
             workdir: None,
         };
         let args = run_args(

@@ -31,7 +31,7 @@ fn sandbox(name: &str, phase: Phase) -> Sandbox {
         phase,
         created: "2026-11-20 03:08:15".to_string(),
         agent: Some("claude-code".to_string()),
-        folder: Some("/Users/sam/src/Patchbay".to_string()),
+        folders: vec!["/Users/sam/src/Patchbay".to_string()],
         workdir: Some("/sandbox/Patchbay".to_string()),
     }
 }
@@ -147,7 +147,7 @@ fn new_agent_names_the_sandbox_after_the_folder_and_chooses_a_claude_provider(
             ]),
             cx,
         );
-        view.folder_chosen("/Users/sam/src/My App".into(), window, cx);
+        view.folders_added(vec!["/Users/sam/src/My App".into()], window, cx);
     });
     view.read_with(cx, |view, cx| {
         let making = view.making.as_ref().expect("New Agent… is showing");
@@ -175,7 +175,7 @@ fn choosing_codex_renames_the_sandbox_and_chooses_a_chatgpt_provider(cx: &mut Te
             ]),
             cx,
         );
-        view.folder_chosen("/Users/sam/src/Patchbay".into(), window, cx);
+        view.folders_added(vec!["/Users/sam/src/Patchbay".into()], window, cx);
         view.choose_agent(Agent::Codex, window, cx);
     });
     view.read_with(cx, |view, cx| {
@@ -193,10 +193,46 @@ fn a_name_typed_isnt_replaced_by_choosing_a_folder(cx: &mut TestAppContext) {
     cx.simulate_keystrokes("cmd-a");
     cx.simulate_input("mine");
     view.update_in(cx, |view, window, cx| {
-        view.folder_chosen("/Users/sam/src/Patchbay".into(), window, cx);
+        view.folders_added(vec!["/Users/sam/src/Patchbay".into()], window, cx);
     });
     view.read_with(cx, |view, cx| {
         assert_eq!(view.making.as_ref().unwrap().name_typed(cx), "mine");
+    });
+}
+
+#[gpui_kit::test]
+fn several_folders_name_the_sandbox_together_and_leaving_one_out_renames_it(
+    cx: &mut TestAppContext,
+) {
+    let (view, cx) = open(cx);
+    cx.simulate_keystrokes("cmd-n");
+    cx.run_until_parked();
+    view.update_in(cx, |view, window, cx| {
+        view.folders_added(
+            vec![
+                "/Users/sam/src/Patchbay".into(),
+                "/Users/sam/src/Typecase".into(),
+            ],
+            window,
+            cx,
+        );
+        // Adding one that's there already changes nothing.
+        view.folders_added(vec!["/Users/sam/src/Patchbay".into()], window, cx);
+    });
+    view.read_with(cx, |view, cx| {
+        assert_eq!(
+            view.making.as_ref().unwrap().name_typed(cx),
+            "claude-patchbay-typecase"
+        );
+    });
+    view.update_in(cx, |view, window, cx| {
+        view.remove_folder(std::path::Path::new("/Users/sam/src/Patchbay"), window, cx);
+    });
+    view.read_with(cx, |view, cx| {
+        assert_eq!(
+            view.making.as_ref().unwrap().name_typed(cx),
+            "claude-typecase"
+        );
     });
 }
 

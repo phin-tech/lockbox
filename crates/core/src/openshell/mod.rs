@@ -107,6 +107,13 @@ pub struct Provider {
     pub kind: String,
 }
 
+/// Whether adding a provider imported its profile or found it there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Imported {
+    New,
+    Existing,
+}
+
 /// A provider's key, kept out of anything printed or logged.
 pub struct Key(String);
 
@@ -176,6 +183,14 @@ pub fn parse_sandboxes(json: &str) -> Result<Vec<Sandbox>, OpenShellError> {
 /// A page of the providers in what `openshell provider list -o json` printed.
 fn parse_provider_page(json: &str) -> Result<ListedProviders, OpenShellError> {
     serde_json::from_str(json).map_err(|error| OpenShellError::Unreadable(error.to_string()))
+}
+
+/// The `resource_version` in an exported profile.
+fn resource_version(profile: &str) -> Option<u64> {
+    profile
+        .lines()
+        .find_map(|line| line.strip_prefix("resource_version:"))
+        .and_then(|version| version.trim().parse().ok())
 }
 
 /// What `openshell` said on its standard error, without the box it draws around an error.
@@ -312,9 +327,22 @@ impl OpenShell {
         Ok(providers)
     }
 
-    /// Adds a provider holding `key`, first importing the profile its type comes from, or bringing that profile up to
-    /// date when it's there already.
+    /// Adds a provider holding `key`, first importing the profile its type comes from. A profile Lockbox wrote is
+    /// brought up to date when it's there already; `claude-code-oauth`, which providers had before Lockbox wrote
+    /// profiles, is left as it is. A name already taken is refused before any profile is touched, so adding a
+    /// LiteLLM proxy again can't point another provider's key somewhere else.
     pub fn add_provider(&self, new: &NewProvider, key: &Key) -> Result<(), OpenShellError> {
+        let adding = format!("add “{}”", new.name);
+        if self
+            .providers()?
+            .iter()
+            .any(|provider| provider.name == new.name)
+        {
+            return Err(OpenShellError::Failed(
+                adding,
+                "there's a provider called that already".to_string(),
+            ));
+        }
         let id = new.profile_id();
         let file =
             std::env::temp_dir().join(format!("lockbox-profile-{}-{id}.yaml", std::process::id()));
@@ -331,21 +359,22 @@ impl OpenShell {
             &["provider", "profile", "import", "--global", "--file", &path],
         );
         let imported = match imported {
-            Err(OpenShellError::Failed(_, said)) if said.contains("already exists") => self
-                .run(
-                    &doing,
-                    &[
-                        "provider", "profile", "update", &id, "--global", "--file", &path,
-                    ],
-                )
-                .map(drop),
-            other => other.map(drop),
+            Ok(_) => Ok(Imported::New),
+            Err(OpenShellError::Failed(_, said)) if said.contains("already exists") => {
+                if id.starts_with("lockbox-") {
+                    self.update_profile(&doing, &id, &new.profile(), &file)
+                        .map(|()| Imported::Existing)
+                } else {
+                    Ok(Imported::Existing)
+                }
+            }
+            Err(error) => Err(error),
         };
         let _ = std::fs::remove_file(&file);
-        imported?;
+        let imported = imported?;
         let variable = new.kind.variable();
-        self.run_with(
-            &format!("add “{}”", new.name),
+        let created = self.run_with(
+            &adding,
             &[
                 "provider",
                 "create",
@@ -357,6 +386,35 @@ impl OpenShell {
                 variable,
             ],
             Some((variable, key)),
+        );
+        if created.is_err() && imported == Imported::New && new.kind == Kind::LiteLlm {
+            // A proxy's profile is its provider's alone, so it shouldn't outlive a provider that wasn't made.
+            let _ = self.run(&doing, &["provider", "profile", "delete", &id, "--global"]);
+        }
+        created.map(drop)
+    }
+
+    /// Replaces the profile `id` with `profile`, written to `file`. OpenShell takes an update only with the version it
+    /// has, so that's read from the profile as it stands.
+    fn update_profile(
+        &self,
+        doing: &str,
+        id: &str,
+        profile: &str,
+        file: &Path,
+    ) -> Result<(), OpenShellError> {
+        let current = self.run(doing, &["provider", "profile", "export", id, "--global"])?;
+        let version = resource_version(&current).ok_or_else(|| {
+            OpenShellError::Unreadable(format!("the profile {id} has no version"))
+        })?;
+        std::fs::write(file, format!("resource_version: {version}\n{profile}"))
+            .map_err(|error| OpenShellError::Failed(doing.to_string(), error.to_string()))?;
+        let path = file.to_string_lossy();
+        self.run(
+            doing,
+            &[
+                "provider", "profile", "update", id, "--global", "--file", &path,
+            ],
         )
         .map(drop)
     }
@@ -439,7 +497,7 @@ impl OpenShell {
 
 #[cfg(test)]
 mod tests {
-    use super::{Phase, parse_provider_page, parse_sandboxes, said};
+    use super::{Phase, parse_provider_page, parse_sandboxes, resource_version, said};
 
     /// What OpenShell 0.1.8 listed with one sandbox Lockbox made.
     const SANDBOXES: &str = include_str!("sandboxes.json");
@@ -484,6 +542,15 @@ mod tests {
         let providers = parse_provider_page(PROVIDERS).unwrap().providers;
         assert_eq!(providers[0].name, "claude-sub");
         assert_eq!(providers[0].kind, "claude-code-oauth");
+    }
+
+    #[test]
+    fn a_profiles_version_is_read_from_its_export() {
+        assert_eq!(
+            resource_version("id: claude-code-oauth\nresource_version: 3\ndisplay_name: x\n"),
+            Some(3)
+        );
+        assert_eq!(resource_version("id: x\n"), None);
     }
 
     #[test]

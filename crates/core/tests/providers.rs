@@ -39,3 +39,30 @@ fn a_litellm_provider_is_added_given_a_new_key_and_deleted_with_its_profile() {
         .unwrap();
     assert!(!String::from_utf8_lossy(&profiles.stdout).contains(&new.profile_id()));
 }
+
+#[test]
+#[ignore = "needs OpenShell's gateway"]
+fn a_second_provider_of_a_kind_shares_its_profile_and_a_taken_name_is_refused() {
+    let openshell = OpenShell::find().unwrap();
+    let names = [1, 2].map(|n| format!("lockbox-test-{}-{n}", std::process::id()));
+    let added: Vec<_> = names
+        .iter()
+        .map(|name| {
+            let new = NewProvider::new(Kind::OpenRouter, name, "").unwrap();
+            openshell.add_provider(&new, &Key::new("not-a-real-key"))
+        })
+        .collect();
+    let again = openshell.add_provider(
+        &NewProvider::new(Kind::OpenRouter, &names[0], "").unwrap(),
+        &Key::new("not-a-real-key"),
+    );
+    for provider in openshell.providers().unwrap() {
+        if names.contains(&provider.name) {
+            openshell.delete_provider(&provider).unwrap();
+        }
+    }
+    for added in added {
+        added.unwrap();
+    }
+    assert!(again.unwrap_err().to_string().contains("already"));
+}

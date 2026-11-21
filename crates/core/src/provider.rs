@@ -2,8 +2,9 @@
 //!
 //! OpenShell knows a provider's type only by a profile imported into its gateway, which names the variable the agent
 //! reads the key from, how the key is sent and the hosts it may be sent to. Lockbox writes those profiles itself, so
-//! one provider serves every sandbox it's attached to, whatever agent runs there. A profile names no programs: the
-//! sandbox's own policy says which program may reach the host, so a new agent never means rewriting a provider.
+//! one provider serves every sandbox it's attached to, whatever agent runs there. A profile names no programs, so that
+//! a new agent never means rewriting a provider: the sandbox's own policy says which program may reach the host.
+//! That the key is still put on the agent's requests, and only the agent's, isn't yet tested in a sandbox.
 
 use crate::openshell::Provider;
 

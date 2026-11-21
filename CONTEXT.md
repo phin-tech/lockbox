@@ -1,4 +1,4 @@
-# Lockbox
+# Playpen
 
 Run your agents in OpenShell sandboxes, and decide what they may reach
 
@@ -13,7 +13,7 @@ _Avoid_: action, which is GPUI's word for the message that carries one
 _Avoid_: preferences, config
 
 **Sandbox**: one of OpenShell's isolated environments, where one agent runs, kept by OpenShell's gateway under a
-name. Lockbox labels the ones it makes with their agent.
+name. Playpen labels the ones it makes with their agent.
 _Avoid_: container, VM, box
 
 **Session**: an agent, or a shell, running in a sandbox in a terminal. A sandbox outlives its sessions. herdr-core
@@ -21,7 +21,7 @@ keeps a session when it's installed, so closing the window showing it only detac
 session. The Herdr app, Ghostty or Terminal shows it.
 _Avoid_: tab, window, run
 
-**Agent**: a coding agent Lockbox knows how to run in a sandbox (Claude Code), with the image it runs in and the policy
+**Agent**: a coding agent Playpen knows how to run in a sandbox (Claude Code), with the image it runs in and the policy
 that lets it reach its model.
 _Avoid_: client, assistant
 

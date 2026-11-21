@@ -2,15 +2,15 @@
 //! made up and the proxy's host doesn't exist, since nothing is sent to it.
 //!
 //! It needs OpenShell's gateway, so it's left out of `cargo test`:
-//! `cargo test -p lockbox-core --test providers -- --ignored`.
+//! `cargo test -p playpen-core --test providers -- --ignored`.
 
-use lockbox_core::{Key, Kind, NewProvider, OpenShell};
+use playpen_core::{Key, Kind, NewProvider, OpenShell};
 
 #[test]
 #[ignore = "needs OpenShell's gateway"]
 fn a_litellm_provider_is_added_given_a_new_key_and_deleted_with_its_profile() {
     let openshell = OpenShell::find().unwrap();
-    let name = format!("lockbox-test-{}", std::process::id());
+    let name = format!("playpen-test-{}", std::process::id());
     let new = NewProvider::new(Kind::LiteLlm, &name, "https://litellm.invalid:4000").unwrap();
     openshell
         .add_provider(&new, &Key::new("not-a-real-key"))
@@ -21,7 +21,7 @@ fn a_litellm_provider_is_added_given_a_new_key_and_deleted_with_its_profile() {
         .into_iter()
         .find(|provider| provider.name == name)
         .expect("listed");
-    assert_eq!(added.lockbox_kind(), Some(Kind::LiteLlm));
+    assert_eq!(added.playpen_kind(), Some(Kind::LiteLlm));
     let replaced = openshell.replace_key(&added, &Key::new("another-made-up-key"));
     let deleted = openshell.delete_provider(&added);
     replaced.unwrap();
@@ -44,7 +44,7 @@ fn a_litellm_provider_is_added_given_a_new_key_and_deleted_with_its_profile() {
 #[ignore = "needs OpenShell's gateway"]
 fn a_second_provider_of_a_kind_shares_its_profile_and_a_taken_name_is_refused() {
     let openshell = OpenShell::find().unwrap();
-    let names = [1, 2].map(|n| format!("lockbox-test-{}-{n}", std::process::id()));
+    let names = [1, 2].map(|n| format!("playpen-test-{}-{n}", std::process::id()));
     let added: Vec<_> = names
         .iter()
         .map(|name| {

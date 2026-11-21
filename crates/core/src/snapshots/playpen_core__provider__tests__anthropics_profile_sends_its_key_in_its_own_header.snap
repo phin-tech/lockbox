@@ -2,10 +2,10 @@
 source: crates/core/src/provider.rs
 expression: anthropic.profile()
 ---
-# Written by Lockbox.
-id: lockbox-anthropic
+# Written by Playpen.
+id: playpen-anthropic
 display_name: "Anthropic"
-description: "Anthropic, added by Lockbox"
+description: "Anthropic, added by Playpen"
 category: inference
 inference_capable: true
 credentials:

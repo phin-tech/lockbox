@@ -1,7 +1,7 @@
-//! The kinds of provider Lockbox can add to OpenShell: a model service's key, and the host it's sent to.
+//! The kinds of provider Playpen can add to OpenShell: a model service's key, and the host it's sent to.
 //!
 //! OpenShell knows a provider's type only by a profile imported into its gateway, which names the variable the agent
-//! reads the key from, how the key is sent and the hosts it may be sent to. Lockbox writes those profiles itself, so
+//! reads the key from, how the key is sent and the hosts it may be sent to. Playpen writes those profiles itself, so
 //! one provider serves every sandbox it's attached to, whatever agent runs there. A profile names no programs, so that
 //! a new agent never means rewriting a provider: the sandbox's own policy says which program may reach the host, and
 //! OpenShell 0.1.8 still puts the key on that program's requests. Only a credential's first variable is set in the
@@ -10,9 +10,9 @@
 use crate::openshell::Provider;
 
 /// The profile id every LiteLLM proxy's profile starts with; each proxy has its own, naming its host.
-const LITELLM_PREFIX: &str = "lockbox-litellm-";
+const LITELLM_PREFIX: &str = "playpen-litellm-";
 
-/// A kind of provider Lockbox knows how to add.
+/// A kind of provider Playpen knows how to add.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Kind {
     /// Claude Code on a Claude subscription, with a token from `claude setup-token`.
@@ -49,7 +49,7 @@ pub enum ProviderError {
         "“{0}” can't name a provider: use lowercase letters, digits and dashes, starting with a letter."
     )]
     Name(String),
-    #[error("“{0}” isn't an address Lockbox can use: give one like https://litellm.example.com.")]
+    #[error("“{0}” isn't an address Playpen can use: give one like https://litellm.example.com.")]
     Address(String),
     #[error("Paste the key first.")]
     NoKey,
@@ -78,8 +78,8 @@ impl Kind {
         }
     }
 
-    /// The kind of provider OpenShell lists with the type `kind`, if Lockbox knows it. `claude-code-oauth` is kept
-    /// unprefixed, since providers were made with it before Lockbox wrote profiles.
+    /// The kind of provider OpenShell lists with the type `kind`, if Playpen knows it. `claude-code-oauth` is kept
+    /// unprefixed, since providers were made with it before Playpen wrote profiles.
     pub fn of(kind: &str) -> Option<Kind> {
         if kind.starts_with(LITELLM_PREFIX) {
             return Some(Kind::LiteLlm);
@@ -94,12 +94,12 @@ impl Kind {
     fn fixed_id(self) -> &'static str {
         match self {
             Kind::ClaudeSubscription => "claude-code-oauth",
-            Kind::Anthropic => "lockbox-anthropic",
-            Kind::OpenAi => "lockbox-openai",
-            Kind::OpenRouter => "lockbox-openrouter",
-            Kind::Fireworks => "lockbox-fireworks",
-            Kind::ZAi => "lockbox-zai",
-            Kind::LiteLlm => "lockbox-litellm",
+            Kind::Anthropic => "playpen-anthropic",
+            Kind::OpenAi => "playpen-openai",
+            Kind::OpenRouter => "playpen-openrouter",
+            Kind::Fireworks => "playpen-fireworks",
+            Kind::ZAi => "playpen-zai",
+            Kind::LiteLlm => "playpen-litellm",
         }
     }
 
@@ -153,7 +153,7 @@ impl Kind {
         }
     }
 
-    /// The name Lockbox suggests for a new provider of this kind.
+    /// The name Playpen suggests for a new provider of this kind.
     pub fn suggested_name(self) -> &'static str {
         match self {
             Kind::ClaudeSubscription => "claude-subscription",
@@ -262,17 +262,17 @@ impl NewProvider {
             Kind::LiteLlm => (
                 format!("LiteLLM ({})", endpoint.host),
                 format!(
-                    "The LiteLLM proxy at {}:{}, added by Lockbox",
+                    "The LiteLLM proxy at {}:{}, added by Playpen",
                     endpoint.host, endpoint.port
                 ),
             ),
             kind => (
                 kind.name().to_string(),
-                format!("{}, added by Lockbox", kind.name()),
+                format!("{}, added by Playpen", kind.name()),
             ),
         };
         format!(
-            "# Written by Lockbox.\n\
+            "# Written by Playpen.\n\
              id: {id}\n\
              display_name: {display}\n\
              description: {description}\n\
@@ -305,12 +305,12 @@ impl NewProvider {
 }
 
 impl Provider {
-    /// Its kind, if Lockbox knows it.
-    pub fn lockbox_kind(&self) -> Option<Kind> {
+    /// Its kind, if Playpen knows it.
+    pub fn playpen_kind(&self) -> Option<Kind> {
         Kind::of(&self.kind)
     }
 
-    /// Whether its profile is one Lockbox made for it alone, which goes when it does.
+    /// Whether its profile is one Playpen made for it alone, which goes when it does.
     pub(crate) fn has_own_profile(&self) -> bool {
         self.kind.starts_with(LITELLM_PREFIX)
     }
@@ -371,11 +371,11 @@ mod tests {
     #[test]
     fn each_litellm_proxy_has_a_profile_of_its_own_and_others_share_their_kinds() {
         let work = NewProvider::new(Kind::LiteLlm, "work", "https://litellm.example.com").unwrap();
-        assert_eq!(work.profile_id(), "lockbox-litellm-work");
-        assert_eq!(Kind::of("lockbox-litellm-work"), Some(Kind::LiteLlm));
+        assert_eq!(work.profile_id(), "playpen-litellm-work");
+        assert_eq!(Kind::of("playpen-litellm-work"), Some(Kind::LiteLlm));
         let openrouter = NewProvider::new(Kind::OpenRouter, "mine", "").unwrap();
-        assert_eq!(openrouter.profile_id(), "lockbox-openrouter");
-        assert_eq!(Kind::of("lockbox-openrouter"), Some(Kind::OpenRouter));
+        assert_eq!(openrouter.profile_id(), "playpen-openrouter");
+        assert_eq!(Kind::of("playpen-openrouter"), Some(Kind::OpenRouter));
         assert_eq!(
             Kind::of("claude-code-oauth"),
             Some(Kind::ClaudeSubscription)

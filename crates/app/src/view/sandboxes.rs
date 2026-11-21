@@ -3,7 +3,7 @@
 
 use std::time::Duration;
 
-use lockbox_core::{HerdrCore, Installed, Keep, Opened, Phase, session};
+use playpen_core::{HerdrCore, Installed, Keep, Opened, Phase, session};
 
 use super::*;
 
@@ -431,7 +431,7 @@ impl MainView {
             .child(actions)
             .child(section(t!("Agent"), cx).child(match agent {
                 Some(agent) => div().child(agent.name()),
-                None => hint(t!("Not one Lockbox made"), cx),
+                None => hint(t!("Not one Playpen made"), cx),
             }))
             .when_some(sandbox.folder.clone(), |body, folder| {
                 body.child(section(t!("Copied from"), cx).child(h_flex().child(shell::code_chip(folder, cx))))
@@ -460,7 +460,7 @@ impl MainView {
             Listing::Failed(_) => (
                 t!("OpenShell isn't answering"),
                 t!(
-                    "Is its gateway running? `brew services start openshell` starts it. Lockbox asks again every few seconds."
+                    "Is its gateway running? `brew services start openshell` starts it. Playpen asks again every few seconds."
                 ),
             ),
             Listing::Listed(_) => (

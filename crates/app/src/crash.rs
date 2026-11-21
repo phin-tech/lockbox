@@ -1,4 +1,4 @@
-//! Crash reports. A panic writes one beside the logs in `~/Library/Logs/tech.phin.lockbox/`, before the usual message on
+//! Crash reports. A panic writes one beside the logs in `~/Library/Logs/tech.phin.playpen/`, before the usual message on
 //! stderr, and the next launch says where it is.
 
 use std::fs;
@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 use gpui_kit::*;
 use jiff::Zoned;
-use lockbox_core::{crash, write_atomically};
+use playpen_core::{crash, write_atomically};
 use rust_i18n::t;
 
 use crate::logging::folder;
@@ -59,7 +59,7 @@ pub fn tell_if_crashed(window: &mut Window, cx: &mut App) {
     };
     let answer = window.prompt(
         PromptLevel::Warning,
-        &t!("%{app} quit unexpectedly last time", app = "Lockbox"),
+        &t!("%{app} quit unexpectedly last time", app = "Playpen"),
         Some(&t!("A report of what happened is in your Logs folder.")),
         &[&*t!("Show Report"), &*t!("OK")],
         cx,

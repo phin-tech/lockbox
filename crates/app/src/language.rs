@@ -1,7 +1,7 @@
 //! The app's language: the closest the app has to the system's, or English, its own text. The kit's widgets follow the
 //! same choice, since `rust-i18n` keeps one language for the whole app. Translations are in `locales/app.toml`.
 
-use lockbox_core::best_locale;
+use playpen_core::best_locale;
 use rust_i18n::available_locales;
 
 /// Chooses the language, before anything shows text.

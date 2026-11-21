@@ -4,5 +4,5 @@ assertion_line: 252
 expression: "script(\"'/x/hc' attach 't4r8'\")"
 ---
 #!/bin/sh
-# Written by Lockbox.
+# Written by Playpen.
 exec /bin/sh -c ''\''/x/hc'\'' attach '\''t4r8'\'''

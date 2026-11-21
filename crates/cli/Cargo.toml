@@ -1,6 +1,6 @@
 [package]
-name = "lockbox-cli"
-description = "Lockbox's command line, answered by the app's own binary."
+name = "playpen-cli"
+description = "Playpen's command line, answered by the app's own binary."
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
@@ -10,4 +10,4 @@ license.workspace = true
 workspace = true
 
 [dependencies]
-lockbox-core.workspace = true
+playpen-core.workspace = true

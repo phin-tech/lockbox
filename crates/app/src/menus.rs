@@ -9,7 +9,7 @@ use rust_i18n::t;
 
 use crate::shortcuts::RunAction;
 
-const APP: &str = "Lockbox";
+const APP: &str = "Playpen";
 
 fn run(label: Cow<str>, name: &'static str) -> MenuItem {
     MenuItem::action(label.into_owned(), RunAction { name })

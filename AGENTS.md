@@ -1,6 +1,6 @@
-# Lockbox
+# Playpen
 
-Lockbox is a macOS app in Rust. `crates/core` (`lockbox-core`) holds everything that isn't UI and is tested
+Playpen is a macOS app in Rust. `crates/core` (`playpen-core`) holds everything that isn't UI and is tested
 headless; `crates/app` is the GPUI front end. Read `CONTEXT.md` before naming anything.
 
 ## Where things are
@@ -10,13 +10,13 @@ headless; `crates/app` is the GPUI front end. Read `CONTEXT.md` before naming an
   (`palette.rs`, ⌘K, Typecase's, shown over the main view) lists too. Tests hold every menu item and key to `COMMANDS`, and every Command to having a case in
   a `run` and a place in a menu or a key.
 - `settings.rs`: the Settings window (⌘,), Typecase's frame with a section for each part, over
-  `lockbox_core::Settings`, a TOML file in Application Support.
+  `playpen_core::Settings`, a TOML file in Application Support.
   `restore.rs` puts the main window back where it was (`state.toml`, beside the settings).
 - `language.rs` and `locales/app.toml`: the language, and translations keyed by the English text.
 - `login_item.rs`: Open at login, in Settings.
 - `menu_bar.rs`: the menu bar extra and its shortcut (`hotkey` in the settings file).
 - `about.rs`: About, and what Keys (⌘/), Typecase's sheet over the main view, lists: every key by its menu. `logging.rs`: `tracing`, to stderr and
-  `~/Library/Logs/tech.phin.lockbox/`; `crash.rs` writes a report there on a panic and says so at the next launch.
+  `~/Library/Logs/tech.phin.playpen/`; `crash.rs` writes a report there on a panic and says so at the next launch.
   `theme.rs`: the look, Typecase's themes, which follow the appearance, theme and text size set there.
 - `update.rs`: Sparkle, which only the released app carries; Check for Updates… and Settings ask it.
 - `view/`: the window. `sandboxes.rs` lists OpenShell's sandboxes and acts on the chosen one, `making.rs` is
@@ -43,12 +43,12 @@ Write test names as sentences saying what the app does. Comments say why, in pla
 The maintainer works alongside you, so GUI runs stay hidden and leave focus alone. Ask before any run that needs the
 foreground.
 
-- `just shot <name> <appearance>` saves a frame to `target/shots/<name>.png`. `LOCKBOX_KEYS` drives it first:
+- `just shot <name> <appearance>` saves a frame to `target/shots/<name>.png`. `PLAYPEN_KEYS` drives it first:
   keys, `click:X,Y` (or `cmd-click:X,Y`) and `wait`, separated by spaces. The frame is the newest window, so
-  `LOCKBOX_KEYS="cmd-, wait"` shows Settings and `cmd-k` the palette.
+  `PLAYPEN_KEYS="cmd-, wait"` shows Settings and `cmd-k` the palette.
 - The frame is at 2x: divide its pixel coordinates by two for `click:`.
-- Shots read and write no settings, so yours are safe. `LOCKBOX_SETTINGS=<file>` gives them some, and
-  `LOCKBOX_WIDTH` sets the main window's width.
+- Shots read and write no settings, so yours are safe. `PLAYPEN_SETTINGS=<file>` gives them some, and
+  `PLAYPEN_WIDTH` sets the main window's width.
 - Hidden frames don't show a selection highlight.
 - Check layout at the window's real size. A larger frame hides clipping.
 
@@ -61,7 +61,7 @@ foreground.
   instead.
 - The kit's `Input` fills whatever height it's offered, so give it a fixed height. It also binds `tab` and `escape`, so
   overriding them takes a binding on `Parent > Input`.
-- `cargo test` leaves `target/debug/lockbox` stale. Run `cargo build` before trying that binary.
+- `cargo test` leaves `target/debug/playpen` stale. Run `cargo build` before trying that binary.
 - Text the app shows goes through `t!("The English text")` (`rust_i18n::t`), with `%{name}` for what goes in it:
   `t!("Save the changes to “%{name}”?", name = title)`. The English is the key, and what shows until someone
   translates it. GPUI finds the Window menu by its English name, so that one stays as it is.
@@ -69,7 +69,7 @@ foreground.
   saying what was being done, shown with `{error:#}`.
 - Text output, file formats and reports are tested with `insta::assert_snapshot!`; `just review` accepts a change.
 - `just inspect` runs the app with the element inspector (⌥⌘I): click anything to see its layout, style and source.
-- Log with `tracing::info!` and friends, not `eprintln!`, so it reaches the log file. `LOCKBOX_LOG=debug`
+- Log with `tracing::info!` and friends, not `eprintln!`, so it reaches the log file. `PLAYPEN_LOG=debug`
   shows more.
 - Unsafe code is denied in the workspace (`Cargo.toml`'s lints); a module that needs the Objective-C runtime says so
   with `#![expect(unsafe_code, reason = …)]`, as `update.rs` does, and each block with a `// SAFETY:` comment.

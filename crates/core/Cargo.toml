@@ -1,6 +1,6 @@
 [package]
-name = "lockbox-core"
-description = "What Lockbox does, free of UI."
+name = "playpen-core"
+description = "What Playpen does, free of UI."
 version.workspace = true
 edition.workspace = true
 publish.workspace = true

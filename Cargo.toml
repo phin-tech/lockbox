@@ -11,8 +11,8 @@ publish = false
 license = "Apache-2.0"
 
 [workspace.dependencies]
-lockbox-core = { path = "crates/core" }
-lockbox-cli = { path = "crates/cli" }
+playpen-core = { path = "crates/core" }
+playpen-cli = { path = "crates/cli" }
 serde = { version = "1", features = ["derive"] }
 toml = "1"
 serde_json = "1"

@@ -12,7 +12,7 @@ const PRIMARY: &str = if cfg!(target_os = "macos") {
 
 /// Runs a named Command.
 #[derive(Action, Clone, PartialEq, Eq)]
-#[action(namespace = lockbox, no_json)]
+#[action(namespace = playpen, no_json)]
 pub struct RunAction {
     pub name: &'static str,
 }

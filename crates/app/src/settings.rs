@@ -1,5 +1,5 @@
-//! The Settings window (⌘,) and the settings behind it, which `lockbox_core::Settings` keeps in
-//! `~/Library/Application Support/tech.phin.lockbox/settings.toml`. `LOCKBOX_SETTINGS` points somewhere else.
+//! The Settings window (⌘,) and the settings behind it, which `playpen_core::Settings` keeps in
+//! `~/Library/Application Support/tech.phin.playpen/settings.toml`. `PLAYPEN_SETTINGS` points somewhere else.
 //! The window is Typecase's frame, a sidebar of sections; its Appearance section is Typecase's theme picker.
 
 use std::path::{Path, PathBuf};
@@ -11,7 +11,7 @@ use gpui_kit::component::{
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
-use lockbox_core::{Installed, Settings, ShowIn, step_text_scale};
+use playpen_core::{Installed, Settings, ShowIn, step_text_scale};
 use rust_i18n::t;
 use typecase::settings::{Section, SettingsFrame};
 
@@ -31,10 +31,10 @@ struct Prefs {
 impl Global for Prefs {}
 
 /// A file the app keeps between runs, `name` in Application Support: `settings.toml`, `state.toml`. They go beside
-/// `LOCKBOX_SETTINGS` when that's set. Captures keep none otherwise, so a frame never depends on, or changes,
+/// `PLAYPEN_SETTINGS` when that's set. Captures keep none otherwise, so a frame never depends on, or changes,
 /// what's kept.
 pub fn file(name: &str) -> Option<PathBuf> {
-    if let Some(path) = std::env::var_os("LOCKBOX_SETTINGS") {
+    if let Some(path) = std::env::var_os("PLAYPEN_SETTINGS") {
         let path = PathBuf::from(path);
         return Some(match name {
             "settings.toml" => path,
@@ -46,7 +46,7 @@ pub fn file(name: &str) -> Option<PathBuf> {
     }
     let home = PathBuf::from(std::env::var_os("HOME")?);
     Some(
-        home.join("Library/Application Support/tech.phin.lockbox")
+        home.join("Library/Application Support/tech.phin.playpen")
             .join(name),
     )
 }
@@ -138,7 +138,7 @@ pub fn open(cx: &mut App) {
         window_min_size: Some(size(px(560.), px(360.))),
         is_minimizable: false,
         titlebar: Some(TitlebarOptions {
-            title: Some(t!("%{app} Settings", app = "Lockbox").into_owned().into()),
+            title: Some(t!("%{app} Settings", app = "Playpen").into_owned().into()),
             ..Default::default()
         }),
         show: !cfg!(feature = "screenshot"),
@@ -197,7 +197,7 @@ impl SettingsWindow {
             let mut frame = SettingsFrame::new(sections(providers), window, cx);
             // A shot can't click in this window, since its keys go to the main one, so it names the section to show.
             #[cfg(feature = "screenshot")]
-            if let Ok(section) = std::env::var("LOCKBOX_SETTINGS_SECTION") {
+            if let Ok(section) = std::env::var("PLAYPEN_SETTINGS_SECTION") {
                 frame.show(&section, cx);
             }
             frame
@@ -248,7 +248,7 @@ fn general(cx: &mut App) -> Div {
                 .gap_2()
                 .child(
                     Switch::new("login")
-                        .label(t!("Open %{app} at login", app = "Lockbox").into_owned())
+                        .label(t!("Open %{app} at login", app = "Playpen").into_owned())
                         .checked(login_item::is_on())
                         .on_click(|on, window, _| {
                             if let Err(error) = login_item::set(*on) {
@@ -321,7 +321,7 @@ fn sessions(settings: &Settings, cx: &mut App) -> Div {
     };
     let keeps = if installed.herdr_core {
         t!(
-            "Closing a window only detaches; the session goes on, and Lockbox sees what its agent is doing"
+            "Closing a window only detaches; the session goes on, and Playpen sees what its agent is doing"
         )
     } else {
         t!(
@@ -342,7 +342,7 @@ fn sessions(settings: &Settings, cx: &mut App) -> Div {
             t!("Herdr App"),
             missing(
                 installed.herdr_app,
-                t!("A tab for each session, in a Lockbox space"),
+                t!("A tab for each session, in a Playpen space"),
             ),
         ))
         .child(choice(
@@ -417,7 +417,7 @@ fn updates(cx: &mut App) -> Div {
                         if sparkle {
                             t!(
                                 "Once a day, %{app} looks for a newer release on apps.phin.tech.",
-                                app = "Lockbox"
+                                app = "Playpen"
                             )
                         } else {
                             t!("Updates come with the released app.")
@@ -434,11 +434,11 @@ mod tests {
     use crate::theme;
     use gpui_kit::TestAppContext;
     use gpui_kit::component::ActiveTheme as _;
-    use lockbox_core::{Appearance as Chosen, Settings};
+    use playpen_core::{Appearance as Chosen, Settings};
     use typecase::theme::{Appearance, set_appearance, set_theme};
 
     fn scratch(name: &str) -> std::path::PathBuf {
-        let path = std::env::temp_dir().join(format!("lockbox-{name}-{}.toml", std::process::id()));
+        let path = std::env::temp_dir().join(format!("playpen-{name}-{}.toml", std::process::id()));
         let _ = std::fs::remove_file(&path);
         path
     }

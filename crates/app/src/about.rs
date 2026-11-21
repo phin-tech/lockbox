@@ -5,7 +5,7 @@ use std::sync::{Arc, LazyLock};
 
 use gpui_kit::component::{ActiveTheme as _, StyledExt as _, WindowExt as _, v_flex};
 use gpui_kit::*;
-use lockbox_core::version;
+use playpen_core::version;
 use rust_i18n::t;
 use typecase::help::Section;
 
@@ -29,7 +29,7 @@ pub fn about(window: &mut Window, cx: &mut App) {
                 .gap_2()
                 .py_4()
                 .child(img(LOGO.clone()).size(px(96.)))
-                .child(div().pt_2().text_xl().font_semibold().child("Lockbox"))
+                .child(div().pt_2().text_xl().font_semibold().child("Playpen"))
                 .child(
                     div()
                         .text_sm()

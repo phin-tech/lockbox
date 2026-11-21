@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use futures::StreamExt as _;
 use futures::channel::mpsc;
-use lockbox_core::{Docker, Plan, Provider, Step, suggested_name};
+use playpen_core::{Docker, Plan, Provider, Step, suggested_name};
 
 use super::*;
 
@@ -13,7 +13,7 @@ use super::*;
 pub struct Making {
     agent: Agent,
     name: Entity<InputState>,
-    /// The name Lockbox last suggested, which choosing a folder may change while the person hasn't typed another.
+    /// The name Playpen last suggested, which choosing a folder may change while the person hasn't typed another.
     suggested: String,
     folder: Option<PathBuf>,
     /// The providers that hold a key the agent can use, once OpenShell has listed them.
@@ -179,8 +179,8 @@ impl MainView {
             provider: making.provider.clone(),
             folder: making.folder.clone(),
         };
-        if !lockbox_core::is_sandbox_name(&plan.name) {
-            making.state = MakeState::Failed(lockbox_core::MakeError::Name(plan.name).to_string());
+        if !playpen_core::is_sandbox_name(&plan.name) {
+            making.state = MakeState::Failed(playpen_core::MakeError::Name(plan.name).to_string());
             cx.notify();
             return;
         }
@@ -288,7 +288,7 @@ impl MainView {
                         "{} ({})",
                         provider.name,
                         provider
-                            .lockbox_kind()
+                            .playpen_kind()
                             .map_or(provider.kind.as_str(), |kind| kind.name())
                     ))
                     .checked(making.provider.as_ref() == Some(&provider.name))

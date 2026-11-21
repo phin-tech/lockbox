@@ -1,4 +1,4 @@
-//! The agents Lockbox runs in a sandbox, and making a sandbox for one: its image, the policy that lets it reach its
+//! The agents Playpen runs in a sandbox, and making a sandbox for one: its image, the policy that lets it reach its
 //! model and nothing else, and the folder it works on.
 
 use std::path::{Path, PathBuf};
@@ -15,7 +15,7 @@ const CLAUDE_CODE_VERSION: &str = "2.1.329";
 /// Where a sandbox's own files are, and where a folder is copied to.
 const SANDBOX_HOME: &str = "/sandbox";
 
-/// An agent Lockbox knows how to run.
+/// An agent Playpen knows how to run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Agent {
     ClaudeCode,
@@ -44,7 +44,7 @@ impl Agent {
     /// The image it runs in, tagged with the agent's version.
     pub fn image(self) -> String {
         match self {
-            Agent::ClaudeCode => format!("lockbox-claude-code:{CLAUDE_CODE_VERSION}"),
+            Agent::ClaudeCode => format!("playpen-claude-code:{CLAUDE_CODE_VERSION}"),
         }
     }
 
@@ -84,7 +84,7 @@ impl Agent {
                 "claude-code-oauth",
                 "claude-code",
                 "anthropic",
-                "lockbox-anthropic",
+                "playpen-anthropic",
             ],
         }
     }
@@ -112,7 +112,7 @@ impl Agent {
     /// rules, but one written for another image names another path, so the agent's are written here too.
     pub fn policy(self) -> String {
         let mut policy = format!(
-            "# Written by Lockbox. Everything this doesn't allow is denied.\n\
+            "# Written by Playpen. Everything this doesn't allow is denied.\n\
              version: 1\n\
              network_policies:\n\
              \x20 {id}:\n\
@@ -231,7 +231,7 @@ impl Plan {
         }
         step(Step::Creating);
         let policy = std::env::temp_dir().join(format!(
-            "lockbox-policy-{}-{}.yaml",
+            "playpen-policy-{}-{}.yaml",
             std::process::id(),
             self.name
         ));
@@ -281,7 +281,7 @@ pub fn suggested_name(agent: Agent, folder: Option<&Path>) -> String {
     name.trim_end_matches('-').to_string()
 }
 
-/// The shell line that runs `what` in the sandbox, in its agent's folder. A sandbox with no agent Lockbox knows only
+/// The shell line that runs `what` in the sandbox, in its agent's folder. A sandbox with no agent Playpen knows only
 /// gets a shell, through `sandbox connect`, since its image may have no `bash`.
 pub fn open_command(openshell: &Path, sandbox: &Sandbox, what: What) -> String {
     let openshell = quote(&openshell.to_string_lossy());
@@ -349,7 +349,7 @@ mod tests {
         assert_eq!(named("/src/Patchbay"), "claude-patchbay");
         assert_eq!(named("/src/my app (2)"), "claude-my-app-2");
         assert_eq!(suggested_name(Agent::ClaudeCode, None), "claude");
-        assert!(is_sandbox_name(&named("/src/Lockbox")));
+        assert!(is_sandbox_name(&named("/src/Playpen")));
         assert!(!is_sandbox_name("Claude"));
         assert!(!is_sandbox_name("1claude"));
         assert!(!is_sandbox_name("claude-"));
@@ -357,7 +357,7 @@ mod tests {
     }
 
     #[test]
-    fn opening_runs_the_agent_in_its_folder_or_a_shell_in_a_sandbox_lockbox_didnt_make() {
+    fn opening_runs_the_agent_in_its_folder_or_a_shell_in_a_sandbox_playpen_didnt_make() {
         let sandbox = Sandbox {
             name: "claude-patchbay".to_string(),
             phase: Phase::Ready,

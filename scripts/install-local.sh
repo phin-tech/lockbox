@@ -1,26 +1,26 @@
 #!/usr/bin/env bash
-# Builds this checkout as a release Lockbox.app and puts it in /Applications (or the folder given), replacing any
+# Builds this checkout as a release Playpen.app and puts it in /Applications (or the folder given), replacing any
 # copy there. It's signed for this Mac only, so it isn't one to hand to anyone: releases are `just ship`.
 # Usage: scripts/install-local.sh [folder]
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 dir=${1:-/Applications}
-target="$dir/Lockbox.app"
+target="$dir/Playpen.app"
 built=$(dirname "$(dirname "$(dirname "$("$root/scripts/bundle-macos.sh" release)")")")
 
 # Copy beside the target and swap, so a failed copy leaves the old app in place.
-next=$(mktemp -d "$dir/.lockbox.XXXXXX")
+next=$(mktemp -d "$dir/.playpen.XXXXXX")
 trap 'rm -rf "$next"' EXIT
-ditto "$built" "$next/Lockbox.app"
+ditto "$built" "$next/Playpen.app"
 rm -rf "$target"
-mv "$next/Lockbox.app" "$target"
+mv "$next/Playpen.app" "$target"
 
 branch=$(git -C "$root" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "no branch")
 commit=$(git -C "$root" rev-parse --short HEAD 2>/dev/null || echo "no commit")
 dirty=""
 [ -z "$(git -C "$root" status --porcelain 2>/dev/null)" ] || dirty=", with uncommitted changes"
 echo "Installed $branch at $commit$dirty to $target"
-if pgrep -xq "Lockbox"; then
-  echo "The old version is still running. Quit it and open Lockbox again."
+if pgrep -xq "Playpen"; then
+  echo "The old version is still running. Quit it and open Playpen again."
 fi

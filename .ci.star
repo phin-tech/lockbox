@@ -1,4 +1,4 @@
-# Lockbox's CI, for starci (https://git.phin.tech/sam/starci).
+# Playpen's CI, for starci (https://git.phin.tech/sam/starci).
 #
 #   just ci        run it here, against what is committed
 #
@@ -9,7 +9,7 @@
 CACHES = {
     "rustup": "RUSTUP_HOME",
     "cargo": "CARGO_HOME",
-    "lockbox-target": "CARGO_TARGET_DIR",
+    "playpen-target": "CARGO_TARGET_DIR",
 }
 MAC = {"os": "darwin"}
 
@@ -19,7 +19,7 @@ def cargo(name, command, needs = []):
 def ci(ctx):
     fmt = cargo("fmt", "cargo fmt --all --check")
     clippy = cargo("clippy", "cargo clippy --workspace --all-targets --locked -- -D warnings", needs = [fmt])
-    shots = cargo("clippy with screenshots", "cargo clippy -p lockbox --all-targets --locked --features screenshot -- -D warnings", needs = [fmt])
+    shots = cargo("clippy with screenshots", "cargo clippy -p playpen --all-targets --locked --features screenshot -- -D warnings", needs = [fmt])
     test = cargo("test", "cargo test --workspace --locked", needs = [fmt])
     # The Mac has to have cargo-deny and typos on its PATH for this to check anything; without, it says so and passes.
     lint = cargo("lint", " && ".join([

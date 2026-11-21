@@ -28,12 +28,12 @@ notes *args:
 bump part *args:
     {{release_tool}} bump "$@"
 
-# Build, sign with Developer ID, notarize and staple Lockbox.app, into build/release/<version>/export
+# Build, sign with Developer ID, notarize and staple Playpen.app, into build/release/<version>/export
 [positional-arguments]
 notarize *args:
     {{release_tool}} notarize "$@"
 
-# Publish the newest notarized Lockbox.app
+# Publish the newest notarized Playpen.app
 [positional-arguments]
 release *args:
     {{release_tool}} release "$@"

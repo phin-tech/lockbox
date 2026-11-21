@@ -1,7 +1,7 @@
 //! OpenShell, through its `openshell` command: the sandboxes on its gateway, the providers that hold model keys, and
 //! starting, stopping, creating and deleting sandboxes.
 //!
-//! Lockbox asks the command rather than the gateway's gRPC API, since the command already holds the gateway's mTLS
+//! Playpen asks the command rather than the gateway's gRPC API, since the command already holds the gateway's mTLS
 //! certificates and knows which gateway is active. Every call blocks, so the app makes them off its window's thread.
 
 use std::path::{Path, PathBuf};
@@ -11,14 +11,14 @@ use serde::Deserialize;
 
 use crate::provider::{Kind, NewProvider};
 
-/// The label Lockbox puts on a sandbox it made, naming its [`crate::Agent`].
-pub const AGENT_LABEL: &str = "lockbox.agent";
+/// The label Playpen puts on a sandbox it made, naming its [`crate::Agent`].
+pub const AGENT_LABEL: &str = "playpen.agent";
 
 /// The annotation holding the folder on the Mac that was copied into a sandbox.
-pub const FOLDER_ANNOTATION: &str = "lockbox.folder";
+pub const FOLDER_ANNOTATION: &str = "playpen.folder";
 
 /// The annotation holding where the agent works in a sandbox: the copied folder, under `/sandbox`.
-pub const WORKDIR_ANNOTATION: &str = "lockbox.workdir";
+pub const WORKDIR_ANNOTATION: &str = "playpen.workdir";
 
 /// Why OpenShell couldn't do what was asked.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -32,7 +32,7 @@ pub enum OpenShellError {
     /// What `openshell` said when it failed, while doing the first part.
     #[error("Couldn't {0}: {1}")]
     Failed(String, String),
-    #[error("OpenShell answered in a way Lockbox doesn't understand: {0}")]
+    #[error("OpenShell answered in a way Playpen doesn't understand: {0}")]
     Unreadable(String),
 }
 
@@ -43,7 +43,7 @@ pub struct Sandbox {
     pub phase: Phase,
     /// When it was made, as OpenShell writes it: `2026-11-20 03:08:15`, in UTC.
     pub created: String,
-    /// The agent Lockbox made it for, by the label's value; none for a sandbox made some other way.
+    /// The agent Playpen made it for, by the label's value; none for a sandbox made some other way.
     pub agent: Option<String>,
     /// The folder on the Mac copied into it.
     pub folder: Option<String>,
@@ -327,8 +327,8 @@ impl OpenShell {
         Ok(providers)
     }
 
-    /// Adds a provider holding `key`, first importing the profile its type comes from. A profile Lockbox wrote is
-    /// brought up to date when it's there already; `claude-code-oauth`, which providers had before Lockbox wrote
+    /// Adds a provider holding `key`, first importing the profile its type comes from. A profile Playpen wrote is
+    /// brought up to date when it's there already; `claude-code-oauth`, which providers had before Playpen wrote
     /// profiles, is left as it is. A name already taken is refused before any profile is touched, so adding a
     /// LiteLLM proxy again can't point another provider's key somewhere else.
     pub fn add_provider(&self, new: &NewProvider, key: &Key) -> Result<(), OpenShellError> {
@@ -345,7 +345,7 @@ impl OpenShell {
         }
         let id = new.profile_id();
         let file =
-            std::env::temp_dir().join(format!("lockbox-profile-{}-{id}.yaml", std::process::id()));
+            std::env::temp_dir().join(format!("playpen-profile-{}-{id}.yaml", std::process::id()));
         std::fs::write(&file, new.profile()).map_err(|error| {
             OpenShellError::Failed(
                 format!("write the profile for “{}”", new.name),
@@ -361,7 +361,7 @@ impl OpenShell {
         let imported = match imported {
             Ok(_) => Ok(Imported::New),
             Err(OpenShellError::Failed(_, said)) if said.contains("already exists") => {
-                if id.starts_with("lockbox-") {
+                if id.starts_with("playpen-") {
                     self.update_profile(&doing, &id, &new.profile(), &file)
                         .map(|()| Imported::Existing)
                 } else {
@@ -421,10 +421,10 @@ impl OpenShell {
 
     /// Gives `provider` a new key. Sandboxes it's attached to take it up for the processes they start next.
     pub fn replace_key(&self, provider: &Provider, key: &Key) -> Result<(), OpenShellError> {
-        let variable = provider.lockbox_kind().map(Kind::variable).ok_or_else(|| {
+        let variable = provider.playpen_kind().map(Kind::variable).ok_or_else(|| {
             OpenShellError::Failed(
                 format!("replace the key for “{}”", provider.name),
-                "Lockbox doesn't know its kind".to_string(),
+                "Playpen doesn't know its kind".to_string(),
             )
         })?;
         self.run_with(
@@ -441,7 +441,7 @@ impl OpenShell {
         .map(drop)
     }
 
-    /// Deletes `provider`, and the profile Lockbox made for it alone. OpenShell won't while a sandbox uses it.
+    /// Deletes `provider`, and the profile Playpen made for it alone. OpenShell won't while a sandbox uses it.
     pub fn delete_provider(&self, provider: &Provider) -> Result<(), OpenShellError> {
         self.run(
             &format!("delete “{}”", provider.name),
@@ -499,12 +499,12 @@ impl OpenShell {
 mod tests {
     use super::{Phase, parse_provider_page, parse_sandboxes, resource_version, said};
 
-    /// What OpenShell 0.1.8 listed with one sandbox Lockbox made.
+    /// What OpenShell 0.1.8 listed with one sandbox Playpen made.
     const SANDBOXES: &str = include_str!("sandboxes.json");
     const PROVIDERS: &str = include_str!("providers.json");
 
     #[test]
-    fn a_sandbox_lockbox_made_says_which_agent_it_runs() {
+    fn a_sandbox_playpen_made_says_which_agent_it_runs() {
         let sandboxes = parse_sandboxes(SANDBOXES).unwrap();
         assert_eq!(sandboxes.len(), 1);
         let sandbox = &sandboxes[0];

@@ -26,7 +26,7 @@ pub enum ShowIn {
 /// Where one session is shown.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Place {
-    /// A tab in the Herdr app's Lockbox space.
+    /// A tab in the Herdr app's Playpen space.
     HerdrApp,
     /// A Ghostty window of its own.
     Ghostty,
@@ -68,7 +68,7 @@ impl What {
     }
 }
 
-/// Which of the programs sessions use are installed, looked for each time, since one may be installed while Lockbox
+/// Which of the programs sessions use are installed, looked for each time, since one may be installed while Playpen
 /// runs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Installed {
@@ -197,7 +197,7 @@ fn in_terminal(name: &str, line: &str) -> Result<(), SessionError> {
     use std::os::unix::fs::PermissionsExt as _;
 
     let failed = |said: String| SessionError::Window("Terminal".to_string(), said);
-    let folder = std::env::temp_dir().join("lockbox");
+    let folder = std::env::temp_dir().join("playpen");
     std::fs::create_dir_all(&folder).map_err(|error| failed(error.to_string()))?;
     let path = folder.join(format!("{name}.command"));
     std::fs::write(&path, script(line)).map_err(|error| failed(error.to_string()))?;
@@ -218,7 +218,7 @@ fn in_terminal(name: &str, line: &str) -> Result<(), SessionError> {
 /// `line` as the script Terminal runs.
 pub fn script(line: &str) -> String {
     format!(
-        "#!/bin/sh\n# Written by Lockbox.\nexec /bin/sh -c {}\n",
+        "#!/bin/sh\n# Written by Playpen.\nexec /bin/sh -c {}\n",
         quote(line)
     )
 }

@@ -14,13 +14,13 @@ use crate::openshell::Sandbox;
 use crate::session::What;
 
 /// The label on a session's terminal naming its sandbox.
-pub const SANDBOX_LABEL: &str = "lockbox.sandbox";
+pub const SANDBOX_LABEL: &str = "playpen.sandbox";
 
 /// The label naming the sandbox and what the session runs, so a session is found again rather than opened twice.
-const SESSION_LABEL: &str = "lockbox.session";
+const SESSION_LABEL: &str = "playpen.session";
 
 /// The Herdr space every session goes in.
-const SPACE: &str = "lockbox";
+const SPACE: &str = "playpen";
 
 /// Why Herdr couldn't do what was asked.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -186,9 +186,9 @@ impl HerdrApp {
         let session = session_id(name, what);
         for (doing, command, args) in [
             (
-                "name the Lockbox space",
+                "name the Playpen space",
                 "space.rename",
-                serde_json::json!({"id": SPACE, "name": "Lockbox"}),
+                serde_json::json!({"id": SPACE, "name": "Playpen"}),
             ),
             (
                 "name the tab",
@@ -239,13 +239,13 @@ fn session_id(name: &str, what: What) -> String {
     format!("{name}.{}", what.id())
 }
 
-/// The id of a session's tab in the Lockbox space.
+/// The id of a session's tab in the Playpen space.
 fn tab_id(session: &str) -> String {
     format!("{SPACE}-{session}")
 }
 
 /// What follows `hc` to start a terminal running `command`, the session running `what` in the sandbox, labelled into
-/// the Lockbox space and a tab of its own, which the Herdr app shows and anything else ignores. It's kept, so a
+/// the Playpen space and a tab of its own, which the Herdr app shows and anything else ignores. It's kept, so a
 /// terminal lost with herdr-core comes back as a shell rather than vanishing, and has no parent, so it outlives
 /// whatever started it. It starts in `home`.
 pub fn run_args(sandbox: &Sandbox, what: What, command: &str, home: &str) -> Vec<String> {
@@ -304,7 +304,7 @@ mod tests {
     use crate::session::What;
 
     #[test]
-    fn a_sandboxs_terminal_is_labelled_into_the_lockbox_space_and_its_own_tab() {
+    fn a_sandboxs_terminal_is_labelled_into_the_playpen_space_and_its_own_tab() {
         let sandbox = Sandbox {
             name: "claude-patchbay".to_string(),
             phase: Phase::Ready,
@@ -326,11 +326,11 @@ mod tests {
     fn a_status_is_read_as_hc_ls_and_hc_get_each_give_it() {
         let listed: Listed = serde_json::from_str(
             r#"{"terminals": [
-                {"address": "t1", "state": "live", "status": "idle", "labels": {"lockbox.sandbox": "a"}},
+                {"address": "t1", "state": "live", "status": "idle", "labels": {"playpen.sandbox": "a"}},
                 {"address": "t2", "state": "live", "status": {"app": "claude-code", "state": "blocked"},
-                 "labels": {"lockbox.sandbox": "a"}},
-                {"address": "t3", "state": "live", "status": "working", "labels": {"lockbox.sandbox": "b"}},
-                {"address": "t4", "state": "finished", "status": "working", "labels": {"lockbox.sandbox": "c"}},
+                 "labels": {"playpen.sandbox": "a"}},
+                {"address": "t3", "state": "live", "status": "working", "labels": {"playpen.sandbox": "b"}},
+                {"address": "t4", "state": "finished", "status": "working", "labels": {"playpen.sandbox": "c"}},
                 {"address": "t5", "state": "live", "status": null, "labels": {}}
             ]}"#,
         )

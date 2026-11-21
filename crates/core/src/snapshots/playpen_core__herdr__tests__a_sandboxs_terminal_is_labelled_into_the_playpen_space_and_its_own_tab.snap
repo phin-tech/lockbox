@@ -11,11 +11,11 @@ run
 --cwd
 /Users/sam
 --label
-lockbox.sandbox=claude-patchbay
+playpen.sandbox=claude-patchbay
 --label
-lockbox.session=claude-patchbay.agent
+playpen.session=claude-patchbay.agent
 --label
-herdr.space=lockbox
+herdr.space=playpen
 --label
-herdr.tab=lockbox-claude-patchbay.agent
+herdr.tab=playpen-claude-patchbay.agent
 openshell sandbox exec --name claude-patchbay --tty -- claude

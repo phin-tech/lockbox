@@ -2,10 +2,10 @@
 source: crates/core/src/provider.rs
 expression: work.profile()
 ---
-# Written by Lockbox.
-id: lockbox-litellm-work
+# Written by Playpen.
+id: playpen-litellm-work
 display_name: "LiteLLM (litellm.example.com)"
-description: "The LiteLLM proxy at litellm.example.com:4000, added by Lockbox"
+description: "The LiteLLM proxy at litellm.example.com:4000, added by Playpen"
 category: inference
 inference_capable: true
 credentials:

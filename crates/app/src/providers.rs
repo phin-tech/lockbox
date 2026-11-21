@@ -13,7 +13,7 @@ use gpui_kit::component::{
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
-use lockbox_core::{Key, Kind, NewProvider, OpenShell, Provider, ProviderError};
+use playpen_core::{Key, Kind, NewProvider, OpenShell, Provider, ProviderError};
 use rust_i18n::t;
 
 /// The providers part of Settings.
@@ -42,7 +42,7 @@ struct Form {
     name: Entity<InputState>,
     address: Entity<InputState>,
     key: Entity<InputState>,
-    /// The name Lockbox last suggested, which choosing another kind changes while the person hasn't typed one.
+    /// The name Playpen last suggested, which choosing another kind changes while the person hasn't typed one.
     suggested: String,
     saving: bool,
     _chose: Subscription,
@@ -79,17 +79,17 @@ impl Providers {
     /// Asks OpenShell for its providers again.
     fn refresh(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if cfg!(feature = "screenshot") {
-            // Shots show stand-ins rather than anyone's real providers, and `LOCKBOX_SHOT_ADD=litellm` the form.
+            // Shots show stand-ins rather than anyone's real providers, and `PLAYPEN_SHOT_ADD=litellm` the form.
             let stand_in = |name: &str, kind: &str| Provider {
                 name: name.to_string(),
                 kind: kind.to_string(),
             };
             self.listing = Listing::Listed(vec![
                 stand_in("claude-subscription", "claude-code-oauth"),
-                stand_in("openrouter", "lockbox-openrouter"),
-                stand_in("work", "lockbox-litellm-work"),
+                stand_in("openrouter", "playpen-openrouter"),
+                stand_in("work", "playpen-litellm-work"),
             ]);
-            if let Ok(kind) = std::env::var("LOCKBOX_SHOT_ADD") {
+            if let Ok(kind) = std::env::var("PLAYPEN_SHOT_ADD") {
                 let kind = Kind::ALL
                     .into_iter()
                     .find(|known| known.suggested_name() == kind)
@@ -122,7 +122,7 @@ impl Providers {
     }
 
     fn start_replacing(&mut self, provider: Provider, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(kind) = provider.lockbox_kind() else {
+        let Some(kind) = provider.playpen_kind() else {
             return;
         };
         self.open_form(Some(provider), kind, window, cx);
@@ -320,7 +320,7 @@ impl Providers {
         };
         v_flex().gap_2().children(providers.iter().map(|provider| {
             let kind = provider
-                .lockbox_kind()
+                .playpen_kind()
                 .map_or_else(|| provider.kind.clone(), |kind| kind.name().to_string());
             let replace = provider.clone();
             let delete = provider.clone();
@@ -342,7 +342,7 @@ impl Providers {
                         .xsmall()
                         .outline()
                         .label(t!("Replace Key…").into_owned())
-                        .disabled(provider.lockbox_kind().is_none() || self.form.is_some())
+                        .disabled(provider.playpen_kind().is_none() || self.form.is_some())
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.start_replacing(replace.clone(), window, cx);
                         })),

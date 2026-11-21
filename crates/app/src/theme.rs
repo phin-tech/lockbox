@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use gpui_kit::component::{ActiveTheme as _, Theme};
 use gpui_kit::{App, Subscription, Window, px};
-use lockbox_core::{Appearance as Chosen, Settings};
+use playpen_core::{Appearance as Chosen, Settings};
 use typecase::theme::{self, Appearance, ThemeSettings};
 
 /// The text size in Settings, as a multiple of the theme's own, for the refinement every theme passes through.
@@ -24,10 +24,10 @@ pub fn init(cx: &mut App) {
     });
 }
 
-/// What Typecase shows for `settings`. `LOCKBOX_APPEARANCE` forces `light` or `dark`, for checking both
+/// What Typecase shows for `settings`. `PLAYPEN_APPEARANCE` forces `light` or `dark`, for checking both
 /// offscreen.
 pub fn from_settings(settings: &Settings) -> ThemeSettings {
-    let forced = std::env::var("LOCKBOX_APPEARANCE")
+    let forced = std::env::var("PLAYPEN_APPEARANCE")
         .ok()
         .and_then(|name| Appearance::from_name(&name));
     let appearance = forced.unwrap_or(match settings.appearance {

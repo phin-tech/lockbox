@@ -5,7 +5,7 @@ use crate::shortcuts::SHORTCUTS;
 use crate::{palette, shortcuts, theme};
 use gpui_kit::base::Root;
 use gpui_kit::{AppContext as _, Context, Entity, TestAppContext, VisualTestContext};
-use lockbox_core::{OpenShellError, Phase, Provider, Sandbox};
+use playpen_core::{OpenShellError, Phase, Provider, Sandbox};
 
 /// Opens a window under the Root the app runs in, whose own bindings are part of what keys do. It asks OpenShell for
 /// nothing; each test gives it the sandboxes it needs.

@@ -19,7 +19,7 @@ use gpui_kit::component::{
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
-use lockbox_core::{Agent, AgentState, OpenShell, OpenShellError, Place, Sandbox, What};
+use playpen_core::{Agent, AgentState, OpenShell, OpenShellError, Place, Sandbox, What};
 use rust_i18n::t;
 use typecase::help::{HelpEvent, KeyHelp};
 use typecase::overlay;
@@ -47,8 +47,8 @@ pub fn open_with(
     cx: &mut App,
     build: impl FnOnce(&mut Window, &mut Context<MainView>) -> MainView,
 ) -> Option<AnyWindowHandle> {
-    // `LOCKBOX_WIDTH` narrows a capture, for checking a layout at a width of its own.
-    let width = std::env::var("LOCKBOX_WIDTH")
+    // `PLAYPEN_WIDTH` narrows a capture, for checking a layout at a width of its own.
+    let width = std::env::var("PLAYPEN_WIDTH")
         .ok()
         .filter(|_| cfg!(feature = "screenshot"))
         .and_then(|width| width.parse().ok())
@@ -60,7 +60,7 @@ pub fn open_with(
         window_bounds: Some(bounds.unwrap_or(centered)),
         window_min_size: Some(size(px(480.), px(320.))),
         titlebar: Some(TitlebarOptions {
-            title: Some("Lockbox".into()),
+            title: Some("Playpen".into()),
             ..TitleBar::title_bar_options()
         }),
         // Captures run hidden, so they never take over the screen.
@@ -284,7 +284,7 @@ impl Render for MainView {
             .on_action(cx.listener(|this, action: &RunAction, window, cx| {
                 this.run(action.name, window, cx);
             }))
-            .child(shell::title_bar(cx).child("Lockbox"))
+            .child(shell::title_bar(cx).child("Playpen"))
             .child(
                 shell::columns(Lead::Panel)
                     .child(

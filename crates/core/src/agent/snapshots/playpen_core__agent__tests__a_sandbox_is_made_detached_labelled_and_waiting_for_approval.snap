@@ -6,7 +6,7 @@ expression: "args.join(\"\\n\")"
 --name
 claude-patchbay
 --from
-lockbox-claude-code:2.1.329
+playpen-claude-code:2.1.329
 --policy
 /tmp/policy.yaml
 --detach
@@ -14,14 +14,14 @@ lockbox-claude-code:2.1.329
 --approval-mode
 manual
 --label
-lockbox.agent=claude-code
+playpen.agent=claude-code
 --annotation
-lockbox.workdir=/sandbox/Patchbay
+playpen.workdir=/sandbox/Patchbay
 --env
 DISABLE_AUTOUPDATER=1
 --env
 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
 --annotation
-lockbox.folder=/Users/sam/src/Patchbay
+playpen.folder=/Users/sam/src/Patchbay
 --provider
 claude-sub

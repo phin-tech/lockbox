@@ -1,4 +1,4 @@
-//! What Lockbox does, free of UI, so tests reach it without a window: OpenShell's sandboxes, and the agents Lockbox
+//! What Playpen does, free of UI, so tests reach it without a window: OpenShell's sandboxes, and the agents Playpen
 //! makes them for.
 
 mod agent;

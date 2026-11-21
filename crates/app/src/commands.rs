@@ -57,7 +57,7 @@ pub fn run(name: &str, window: &mut Window, cx: &mut App) -> bool {
                     &t!("Updates come with the released app"),
                     &t!(
                         "%{app} updates itself once it's installed from a release, from apps.phin.tech.",
-                        app = "Lockbox"
+                        app = "Playpen"
                     ),
                     window,
                     cx,

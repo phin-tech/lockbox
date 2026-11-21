@@ -4569,52 +4569,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "lockbox"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "futures",
- "global-hotkey",
- "gpui-devtools",
- "gpui-kit",
- "image",
- "insta",
- "jiff 0.2.46",
- "lockbox-cli",
- "lockbox-core",
- "objc2 0.6.5",
- "objc2-foundation 0.3.2",
- "objc2-service-management",
- "rust-i18n",
- "sys-locale",
- "toml 1.2.1+spec-1.1.0",
- "tracing",
- "tracing-appender",
- "tracing-subscriber",
- "tray-icon",
- "typecase",
-]
-
-[[package]]
-name = "lockbox-cli"
-version = "0.1.0"
-dependencies = [
- "lockbox-core",
-]
-
-[[package]]
-name = "lockbox-core"
-version = "0.1.0"
-dependencies = [
- "insta",
- "jiff 0.2.46",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
- "toml 1.2.1+spec-1.1.0",
-]
-
-[[package]]
 name = "log"
 version = "0.4.35"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5948,6 +5902,52 @@ name = "pkg-config"
 version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f6b464fbc74e149a392436b17d523f769e057cb6877f6a5c4618bc6f11800548"
+
+[[package]]
+name = "playpen"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "futures",
+ "global-hotkey",
+ "gpui-devtools",
+ "gpui-kit",
+ "image",
+ "insta",
+ "jiff 0.2.46",
+ "objc2 0.6.5",
+ "objc2-foundation 0.3.2",
+ "objc2-service-management",
+ "playpen-cli",
+ "playpen-core",
+ "rust-i18n",
+ "sys-locale",
+ "toml 1.2.1+spec-1.1.0",
+ "tracing",
+ "tracing-appender",
+ "tracing-subscriber",
+ "tray-icon",
+ "typecase",
+]
+
+[[package]]
+name = "playpen-cli"
+version = "0.1.0"
+dependencies = [
+ "playpen-core",
+]
+
+[[package]]
+name = "playpen-core"
+version = "0.1.0"
+dependencies = [
+ "insta",
+ "jiff 0.2.46",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "toml 1.2.1+spec-1.1.0",
+]
 
 [[package]]
 name = "plotters"

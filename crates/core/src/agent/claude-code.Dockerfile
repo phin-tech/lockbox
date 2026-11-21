@@ -1,4 +1,4 @@
-# Claude Code for an OpenShell sandbox. Lockbox builds it once for each version it pins, which it passes in.
+# Claude Code for an OpenShell sandbox. Playpen builds it once for each version it pins, which it passes in.
 FROM node:24-bookworm-slim
 
 ARG CLAUDE_CODE_VERSION

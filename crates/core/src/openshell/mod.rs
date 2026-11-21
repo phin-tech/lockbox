@@ -453,12 +453,24 @@ impl OpenShell {
         Ok(())
     }
 
-    /// Gives a ChatGPT provider a new sign-in.
+    /// Gives a ChatGPT provider a new sign-in. OpenShell won't take a new value for a credential it renews, so the
+    /// renewal is cleared first and set up again after.
     pub fn sign_in_again(
         &self,
         provider: &Provider,
         tokens: &Tokens,
     ) -> Result<(), OpenShellError> {
+        self.run(
+            &format!("sign “{}” in again", provider.name),
+            &[
+                "provider",
+                "refresh",
+                "delete",
+                &provider.name,
+                "--credential-key",
+                Kind::ChatGptSubscription.variable(),
+            ],
+        )?;
         self.replace_key(provider, &tokens.access)?;
         self.renew_with(&provider.name, tokens)
     }

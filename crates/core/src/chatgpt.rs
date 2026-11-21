@@ -108,9 +108,11 @@ impl Login {
         )
     }
 
-    /// The tokens, once the person has signed in, or none while they haven't.
+    /// The tokens, once the person has signed in, or none while they haven't. A file that isn't JSON yet is one
+    /// Codex is still writing.
     pub fn tokens(&self) -> Option<Result<Tokens, ChatGptError>> {
         let text = std::fs::read_to_string(self.home.join("auth.json")).ok()?;
+        serde_json::from_str::<serde_json::Value>(&text).ok()?;
         Some(read_tokens(&text))
     }
 }
@@ -141,8 +143,9 @@ fn read_tokens(text: &str) -> Result<Tokens, ChatGptError> {
         expires_at_ms: expires * 1000,
         account: Account {
             account_id: tokens.account_id,
-            // `{"alg":"none","typ":"JWT"}`, so Codex can still read the claims.
-            id_token: format!("eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.{payload}."),
+            // `{"alg":"none","typ":"JWT"}`, so Codex can still read the claims, and a signature of one letter, since
+            // that's the form tried in a sandbox.
+            id_token: format!("eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.{payload}.x"),
         },
     })
 }
@@ -239,7 +242,7 @@ mod tests {
         assert_eq!(tokens.expires_at_ms, 1_800_000_000_000);
         assert_eq!(tokens.account.account_id, "acct-1");
         let unsigned = &tokens.account.id_token;
-        assert!(unsigned.ends_with('.'), "no signature");
+        assert!(unsigned.ends_with(".x"), "not its signature");
         assert_eq!(unsigned.split('.').nth(1), id.split('.').nth(1));
         assert!(
             format!("{:?}", tokens.refresh).contains('…'),

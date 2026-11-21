@@ -313,6 +313,7 @@ impl Plan {
             Agent::Codex => Some(serde_json::json!({
                 "config": "# Written by Playpen.\nsandbox_mode = \"danger-full-access\"\ncheck_for_update_on_startup = false\n",
                 "account": self.account,
+                "sign_in": SIGN_IN_SCRIPT,
             })),
         }
     }
@@ -326,20 +327,37 @@ const setup = JSON.parse(fs.readFileSync(0, "utf8"));
 const home = "/sandbox/.codex";
 fs.mkdirSync(home, { recursive: true, mode: 0o700 });
 fs.writeFileSync(home + "/config.toml", setup.config);
+fs.writeFileSync(home + "/playpen-sign-in.js", setup.sign_in);
 if (setup.account) {
-  const access = process.env.CHATGPT_ACCESS_TOKEN;
-  if (!access) throw new Error("the ChatGPT provider's token isn't in the sandbox");
+  if (!process.env.CHATGPT_ACCESS_TOKEN) throw new Error("the ChatGPT provider's token isn't in the sandbox");
   fs.writeFileSync(home + "/auth.json", JSON.stringify({
     auth_mode: "chatgpt",
     OPENAI_API_KEY: null,
     tokens: {
       id_token: setup.account.id_token,
-      access_token: access,
+      access_token: "",
       refresh_token: "held-by-openshell",
       account_id: setup.account.account_id,
     },
     last_refresh: "2099-01-01T00:00:00Z",
   }), { mode: 0o600 });
+  require(home + "/playpen-sign-in.js");
+}
+"#;
+
+/// Puts the sandbox's current stand-in for the ChatGPT access token in Codex's `auth.json`, run before Codex each
+/// time it's opened. OpenShell gives each new process the current stand-in, and the one in the file would go stale
+/// when the person signs in again; it can't be kept stable, since OpenShell renews the token.
+const SIGN_IN_SCRIPT: &str = r#"
+const fs = require("fs");
+const file = "/sandbox/.codex/auth.json";
+const access = process.env.CHATGPT_ACCESS_TOKEN;
+if (access && fs.existsSync(file)) {
+  const auth = JSON.parse(fs.readFileSync(file, "utf8"));
+  if (auth.tokens && auth.tokens.access_token !== access) {
+    auth.tokens.access_token = access;
+    fs.writeFileSync(file, JSON.stringify(auth), { mode: 0o600 });
+  }
 }
 "#;
 
@@ -384,6 +402,16 @@ pub fn open_command(openshell: &Path, sandbox: &Sandbox, what: What) -> String {
         What::Agent => agent.command().to_string(),
         What::Continue => agent.continue_command().to_string(),
         What::Shell => "bash -l".to_string(),
+    };
+    let run = match (agent, what) {
+        // Codex's login is brought up to date first, as `SIGN_IN_SCRIPT` says.
+        (Agent::Codex, What::Agent | What::Continue) => format!(
+            "sh -c {}",
+            quote(&format!(
+                "node /sandbox/.codex/playpen-sign-in.js 2>/dev/null; exec {run}"
+            ))
+        ),
+        _ => run,
     };
     format!(
         "{openshell} sandbox exec --name {name} --tty --workdir {workdir} -- {run}",
@@ -503,6 +531,21 @@ mod tests {
             open_command(openshell, &theirs, What::Continue)
                 .ends_with("sandbox connect 'claude-patchbay'")
         );
+    }
+
+    #[test]
+    fn codex_is_opened_after_its_login_is_brought_up_to_date() {
+        let sandbox = Sandbox {
+            name: "codex-patchbay".to_string(),
+            phase: Phase::Ready,
+            created: String::new(),
+            agent: Some("codex".to_string()),
+            folder: None,
+            workdir: Some("/sandbox/Patchbay".to_string()),
+        };
+        let openshell = Path::new("/opt/homebrew/bin/openshell");
+        insta::assert_snapshot!(open_command(openshell, &sandbox, What::Continue));
+        assert!(open_command(openshell, &sandbox, What::Shell).ends_with("-- bash -l"));
     }
 
     #[test]

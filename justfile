@@ -10,7 +10,7 @@ run *args:
 
 # Run the app in a forced appearance: `just run-as dark`
 run-as appearance:
-    LOCKBOX_APPEARANCE={{appearance}} "$(scripts/bundle-macos.sh debug)"
+    PLAYPEN_APPEARANCE={{appearance}} "$(scripts/bundle-macos.sh debug)"
 
 # Run the app with the element inspector (⌥⌘I): layout, styles and the source of whatever you pick
 inspect:
@@ -29,20 +29,32 @@ lint:
     if command -v cargo-deny >/dev/null; then cargo deny check; else echo "cargo-deny isn't installed: brew install cargo-deny"; fi
     if command -v typos >/dev/null; then typos; else echo "typos isn't installed: brew install typos-cli"; fi
 
-# Save a rendered frame to target/shots/<name>.png, without showing a window: `LOCKBOX_KEYS="space space" just shot`.
-# The settings are left alone; `LOCKBOX_SETTINGS=<file>` tries some, `LOCKBOX_WIDTH=600` a narrower window
+# Save a rendered frame to target/shots/<name>.png, without showing a window: `PLAYPEN_KEYS="space space" just shot`.
+# The settings are left alone; `PLAYPEN_SETTINGS=<file>` tries some, `PLAYPEN_WIDTH=600` a narrower window
 shot name="app" appearance="light":
     @mkdir -p "${CARGO_TARGET_DIR:-target}/shots"
-    LOCKBOX_APPEARANCE={{appearance}} LOCKBOX_SHOT="$(cd "${CARGO_TARGET_DIR:-target}/shots" && pwd)/{{name}}.png" \
-        cargo run -p lockbox --features screenshot
+    PLAYPEN_APPEARANCE={{appearance}} PLAYPEN_SHOT="$(cd "${CARGO_TARGET_DIR:-target}/shots" && pwd)/{{name}}.png" \
+        cargo run -p playpen --features screenshot
 
-# Build Lockbox.app and put it in /Applications, signed only for this Mac
+# Add a LiteLLM provider with a made-up key to the real OpenShell gateway, give it another, and delete it
+providers-test:
+    cargo test -p playpen-core --test providers -- --ignored
+
+# Make a Claude Code sandbox on the real OpenShell gateway and ask Claude Code something in it, with the provider named
+openshell-test provider:
+    PLAYPEN_TEST_PROVIDER={{provider}} cargo test -p playpen-core --test openshell -- --ignored
+
+# Make a Codex sandbox on a ChatGPT provider Playpen signed in, and ask Codex something in it
+codex-test provider:
+    PLAYPEN_TEST_CHATGPT_PROVIDER={{provider}} cargo test -p playpen-core --test openshell codex -- --ignored
+
+# Build Playpen.app and put it in /Applications, signed only for this Mac
 install-local:
     scripts/install-local.sh
 
 # Remove the copy in /Applications
 uninstall-local:
-    rm -rf "/Applications/Lockbox.app"
+    rm -rf "/Applications/Playpen.app"
 
 # Record a Time Profiler trace of a release build with symbols, to target/profile.trace, and open it in Instruments
 profile:
@@ -62,7 +74,7 @@ fmt:
 check:
     cargo fmt --all --check
     cargo clippy --workspace --all-targets -- -D warnings
-    cargo clippy -p lockbox --all-targets --features screenshot -- -D warnings
+    cargo clippy -p playpen --all-targets --features screenshot -- -D warnings
     cargo test --workspace
 
 # Run the CI in .ci.star on this machine, against what's committed (needs starci)

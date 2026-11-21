@@ -1,0 +1,6 @@
+---
+source: crates/core/src/agent/mod.rs
+assertion_line: 365
+expression: "open_command(openshell, &sandbox, What::Agent)"
+---
+'/opt/homebrew/bin/openshell' sandbox exec --name 'claude-patchbay' --tty --workdir '/sandbox/Sam'\''s App' -- claude

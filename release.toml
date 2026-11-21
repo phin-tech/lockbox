@@ -1,15 +1,15 @@
-# What app-release (`just ship` and friends) knows about Lockbox. Every key: src/app_release/config.py
+# What app-release (`just ship` and friends) knows about Playpen. Every key: src/app_release/config.py
 # in https://git.phin.tech/sam/app-release. Top-level keys go before the tables.
 kind = "cargo-app"
-app = "Lockbox"
-slug = "lockbox"
-bundle_id = "tech.phin.lockbox"
+app = "Playpen"
+slug = "playpen"
+bundle_id = "tech.phin.playpen"
 description = "Run your agents in OpenShell sandboxes, and decide what they may reach"
 team_id = "J35P7AJDN7"
 op_item = "op://Development/lc6wrq7lltjd47uue26cdxttzu"
 
 [cargo]
-package = "lockbox"
+package = "playpen"
 info_plist = "packaging/Info.plist"
 icon = "packaging/AppIcon.icns"
 entitlements = "packaging/app.entitlements"

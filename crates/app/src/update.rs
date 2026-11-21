@@ -28,7 +28,7 @@ static BETA: AtomicBool = AtomicBool::new(false);
 define_class!(
     // SAFETY: NSObject has no subclassing requirements, and Channels doesn't implement Drop.
     #[unsafe(super(NSObject))]
-    #[name = "lockbox_SparkleChannels"]
+    #[name = "playpen_SparkleChannels"]
     struct Channels;
 
     impl Channels {

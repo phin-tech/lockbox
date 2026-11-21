@@ -1,9 +1,9 @@
-//! The `lockbox` command. It's the app's own binary: given a command it knows, `main` runs it here and exits
+//! The `playpen` command. It's the app's own binary: given a command it knows, `main` runs it here and exits
 //! before any window opens. Anything else opens the app, since macOS starts apps with arguments of its own.
 
 use std::io::{self, Write};
 
-use lockbox_core::version;
+use playpen_core::version;
 
 /// What a command line asked for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -12,7 +12,7 @@ pub enum Command {
     Help,
 }
 
-const USAGE: &str = "usage: lockbox [--version | --help]\n\nWith no arguments, opens Lockbox.";
+const USAGE: &str = "usage: playpen [--version | --help]\n\nWith no arguments, opens Playpen.";
 
 /// The command `args` (without the program's name) ask for, or none, to open the app.
 pub fn parse<S: AsRef<str>>(args: &[S]) -> Option<Command> {
@@ -27,7 +27,7 @@ impl Command {
     /// Runs the command, writing to `out`, and gives the exit status.
     pub fn run(self, out: &mut impl Write) -> io::Result<i32> {
         match self {
-            Command::Version => writeln!(out, "lockbox {}", version())?,
+            Command::Version => writeln!(out, "playpen {}", version())?,
             Command::Help => writeln!(out, "{USAGE}")?,
         }
         Ok(0)
@@ -50,14 +50,14 @@ mod tests {
         let printed = output(Command::Version);
         assert_eq!(
             printed.trim(),
-            format!("lockbox {}", lockbox_core::version())
+            format!("playpen {}", playpen_core::version())
         );
     }
 
     #[test]
     fn help_says_how_to_use_it() {
         assert_eq!(parse(&["-h"]), Some(Command::Help));
-        assert!(output(Command::Help).starts_with("usage: lockbox"));
+        assert!(output(Command::Help).starts_with("usage: playpen"));
     }
 
     #[test]

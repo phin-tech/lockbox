@@ -2,9 +2,9 @@
 _commit: v0.6.0
 _src_path: gpu-template
 app_category: public.app-category.developer-tools
-app_name: Lockbox
-app_slug: lockbox
-bundle_id: tech.phin.lockbox
+app_name: Playpen
+app_slug: playpen
+bundle_id: tech.phin.playpen
 database: false
 description: Run your agents in OpenShell sandboxes, and decide what they may reach
 document_extension: ''

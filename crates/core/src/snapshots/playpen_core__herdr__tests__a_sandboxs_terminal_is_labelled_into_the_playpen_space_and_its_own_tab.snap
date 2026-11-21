@@ -1,0 +1,21 @@
+---
+source: crates/core/src/herdr.rs
+expression: "args.join(\"\\n\")"
+---
+run
+--bg
+--json
+--keep
+--no-parent
+--no-notify
+--cwd
+/Users/sam
+--label
+playpen.sandbox=claude-patchbay
+--label
+playpen.session=claude-patchbay.agent
+--label
+herdr.space=playpen
+--label
+herdr.tab=playpen-claude-patchbay.agent
+openshell sandbox exec --name claude-patchbay --tty -- claude

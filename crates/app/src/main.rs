@@ -1,4 +1,4 @@
-//! The GPUI front end. What the app does lives in `lockbox_core`.
+//! The GPUI front end. What the app does lives in `playpen_core`.
 
 mod about;
 mod commands;
@@ -9,6 +9,7 @@ mod login_item;
 mod menu_bar;
 mod menus;
 mod palette;
+mod providers;
 mod restore;
 #[cfg(feature = "screenshot")]
 mod screenshot;
@@ -26,7 +27,7 @@ rust_i18n::i18n!("locales", fallback = "en");
 fn main() {
     // A command line it knows runs here, headless, and never opens a window.
     let args: Vec<String> = std::env::args().skip(1).collect();
-    if let Some(command) = lockbox_cli::parse(&args) {
+    if let Some(command) = playpen_cli::parse(&args) {
         let status = command.run(&mut std::io::stdout()).unwrap_or(1);
         std::process::exit(status);
     }

@@ -8,6 +8,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::files::write_atomically;
+use crate::session::ShowIn;
 
 /// The light or dark look: following the system, or fixed.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -37,6 +38,10 @@ pub struct Settings {
     /// Whether Sparkle offers betas, which come before a release. A beta starts with them on, so it keeps getting
     /// them until they're switched off; a tester moves on to the release that follows, since builds only go up.
     pub beta_updates: bool,
+    /// Where sessions are shown unless one is opened somewhere else.
+    pub show_in: ShowIn,
+    /// Whether herdr-core keeps sessions, when it's installed, so closing a window only detaches from one.
+    pub keep_sessions: bool,
 }
 
 impl Default for Settings {
@@ -48,6 +53,8 @@ impl Default for Settings {
             text_scale: 1.0,
             hotkey: "ctrl+alt+super+Space".to_string(),
             beta_updates: crate::VERSION.contains("-beta"),
+            show_in: ShowIn::default(),
+            keep_sessions: true,
         }
     }
 }
@@ -112,6 +119,8 @@ mod tests {
             text_scale: 1.3,
             hotkey: "ctrl+alt+super+KeyN".to_string(),
             beta_updates: true,
+            show_in: crate::session::ShowIn::Ghostty,
+            keep_sessions: false,
         };
         settings.save(&path).unwrap();
         assert_eq!(Settings::load(&path), settings);
@@ -126,6 +135,8 @@ mod tests {
             text_scale: 1.0,
             hotkey: "ctrl+alt+super+Space".to_string(),
             beta_updates: false,
+            show_in: crate::session::ShowIn::Automatic,
+            keep_sessions: true,
         };
         let text = toml::to_string(&settings).unwrap();
         insta::assert_snapshot!(text, @r#"
@@ -135,6 +146,8 @@ mod tests {
         text_scale = 1.0
         hotkey = "ctrl+alt+super+Space"
         beta_updates = false
+        show_in = "automatic"
+        keep_sessions = true
         "#);
     }
 

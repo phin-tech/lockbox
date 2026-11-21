@@ -1,5 +1,5 @@
 [package]
-name = "lockbox"
+name = "playpen"
 description = "Run your agents in OpenShell sandboxes, and decide what they may reach"
 version.workspace = true
 edition.workspace = true
@@ -22,8 +22,8 @@ sys-locale = "0.3"
 gpui-devtools = { version = "0.5", optional = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-appender = "0.2"
-lockbox-core.workspace = true
-lockbox-cli.workspace = true
+playpen-core.workspace = true
+playpen-cli.workspace = true
 futures = "0.3"
 # The menu bar extra and its shortcut, and decoding its icon.
 tray-icon = "0.26"

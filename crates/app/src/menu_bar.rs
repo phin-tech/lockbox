@@ -1,4 +1,4 @@
-//! An icon in the menu bar, with a menu, and a shortcut that brings Lockbox forward from any app (`hotkey` in
+//! An icon in the menu bar, with a menu, and a shortcut that brings Playpen forward from any app (`hotkey` in
 //! the settings file, `ctrl+alt+super+Space` unless it says otherwise). Both run Commands, as the menus do.
 
 use std::str::FromStr as _;
@@ -49,13 +49,13 @@ pub fn start(cx: &mut App) {
 fn try_start(cx: &mut App) -> anyhow::Result<()> {
     let items: Vec<(MenuItem, &'static str)> = vec![
         (
-            MenuItem::new(t!("Open %{app}", app = "Lockbox"), true, None),
+            MenuItem::new(t!("Open %{app}", app = "Playpen"), true, None),
             "window.front",
         ),
         (MenuItem::new(t!("New Window"), true, None), "file.new"),
         (MenuItem::new(t!("Settings…"), true, None), "app.settings"),
         (
-            MenuItem::new(t!("Quit %{app}", app = "Lockbox"), true, None),
+            MenuItem::new(t!("Quit %{app}", app = "Playpen"), true, None),
             "app.quit",
         ),
     ];
@@ -73,7 +73,7 @@ fn try_start(cx: &mut App) -> anyhow::Result<()> {
         .collect();
     let icon = TrayIconBuilder::new()
         .with_icon_templated(icon()?)
-        .with_tooltip("Lockbox")
+        .with_tooltip("Playpen")
         .with_menu(Box::new(menu))
         .build()?;
 
@@ -120,7 +120,7 @@ mod tests {
     use std::str::FromStr as _;
 
     use global_hotkey::hotkey::HotKey;
-    use lockbox_core::Settings;
+    use playpen_core::Settings;
 
     #[test]
     fn the_shortcut_in_new_settings_is_one() {

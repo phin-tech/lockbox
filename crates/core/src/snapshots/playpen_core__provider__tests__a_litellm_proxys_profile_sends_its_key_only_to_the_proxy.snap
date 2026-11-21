@@ -1,0 +1,25 @@
+---
+source: crates/core/src/provider.rs
+expression: work.profile()
+---
+# Written by Playpen.
+id: playpen-litellm-work
+display_name: "LiteLLM (litellm.example.com)"
+description: "The LiteLLM proxy at litellm.example.com:4000, added by Playpen"
+category: inference
+inference_capable: true
+credentials:
+  - name: api_key
+    description: "LiteLLM key"
+    env_vars: [LITELLM_API_KEY]
+    required: true
+    auth_style: bearer
+    header_name: authorization
+discovery:
+  credentials: [api_key]
+endpoints:
+  - host: litellm.example.com
+    port: 4000
+    protocol: rest
+    access: read-write
+    enforcement: enforce

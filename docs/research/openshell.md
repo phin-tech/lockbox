@@ -1,4 +1,4 @@
-# OpenShell, for Patchbay and Lockbox
+# OpenShell, for Patchbay and Playpen
 
 2026-11-19. These findings cover **OpenShell v0.1.9**, the current stable release, published 2026-11-17. The sources
 are tag `v0.1.9` (commit `ce58cf8e9b953281352d98a637e41616295b1318`) of https://github.com/NVIDIA/OpenShell and the
@@ -19,7 +19,7 @@ docs citation gives the published URL, which is the source path without `docs/` 
 | MCP server secrets stay in Patchbay's Keychain | **Feasible.** | Nothing in OpenShell needs them: the sandbox only talks to Patchbay. Patchbay's own bearer token is the one secret the sandbox needs. It can be a plain value written into the sandbox, which the agent can read. Better, it can be an OpenShell provider credential, which the agent sees only as a placeholder and which the supervisor swaps in on requests to the bound host and port. That needs a custom provider profile bound to `host.openshell.internal:7357`. The docs say substitution also works for plaintext HTTP requests. |
 | Model keys in OpenShell's providers | **Feasible.** | Providers are the documented way. The agent's environment holds an opaque placeholder, and the supervisor substitutes the real key only on requests to the profile's endpoints. A `claude-code` example profile exists, and it uses an API key (`ANTHROPIC_API_KEY`/`CLAUDE_API_KEY`). |
 | Skills get into the sandbox | **Feasible, as a copy; a live link is restricted.** | `openshell sandbox upload` and `sandbox create --upload` copy files into a running sandbox. Uploads keep symlinks as symlinks, so Patchbay's linked skill folders would arrive as dangling links. Upload the real folder (`~/.agents/skills/…`) to the path the agent reads, such as `/sandbox/.claude/skills`. A live bind mount works only after the gateway operator turns off a safety default (`enable_bind_mounts = true` with resource admission disabled). The MicroVM driver cannot mount a single file. |
-| Lockbox drives OpenShell from a GUI | **Feasible, with gaps.** | The gateway is a gRPC server, and Rust, Python, TypeScript and Go SDKs are published. Many CLI commands take `-o json`. There is no push stream of policy-advisor proposals at v0.1.9: the proto defines a `DraftPolicyUpdate` event, but no gateway code sends one. OpenShell's own TUI fetches proposals by calling `GetDraftPolicy`. `openshell rule get` has no JSON output, and the `rule` command is hidden from help. |
+| Playpen drives OpenShell from a GUI | **Feasible, with gaps.** | The gateway is a gRPC server, and Rust, Python, TypeScript and Go SDKs are published. Many CLI commands take `-o json`. There is no push stream of policy-advisor proposals at v0.1.9: the proto defines a `DraftPolicyUpdate` event, but no gateway code sends one. OpenShell's own TUI fetches proposals by calling `GetDraftPolicy`. `openshell rule get` has no JSON output, and the `rule` command is hidden from help. |
 
 **Biggest unknown:** whether a supervisor in a Docker Desktop container reaches a service bound only to macOS
 `127.0.0.1`. OpenShell assumes it does for its own gateway in Docker host mode, but no OpenShell source shows
@@ -414,6 +414,43 @@ Notes on that rule:
 - **Licence and source.** Apache License 2.0 (`LICENSE`). The source is public at
   https://github.com/NVIDIA/OpenShell, a Rust workspace with crates for the CLI, gateway, supervisor, sandbox,
   drivers, prover, TUI and SDK. The Go SDK is in https://github.com/ai-openshell/sdk-go.
+
+## Tested on this Mac, 2026-11-19
+
+OpenShell 0.1.8 from Homebrew (one patch behind the version read above), its gateway as a Homebrew service, no
+`compute_driver` set, so sandboxes ran on Docker, which here is **OrbStack**, not Docker Desktop. The image was the
+default, `nvcr.io/nvidia/base/ubuntu:24.04`, which has bash and Perl but no curl or Python. The policy:
+
+```yaml
+version: 1
+network_policies:
+  patchbay:
+    endpoints:
+      - host: host.openshell.internal
+        port: 7399
+    binaries:
+      - path: /usr/bin/bash
+```
+
+What happened, each from a fresh `openshell sandbox create --no-keep --policy … -- <command>`:
+
+- **A server bound only to macOS `127.0.0.1:7399` is reachable** as `host.openshell.internal:7399`, with bash's
+  `/dev/tcp`. The server saw the request come from `127.0.0.1`. So on OrbStack the open question in Q1 is settled: a
+  host service can stay on loopback.
+- **Nothing else is.** From the same sandbox, `host.openshell.internal:17670` (OpenShell's own gateway) and
+  `api.github.com:443` were refused with `Permission denied`, and `127.0.0.1:7399` with `Connection refused`.
+- **A rule is held to its binary.** Perl run as the sandbox's own command was refused the same host and port.
+  Perl started from bash got through, as the docs say: a rule covers a listed binary's children. So a rule naming an
+  agent's shell or interpreter covers whatever it runs.
+- **Patchbay's gateway answers MCP from the sandbox once it accepts the name.** rmcp's HTTP server only accepts a
+  `Host` of `localhost`, `127.0.0.1` or `::1`, and answered `403` to `Host: host.openshell.internal:7399`. Sending
+  `Host: 127.0.0.1:7399` instead is refused by OpenShell itself (`403`, even with a wrong token), since it checks a
+  request's Host against where it's going. With `host.openshell.internal` added to the gateway's allowed hosts
+  (`StreamableHttpServerConfig::with_allowed_hosts`, a local change not kept), bash in the sandbox initialized an
+  MCP session, listed Patchbay's tools (`fetch__fetch`), and a wrong token still got `401`.
+
+So for Patchbay the change is small: accept `host.openshell.internal` as a Host (opt-in, as LAN access is planned),
+and give sandbox clients an entry that uses that name. Docker Desktop and the MicroVM driver were not tried.
 
 ## Not established by these sources
 

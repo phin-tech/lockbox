@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use gpui_kit::*;
 
-use lockbox_core::{Frame, Screen, State};
+use playpen_core::{Frame, Screen, State};
 
 use crate::settings;
 

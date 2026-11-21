@@ -9,7 +9,7 @@ use rust_i18n::t;
 
 use crate::shortcuts::RunAction;
 
-const APP: &str = "Lockbox";
+const APP: &str = "Playpen";
 
 fn run(label: Cow<str>, name: &'static str) -> MenuItem {
     MenuItem::action(label.into_owned(), RunAction { name })
@@ -49,6 +49,7 @@ pub fn menus() -> Vec<Menu> {
         menu(
             t!("File"),
             vec![
+                run(t!("New Agent…"), "sandbox.new"),
                 run(t!("New Window"), "file.new"),
                 MenuItem::separator(),
                 run(t!("Close Window"), "file.close"),
@@ -70,8 +71,7 @@ pub fn menus() -> Vec<Menu> {
         menu(
             t!("View"),
             vec![
-                run(t!("Add One"), "tally.add"),
-                run(t!("Clear"), "tally.clear"),
+                run(t!("Refresh"), "sandboxes.refresh"),
                 MenuItem::separator(),
                 run(t!("Command Palette…"), "app.palette"),
                 MenuItem::separator(),
@@ -81,6 +81,24 @@ pub fn menus() -> Vec<Menu> {
                 MenuItem::separator(),
                 run(t!("Dark Mode"), "view.dark"),
                 // macOS adds Enter Full Screen here itself; ⌃⌘F stays bound to window.fullscreen for it.
+            ],
+        ),
+        menu(
+            t!("Sandbox"),
+            vec![
+                run(t!("Open Agent"), "sandbox.open"),
+                run(t!("Continue Last Conversation"), "sandbox.continue"),
+                run(t!("Open Shell"), "sandbox.shell"),
+                MenuItem::separator(),
+                run(t!("Open in Herdr App"), "sandbox.open-herdr"),
+                run(t!("Open in Ghostty"), "sandbox.open-ghostty"),
+                run(t!("Open in Terminal"), "sandbox.open-terminal"),
+                MenuItem::separator(),
+                run(t!("Start"), "sandbox.start"),
+                run(t!("Restart"), "sandbox.restart"),
+                run(t!("Stop"), "sandbox.stop"),
+                MenuItem::separator(),
+                run(t!("Delete…"), "sandbox.delete"),
             ],
         ),
         // GPUI finds the Window menu by this name to make it the system's, so it stays as it is.

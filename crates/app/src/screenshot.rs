@@ -47,13 +47,13 @@ fn click(window: &mut Window, cx: &mut App, x: f32, y: f32, modifiers: Modifiers
     );
 }
 
-/// Performs `LOCKBOX_KEYS` in the first window, saves a settled frame of the newest one (Settings, after
-/// `cmd-,`) to `LOCKBOX_SHOT` and quits, so the UI can be driven
+/// Performs `PLAYPEN_KEYS` in the first window, saves a settled frame of the newest one (Settings, after
+/// `cmd-,`) to `PLAYPEN_SHOT` and quits, so the UI can be driven
 /// and checked without a screen or screen recording permission. Steps are separated by spaces: a key such as `j` or
 /// `enter`, `click:X,Y` in window points (half the frame's pixels, which are 2x), with modifiers like `cmd-click:X,Y`,
 /// or `wait` for half a second.
 pub fn capture(cx: &mut App) {
-    let path = std::env::var("LOCKBOX_SHOT").expect("LOCKBOX_SHOT is not set");
+    let path = std::env::var("PLAYPEN_SHOT").expect("PLAYPEN_SHOT is not set");
     cx.spawn(async move |cx| {
         let frame = Duration::from_millis(100);
         for _ in 0..10 {
@@ -61,7 +61,7 @@ pub fn capture(cx: &mut App) {
             cx.background_executor().timer(frame).await;
         }
         // The keystroke parser wants a static string, and this process exits shortly.
-        let keys = std::env::var("LOCKBOX_KEYS").unwrap_or_default().leak();
+        let keys = std::env::var("PLAYPEN_KEYS").unwrap_or_default().leak();
         for step in keys.split_whitespace() {
             if step == "wait" {
                 for _ in 0..5 {

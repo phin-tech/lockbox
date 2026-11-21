@@ -1,0 +1,12 @@
+{
+  "next_page_token": "",
+  "providers": [
+    {
+      "name": "claude-sub",
+      "type": "claude-code-oauth",
+      "credential_keys": [
+        "CLAUDE_CODE_OAUTH_TOKEN"
+      ]
+    }
+  ]
+}

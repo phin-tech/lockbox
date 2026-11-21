@@ -1,0 +1,41 @@
+---
+source: crates/core/src/provider.rs
+expression: chatgpt.profile()
+---
+# Written by Playpen.
+id: playpen-chatgpt
+display_name: "ChatGPT Subscription"
+description: "ChatGPT Subscription, added by Playpen"
+category: inference
+inference_capable: true
+credentials:
+  - name: api_key
+    description: "ChatGPT Subscription key"
+    env_vars: [CHATGPT_ACCESS_TOKEN]
+    required: true
+    auth_style: bearer
+    header_name: authorization
+    refresh:
+      strategy: oauth2_refresh_token
+      token_url: https://auth.openai.com/oauth/token
+      refresh_before: "86400s"
+      material:
+        - name: client_id
+          required: true
+          secret: false
+        - name: refresh_token
+          required: true
+          secret: true
+discovery:
+  credentials: [api_key]
+endpoints:
+  - host: chatgpt.com
+    port: 443
+    protocol: rest
+    access: read-write
+    enforcement: enforce
+  - host: api.openai.com
+    port: 443
+    protocol: rest
+    access: read-write
+    enforcement: enforce

@@ -12,7 +12,7 @@ const PRIMARY: &str = if cfg!(target_os = "macos") {
 
 /// Runs a named Command.
 #[derive(Action, Clone, PartialEq, Eq)]
-#[action(namespace = lockbox, no_json)]
+#[action(namespace = playpen, no_json)]
 pub struct RunAction {
     pub name: &'static str,
 }
@@ -28,7 +28,8 @@ pub const SHORTCUTS: &[(&str, &str, Option<&str>)] = &[
     ("primary-,", "app.settings", None),
     ("primary-h", "app.hide", None),
     ("primary-alt-h", "app.hide-others", None),
-    ("primary-n", "file.new", None),
+    ("primary-n", "sandbox.new", None),
+    ("primary-shift-n", "file.new", None),
     ("primary-w", "file.close", None),
     ("primary-m", "window.minimize", None),
     ("ctrl-primary-f", "window.fullscreen", None),
@@ -40,8 +41,15 @@ pub const SHORTCUTS: &[(&str, &str, Option<&str>)] = &[
     ("primary-+", "view.bigger-text", None),
     ("primary--", "view.smaller-text", None),
     ("primary-0", "view.actual-text", None),
-    ("space", "tally.add", Some(CONTEXT)),
-    ("primary-backspace", "tally.clear", Some(CONTEXT)),
+    ("primary-o", "sandbox.open", None),
+    ("primary-shift-o", "sandbox.continue", None),
+    ("primary-alt-o", "sandbox.open-terminal", None),
+    ("enter", "sandbox.open", Some(CONTEXT)),
+    ("primary-.", "sandbox.stop", None),
+    ("primary-backspace", "sandbox.delete", Some(CONTEXT)),
+    ("primary-r", "sandboxes.refresh", None),
+    ("down", "sandbox.next", Some(CONTEXT)),
+    ("up", "sandbox.previous", Some(CONTEXT)),
 ];
 
 /// A key sequence with this platform's modifier in place of `primary`. Bindings want a static string, and they're only

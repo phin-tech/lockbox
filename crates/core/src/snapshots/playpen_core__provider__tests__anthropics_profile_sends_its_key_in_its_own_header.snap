@@ -1,0 +1,25 @@
+---
+source: crates/core/src/provider.rs
+expression: anthropic.profile()
+---
+# Written by Playpen.
+id: playpen-anthropic
+display_name: "Anthropic"
+description: "Anthropic, added by Playpen"
+category: inference
+inference_capable: true
+credentials:
+  - name: api_key
+    description: "Anthropic key"
+    env_vars: [ANTHROPIC_API_KEY]
+    required: true
+    auth_style: header
+    header_name: x-api-key
+discovery:
+  credentials: [api_key]
+endpoints:
+  - host: api.anthropic.com
+    port: 443
+    protocol: rest
+    access: read-write
+    enforcement: enforce

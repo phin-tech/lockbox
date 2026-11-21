@@ -1,10 +1,10 @@
-# Developing Lockbox
+# Developing Playpen
 
 You need rustup (`rust-toolchain.toml` names the toolchain), `just`, `uv`, and Xcode's command line tools.
 
 | Recipe | Use |
 | --- | --- |
-| `just run` | Build a debug `Lockbox.app` and run it |
+| `just run` | Build a debug `Playpen.app` and run it |
 | `just run-as dark` | The same in a forced appearance |
 | `just test` | Every test, with cargo-nextest if it's installed |
 | `just inspect` | The app with the element inspector (⌥⌘I) |
@@ -19,7 +19,7 @@ You need rustup (`rust-toolchain.toml` names the toolchain), `just`, `uv`, and X
 
 ## Settings
 
-The Settings window (⌘,) keeps its choices in `~/Library/Application Support/tech.phin.lockbox/settings.toml`, through
+The Settings window (⌘,) keeps its choices in `~/Library/Application Support/tech.phin.playpen/settings.toml`, through
 `Settings` in `crates/core`, which is where a new setting goes: a field with a default, so an old file still reads.
 A file this version doesn't understand gives the defaults, and saving keeps keys it doesn't know. Captures use none.
 The main window's place is kept beside them, in `state.toml`, and put back unless its display has gone.
@@ -52,17 +52,17 @@ any app.
 
 ## Logs and crashes
 
-The app logs with `tracing` to stderr and to `~/Library/Logs/tech.phin.lockbox/`, a file a day for a week; Help > Show
-Logs in Finder opens the folder. `LOCKBOX_LOG` says how much (`debug`, `lockbox=trace`), as
+The app logs with `tracing` to stderr and to `~/Library/Logs/tech.phin.playpen/`, a file a day for a week; Help > Show
+Logs in Finder opens the folder. `PLAYPEN_LOG` says how much (`debug`, `playpen=trace`), as
 `RUST_LOG` does. A panic writes `crash-<time>.log` there with the backtrace, and the next launch offers to show it.
-`LOCKBOX_LOGS` puts both somewhere else.
+`PLAYPEN_LOGS` puts both somewhere else.
 
 `packaging/app.entitlements` holds what the app may do under the hardened runtime, for `just run` and a release alike;
 it starts empty. Add a key there, and its usage string to `packaging/Info.plist`, when the app needs one.
 
 ## The command line
 
-`Lockbox.app/Contents/MacOS/Lockbox --version` answers without opening a window: `main` hands a command
+`Playpen.app/Contents/MacOS/Playpen --version` answers without opening a window: `main` hands a command
 line `crates/cli` knows to it first, and anything else opens the app, since macOS starts apps with arguments of its
 own. Add a command to `Command` and `parse`; a release ships whatever is
 in it, since it's the same binary.## CI
@@ -108,7 +108,7 @@ A release puts the zip on [apps.phin.tech](https://apps.phin.tech), with `latest
 (only these people, after signing in) and `pin` (Staff Pick, first on its shelf). `just release-tool page` redraws the
 page without a release.
 
-The page is drawn as a 1990s software shop, and Lockbox is also on the shelves of the
+The page is drawn as a 1990s software shop, and Playpen is also on the shelves of the
 [Phin Tech Store](https://github.com/phin-tech/phin-tech-store) app, which reads the same catalog. Both show it as a
 boxed package with a magazine ad; until it has an ad of its own, the box is plain and the ad is its description. To give
 it one, in the phin-tech-store repo, using its key in the page's

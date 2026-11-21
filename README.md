@@ -1,4 +1,4 @@
-# Lockbox
+# Playpen
 
 Run your agents in OpenShell sandboxes, and decide what they may reach
 

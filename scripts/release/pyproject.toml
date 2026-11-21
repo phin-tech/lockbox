@@ -1,9 +1,9 @@
-# The release tool, app-release (https://git.phin.tech/sam/app-release), pinned; what it knows about Lockbox is
+# The release tool, app-release (https://git.phin.tech/sam/app-release), pinned; what it knows about Playpen is
 # in release.toml. To move to a newer one, change the pin, then `uv lock --upgrade-package app-release --project
 # scripts/release`. app-release is private, so uv's git clone needs a credential for https://git.phin.tech (a Forgejo
 # token in a git credential helper).
 [project]
-name = "lockbox-release"
+name = "playpen-release"
 version = "0"
 requires-python = ">=3.12"
 dependencies = ["app-release"]

@@ -186,7 +186,7 @@ wheels = [
 ]
 
 [[package]]
-name = "lockbox-release"
+name = "playpen-release"
 version = "0"
 source = { virtual = "." }
 dependencies = [

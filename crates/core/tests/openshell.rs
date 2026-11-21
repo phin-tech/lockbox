@@ -70,6 +70,7 @@ fn claude_code_answers_from_a_sandbox_playpen_made() {
         name: format!("playpen-test-{}", std::process::id()),
         agent: Agent::ClaudeCode,
         provider: Some(provider),
+        account: None,
         folder: Some(folder),
     };
     let steps = std::sync::Mutex::new(Vec::new());

@@ -24,7 +24,14 @@ pub enum Kind {
     ZAi,
     /// A LiteLLM proxy, at an address the person gives.
     LiteLlm,
+    /// Codex on a ChatGPT subscription, signed in with a login of the sandboxes' own. OpenShell renews its access
+    /// token with the refresh token it holds, so neither ever enters a sandbox.
+    ChatGptSubscription,
 }
+
+/// Where OpenAI renews a ChatGPT login, and the client Codex signs in as, which a renewal names too.
+pub const CHATGPT_TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
+pub const CHATGPT_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 
 /// How the key is sent on each request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,8 +63,9 @@ pub enum ProviderError {
 }
 
 impl Kind {
-    pub const ALL: [Kind; 7] = [
+    pub const ALL: [Kind; 8] = [
         Kind::ClaudeSubscription,
+        Kind::ChatGptSubscription,
         Kind::Anthropic,
         Kind::OpenAi,
         Kind::OpenRouter,
@@ -75,6 +83,7 @@ impl Kind {
             Kind::Fireworks => "Fireworks",
             Kind::ZAi => "Z.ai",
             Kind::LiteLlm => "LiteLLM",
+            Kind::ChatGptSubscription => "ChatGPT Subscription",
         }
     }
 
@@ -100,6 +109,7 @@ impl Kind {
             Kind::Fireworks => "playpen-fireworks",
             Kind::ZAi => "playpen-zai",
             Kind::LiteLlm => "playpen-litellm",
+            Kind::ChatGptSubscription => "playpen-chatgpt",
         }
     }
 
@@ -113,6 +123,7 @@ impl Kind {
             Kind::Fireworks => "FIREWORKS_API_KEY",
             Kind::ZAi => "ZAI_API_KEY",
             Kind::LiteLlm => "LITELLM_API_KEY",
+            Kind::ChatGptSubscription => "CHATGPT_ACCESS_TOKEN",
         }
     }
 
@@ -123,21 +134,27 @@ impl Kind {
         }
     }
 
-    /// The host the key goes to, for every kind but LiteLLM, whose host is the person's.
-    fn host(self) -> Option<&'static str> {
+    /// The hosts the key goes to, for every kind but LiteLLM, whose host is the person's.
+    pub fn hosts(self) -> &'static [&'static str] {
         match self {
-            Kind::ClaudeSubscription | Kind::Anthropic => Some("api.anthropic.com"),
-            Kind::OpenAi => Some("api.openai.com"),
-            Kind::OpenRouter => Some("openrouter.ai"),
-            Kind::Fireworks => Some("api.fireworks.ai"),
-            Kind::ZAi => Some("api.z.ai"),
-            Kind::LiteLlm => None,
+            Kind::ClaudeSubscription | Kind::Anthropic => &["api.anthropic.com"],
+            Kind::OpenAi => &["api.openai.com"],
+            Kind::OpenRouter => &["openrouter.ai"],
+            Kind::Fireworks => &["api.fireworks.ai"],
+            Kind::ZAi => &["api.z.ai"],
+            Kind::LiteLlm => &[],
+            Kind::ChatGptSubscription => &["chatgpt.com", "api.openai.com"],
         }
     }
 
     /// Whether the person gives its address.
     pub fn needs_address(self) -> bool {
-        self.host().is_none()
+        self.hosts().is_empty()
+    }
+
+    /// Whether the person signs in rather than pasting a key.
+    pub fn signs_in(self) -> bool {
+        self == Kind::ChatGptSubscription
     }
 
     /// Where the person gets a key, said beside the field it goes in.
@@ -150,6 +167,9 @@ impl Kind {
             Kind::Fireworks => "An API key from fireworks.ai.",
             Kind::ZAi => "An API key from z.ai.",
             Kind::LiteLlm => "A virtual key from the proxy's admin.",
+            Kind::ChatGptSubscription => {
+                "Sign in to ChatGPT in the Terminal window that opens. This is a login of the sandboxes' own, so your Mac's Codex stays signed in."
+            }
         }
     }
 
@@ -163,6 +183,7 @@ impl Kind {
             Kind::Fireworks => "fireworks",
             Kind::ZAi => "zai",
             Kind::LiteLlm => "litellm",
+            Kind::ChatGptSubscription => "chatgpt",
         }
     }
 }
@@ -243,35 +264,54 @@ impl NewProvider {
     /// The profile OpenShell takes the provider's type from, as YAML.
     pub fn profile(&self) -> String {
         let kind = self.kind;
-        let endpoint = match (&self.endpoint, kind.host()) {
-            (Some(endpoint), _) => endpoint.clone(),
-            (None, Some(host)) => Endpoint {
-                host: host.to_string(),
-                port: 443,
-            },
-            (None, None) => Endpoint {
-                host: String::new(),
-                port: 443,
-            },
+        let endpoints: Vec<Endpoint> = match &self.endpoint {
+            Some(endpoint) => vec![endpoint.clone()],
+            None => kind
+                .hosts()
+                .iter()
+                .map(|host| Endpoint {
+                    host: (*host).to_string(),
+                    port: 443,
+                })
+                .collect(),
         };
         let (auth_style, header) = match kind.auth() {
             Auth::Bearer => ("bearer", "authorization"),
             Auth::Header(header) => ("header", header),
         };
-        let (display, description) = match kind {
-            Kind::LiteLlm => (
+        let (display, description) = match (kind, endpoints.first()) {
+            (Kind::LiteLlm, Some(endpoint)) => (
                 format!("LiteLLM ({})", endpoint.host),
                 format!(
                     "The LiteLLM proxy at {}:{}, added by Playpen",
                     endpoint.host, endpoint.port
                 ),
             ),
-            kind => (
+            (kind, _) => (
                 kind.name().to_string(),
                 format!("{}, added by Playpen", kind.name()),
             ),
         };
-        format!(
+        // OpenShell renews a ChatGPT login's access token before it expires, a day ahead, with the refresh token
+        // Playpen gives it as secret material.
+        let refresh = if kind == Kind::ChatGptSubscription {
+            format!(
+                "    refresh:\n      \
+                   strategy: oauth2_refresh_token\n      \
+                   token_url: {CHATGPT_TOKEN_URL}\n      \
+                   refresh_before: \"86400s\"\n      \
+                   material:\n        \
+                     - name: client_id\n          \
+                       required: true\n          \
+                       secret: false\n        \
+                     - name: refresh_token\n          \
+                       required: true\n          \
+                       secret: true\n"
+            )
+        } else {
+            String::new()
+        };
+        let mut profile = format!(
             "# Written by Playpen.\n\
              id: {id}\n\
              display_name: {display}\n\
@@ -285,22 +325,28 @@ impl NewProvider {
                  required: true\n    \
                  auth_style: {auth_style}\n    \
                  header_name: {header}\n\
+             {refresh}\
              discovery:\n  \
                credentials: [api_key]\n\
-             endpoints:\n  \
-               - host: {host}\n    \
-                 port: {port}\n    \
-                 protocol: rest\n    \
-                 access: read-write\n    \
-                 enforcement: enforce\n",
+             endpoints:\n",
             id = self.profile_id(),
             display = yaml_string(&display),
             description = yaml_string(&description),
             key_name = yaml_string(&format!("{} key", kind.name())),
             variable = kind.variable(),
-            host = endpoint.host,
-            port = endpoint.port,
-        )
+        );
+        for endpoint in endpoints {
+            profile.push_str(&format!(
+                "  - host: {host}\n    \
+                   port: {port}\n    \
+                   protocol: rest\n    \
+                   access: read-write\n    \
+                   enforcement: enforce\n",
+                host = endpoint.host,
+                port = endpoint.port,
+            ));
+        }
+        profile
     }
 }
 
@@ -388,6 +434,12 @@ mod tests {
         let work =
             NewProvider::new(Kind::LiteLlm, "work", "http://litellm.example.com:4000").unwrap();
         insta::assert_snapshot!(work.profile());
+    }
+
+    #[test]
+    fn a_chatgpt_login_is_renewed_by_openshell_and_sent_to_chatgpt_and_openai() {
+        let chatgpt = NewProvider::new(Kind::ChatGptSubscription, "chatgpt", "").unwrap();
+        insta::assert_snapshot!(chatgpt.profile());
     }
 
     #[test]

@@ -3,6 +3,7 @@
 
 use std::path::PathBuf;
 
+use anyhow::Context as _;
 use futures::StreamExt as _;
 use futures::channel::mpsc;
 use playpen_core::{Docker, Plan, Provider, Step, suggested_name};
@@ -16,8 +17,8 @@ pub struct Making {
     /// The name Playpen last suggested, which choosing a folder may change while the person hasn't typed another.
     suggested: String,
     folder: Option<PathBuf>,
-    /// The providers that hold a key the agent can use, once OpenShell has listed them.
-    providers: Option<Result<Vec<Provider>, String>>,
+    /// Every provider, once OpenShell has listed them, of which the agent can use some.
+    listed: Option<Result<Vec<Provider>, String>>,
     provider: Option<String>,
     pub(super) state: MakeState,
     _changed: Subscription,
@@ -71,7 +72,7 @@ impl MainView {
             name,
             suggested,
             folder: None,
-            providers: None,
+            listed: None,
             provider: None,
             state: MakeState::Choosing,
             _changed: changed,
@@ -82,7 +83,7 @@ impl MainView {
         cx.notify();
     }
 
-    /// Takes in the providers OpenShell listed, keeping those whose key the agent can use, and chooses the first.
+    /// Takes in the providers OpenShell listed, and chooses the first whose key the agent can use.
     pub(super) fn providers_listed(
         &mut self,
         listed: Result<Vec<Provider>, String>,
@@ -91,19 +92,34 @@ impl MainView {
         let Some(making) = &mut self.making else {
             return;
         };
-        let kinds = making.agent.provider_kinds();
-        let usable = listed.map(|providers| {
-            providers
-                .into_iter()
-                .filter(|provider| kinds.contains(&provider.kind.as_str()))
-                .collect::<Vec<_>>()
-        });
-        making.provider = usable
-            .as_ref()
-            .ok()
-            .and_then(|providers| providers.first())
-            .map(|provider| provider.name.clone());
-        making.providers = Some(usable);
+        making.listed = Some(listed);
+        making.choose_first_provider();
+        cx.notify();
+    }
+
+    /// Chooses the agent, which may change the name Playpen suggests and the providers it can use.
+    pub(super) fn choose_agent(
+        &mut self,
+        agent: Agent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(making) = &mut self.making else {
+            return;
+        };
+        if making.agent == agent {
+            return;
+        }
+        let typed = making.name.read(cx).value().trim().to_string();
+        if typed == making.suggested || typed.is_empty() {
+            let suggested = suggested_name(agent, making.folder.as_deref());
+            making
+                .name
+                .update(cx, |name, cx| name.set_value(suggested.clone(), window, cx));
+            making.suggested = suggested;
+        }
+        making.agent = agent;
+        making.choose_first_provider();
         cx.notify();
     }
 
@@ -173,10 +189,19 @@ impl MainView {
         if matches!(making.state, MakeState::Working(_)) || making.provider.is_none() {
             return;
         }
+        let account = match making.account() {
+            Ok(account) => account,
+            Err(error) => {
+                making.state = MakeState::Failed(error.to_string());
+                cx.notify();
+                return;
+            }
+        };
         let plan = Plan {
             name: making.name.read(cx).value().trim().to_string(),
             agent: making.agent,
             provider: making.provider.clone(),
+            account,
             folder: making.folder.clone(),
         };
         if !playpen_core::is_sandbox_name(&plan.name) {
@@ -268,7 +293,7 @@ impl MainView {
                     .label(t!("Choose…").into_owned())
                     .on_click(cx.listener(|this, _, window, cx| this.choose_folder(window, cx))),
             );
-        let providers = match &making.providers {
+        let providers = match making.usable() {
             None => hint(t!("Asking OpenShell…"), cx),
             Some(Err(error)) => div()
                 .text_sm()
@@ -312,6 +337,7 @@ impl MainView {
                 ),
                 Step::Creating => t!("Making the sandbox…"),
                 Step::Copying => t!("Copying the folder in…"),
+                Step::Preparing => t!("Setting up %{agent}…", agent = making.agent.name()),
             }
             .into_owned())),
             MakeState::Failed(error) => div().text_sm().text_color(theme.danger).child(error.clone()),
@@ -319,7 +345,19 @@ impl MainView {
         let body = v_flex()
             .gap_5()
             .p_4()
-            .child(section(t!("Agent"), cx).child(div().child(making.agent.name())))
+            .child(
+                section(t!("Agent"), cx).child(h_flex().gap_4().children(Agent::ALL.map(
+                    |agent| {
+                        Radio::new(ElementId::from((ElementId::from("agent"), agent.id())))
+                            .label(agent.name())
+                            .checked(making.agent == agent)
+                            .disabled(working)
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.choose_agent(agent, window, cx);
+                            }))
+                    },
+                ))),
+            )
             .child(
                 section(t!("Name"), cx).child(div().w(rems(20.)).child(small_field(&making.name))),
             )
@@ -331,6 +369,49 @@ impl MainView {
             .child(header)
             .child(div().id("making").flex_1().overflow_y_scroll().child(body))
             .into_any_element()
+    }
+}
+
+impl Making {
+    /// The providers whose key the agent can use, once OpenShell has listed them.
+    fn usable(&self) -> Option<Result<Vec<&Provider>, &String>> {
+        let kinds = self.agent.provider_kinds();
+        self.listed.as_ref().map(|listed| {
+            listed.as_ref().map(|providers| {
+                providers
+                    .iter()
+                    .filter(|provider| kinds.contains(&provider.kind.as_str()))
+                    .collect()
+            })
+        })
+    }
+
+    fn choose_first_provider(&mut self) {
+        self.provider = self
+            .usable()
+            .and_then(Result::ok)
+            .and_then(|providers| providers.first().map(|provider| provider.name.clone()));
+    }
+
+    /// The ChatGPT account Playpen kept for the chosen provider, when it's a ChatGPT subscription.
+    fn account(&self) -> anyhow::Result<Option<playpen_core::Account>> {
+        let chosen = self.usable().and_then(Result::ok).and_then(|providers| {
+            providers
+                .into_iter()
+                .find(|provider| Some(&provider.name) == self.provider.as_ref())
+                .cloned()
+        });
+        let Some(provider) = chosen else {
+            return Ok(None);
+        };
+        if provider.playpen_kind() != Some(playpen_core::Kind::ChatGptSubscription) {
+            return Ok(None);
+        }
+        let folder = crate::settings::file("chatgpt")
+            .context("Playpen keeps no files here, so it has no ChatGPT account")?;
+        playpen_core::Account::load(&folder, &provider.name)
+            .map(Some)
+            .context("Sign the ChatGPT provider in again in Settings ▸ Providers")
     }
 }
 

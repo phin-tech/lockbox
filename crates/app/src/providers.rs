@@ -13,7 +13,12 @@ use gpui_kit::component::{
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
-use playpen_core::{Key, Kind, NewProvider, OpenShell, Provider, ProviderError};
+use std::time::{Duration, Instant};
+
+use playpen_core::{
+    Account, ChatGptError, Key, Kind, Login, NewProvider, OpenShell, Provider, ProviderError,
+    find_codex,
+};
 use rust_i18n::t;
 
 /// The providers part of Settings.
@@ -45,6 +50,8 @@ struct Form {
     /// The name Playpen last suggested, which choosing another kind changes while the person hasn't typed one.
     suggested: String,
     saving: bool,
+    /// Whether it's waiting for the person to sign in, in Terminal.
+    signing_in: bool,
     _chose: Subscription,
 }
 
@@ -175,6 +182,7 @@ impl Providers {
             key,
             suggested,
             saving: false,
+            signing_in: false,
             _chose: chose,
         });
         self.failed = None;
@@ -197,23 +205,21 @@ impl Providers {
     }
 
     fn cancel(&mut self, cx: &mut Context<Self>) {
+        if self.form.as_ref().is_some_and(|form| form.signing_in) {
+            // Ending the wait ends the sign-in, and deletes its folder.
+            self._working = None;
+        }
         self.form = None;
         self.failed = None;
         cx.notify();
     }
 
-    /// Adds the provider, or gives it its new key, off the window's thread.
+    /// Adds the provider, or gives it its new key, off the window's thread. A ChatGPT subscription signs in instead.
     fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(form) = &mut self.form else {
             return;
         };
         if form.saving {
-            return;
-        }
-        let key = Key::new(&form.key.read(cx).value());
-        if key.is_empty() {
-            self.failed = Some(ProviderError::NoKey.to_string());
-            cx.notify();
             return;
         }
         let job = match &form.replacing {
@@ -231,6 +237,16 @@ impl Providers {
                 }
             },
         };
+        if form.kind.signs_in() {
+            self.sign_in(job, window, cx);
+            return;
+        }
+        let key = Key::new(&form.key.read(cx).value());
+        if key.is_empty() {
+            self.failed = Some(ProviderError::NoKey.to_string());
+            cx.notify();
+            return;
+        }
         form.saving = true;
         self.failed = None;
         let saved = cx.background_spawn(async move {
@@ -243,23 +259,105 @@ impl Providers {
         });
         self._working = Some(cx.spawn_in(window, async move |this, cx| {
             let saved = saved.await;
-            let _ = this.update_in(cx, |this, window, cx| match saved {
-                Ok(name) => {
-                    tracing::info!(provider = %name, "saved a provider");
-                    this.form = None;
-                    this.refresh(window, cx);
-                    cx.notify();
-                }
-                Err(error) => {
-                    tracing::warn!("couldn't save a provider: {error:#}");
-                    if let Some(form) = &mut this.form {
-                        form.saving = false;
-                    }
-                    this.failed = Some(format!("{error:#}"));
-                    cx.notify();
-                }
-            });
+            let _ = this.update_in(cx, |this, window, cx| this.saved(saved, window, cx));
         }));
+        cx.notify();
+    }
+
+    /// Signs in to ChatGPT with the Mac's Codex, in Terminal, into a folder of Playpen's, and waits up to a quarter of
+    /// an hour for the login to appear there. Its tokens go to OpenShell and the folder is deleted; the account is
+    /// kept, for the sandboxes that use the provider.
+    fn sign_in(&mut self, job: Job, window: &mut Window, cx: &mut Context<Self>) {
+        let started = (|| {
+            let codex = find_codex().ok_or(ChatGptError::NoCodex)?;
+            let login = Login::start()?;
+            playpen_core::session::show_in_terminal(
+                "chatgpt-sign-in",
+                &login.command_line(&codex),
+            )?;
+            anyhow::Ok(login)
+        })();
+        let login = match started {
+            Ok(login) => login,
+            Err(error) => {
+                tracing::warn!("couldn't start signing in to ChatGPT: {error:#}");
+                self.failed = Some(format!("{error:#}"));
+                cx.notify();
+                return;
+            }
+        };
+        if let Some(form) = &mut self.form {
+            form.saving = true;
+            form.signing_in = true;
+        }
+        self.failed = None;
+        tracing::info!(provider = %job.name(), "signing in to ChatGPT");
+        let accounts = crate::settings::file("chatgpt");
+        self._working = Some(cx.spawn_in(window, async move |this, cx| {
+            let deadline = Instant::now() + Duration::from_secs(15 * 60);
+            let signed_in = loop {
+                if let Some(tokens) = login.tokens() {
+                    break tokens;
+                }
+                if Instant::now() > deadline {
+                    break Err(ChatGptError::Unreadable(
+                        "nobody signed in within a quarter of an hour".to_string(),
+                    ));
+                }
+                cx.background_executor().timer(Duration::from_secs(1)).await;
+            };
+            // The login's folder holds its tokens, so it goes as soon as they're read.
+            drop(login);
+            let saved = match signed_in {
+                Err(error) => Err(error.into()),
+                Ok(tokens) => {
+                    let _ = this.update(cx, |this, cx| {
+                        if let Some(form) = &mut this.form {
+                            form.signing_in = false;
+                        }
+                        cx.notify();
+                    });
+                    cx.background_spawn(async move {
+                        let openshell = OpenShell::find()?;
+                        match &job {
+                            Job::Add(new) => openshell.add_signed_in(new, &tokens)?,
+                            Job::Replace(provider) => openshell.sign_in_again(provider, &tokens)?,
+                        }
+                        if let Some(accounts) = accounts {
+                            tokens.account.save(&accounts, job.name())?;
+                        }
+                        anyhow::Ok(job.name().to_string())
+                    })
+                    .await
+                }
+            };
+            let _ = this.update_in(cx, |this, window, cx| this.saved(saved, window, cx));
+        }));
+        cx.notify();
+    }
+
+    /// Closes the form once a provider is saved, or says why it wasn't.
+    fn saved(
+        &mut self,
+        saved: anyhow::Result<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match saved {
+            Ok(name) => {
+                tracing::info!(provider = %name, "saved a provider");
+                self.form = None;
+                self.refresh(window, cx);
+            }
+            Err(error) => {
+                tracing::warn!("couldn't save a provider: {error:#}");
+                if let Some(form) = &mut self.form {
+                    form.saving = false;
+                    form.signing_in = false;
+                }
+                self.failed = Some(format!("{error:#}"));
+            }
+        }
         cx.notify();
     }
 
@@ -280,8 +378,17 @@ impl Providers {
                 return;
             }
             let name = provider.name.clone();
+            let accounts = crate::settings::file("chatgpt");
             let deleted = cx
-                .background_spawn(async move { OpenShell::find()?.delete_provider(&provider) })
+                .background_spawn(async move {
+                    OpenShell::find()?.delete_provider(&provider)?;
+                    if provider.playpen_kind() == Some(Kind::ChatGptSubscription)
+                        && let Some(accounts) = accounts
+                    {
+                        Account::forget(&accounts, &provider.name);
+                    }
+                    Ok::<_, playpen_core::OpenShellError>(())
+                })
                 .await;
             let _ = this.update_in(cx, |this, window, cx| {
                 match deleted {
@@ -341,7 +448,14 @@ impl Providers {
                     Button::new(id("replace-key"))
                         .xsmall()
                         .outline()
-                        .label(t!("Replace Key…").into_owned())
+                        .label(
+                            if provider.playpen_kind() == Some(Kind::ChatGptSubscription) {
+                                t!("Sign In Again…")
+                            } else {
+                                t!("Replace Key…")
+                            }
+                            .into_owned(),
+                        )
                         .disabled(provider.playpen_kind().is_none() || self.form.is_some())
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.start_replacing(replace.clone(), window, cx);
@@ -363,6 +477,9 @@ impl Providers {
     fn form(&self, form: &Form, cx: &Context<Self>) -> Div {
         let adding = form.replacing.is_none();
         let title = match &form.replacing {
+            Some(provider) if form.kind.signs_in() => {
+                t!("Sign “%{name}” In Again", name = provider.name)
+            }
             Some(provider) => t!("New Key for “%{name}”", name = provider.name),
             None => t!("Add a Provider"),
         };
@@ -399,14 +516,27 @@ impl Providers {
                     cx,
                 ))
             })
-            .child(field(
-                t!("Key"),
-                v_flex()
-                    .gap_1()
-                    .child(div().w(rems(20.)).child(small_field(&form.key)))
-                    .child(note(t!(form.kind.where_to_get_a_key()), cx)),
-                cx,
-            ))
+            .map(|this| {
+                if form.kind.signs_in() {
+                    this.child(note(
+                        if form.signing_in {
+                            t!("Waiting for you to sign in, in Terminal…")
+                        } else {
+                            t!(form.kind.where_to_get_a_key())
+                        },
+                        cx,
+                    ))
+                } else {
+                    this.child(field(
+                        t!("Key"),
+                        v_flex()
+                            .gap_1()
+                            .child(div().w(rems(20.)).child(small_field(&form.key)))
+                            .child(note(t!(form.kind.where_to_get_a_key()), cx)),
+                        cx,
+                    ))
+                }
+            })
             .child(
                 h_flex()
                     .gap_2()
@@ -415,7 +545,7 @@ impl Providers {
                         Button::new("cancel-provider")
                             .ghost()
                             .small()
-                            .disabled(form.saving)
+                            .disabled(form.saving && !form.signing_in)
                             .label(t!("Cancel").into_owned())
                             .on_click(cx.listener(|this, _, _, cx| this.cancel(cx))),
                     )
@@ -424,7 +554,14 @@ impl Providers {
                             .primary()
                             .small()
                             .loading(form.saving)
-                            .label(if adding { t!("Add") } else { t!("Replace Key") }.into_owned())
+                            .label(
+                                match (form.kind.signs_in(), adding) {
+                                    (true, _) => t!("Sign In…"),
+                                    (false, true) => t!("Add"),
+                                    (false, false) => t!("Replace Key"),
+                                }
+                                .into_owned(),
+                            )
                             .on_click(cx.listener(|this, _, window, cx| this.save(window, cx))),
                     ),
             )

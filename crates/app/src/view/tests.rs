@@ -5,7 +5,7 @@ use crate::shortcuts::SHORTCUTS;
 use crate::{palette, shortcuts, theme};
 use gpui_kit::base::Root;
 use gpui_kit::{AppContext as _, Context, Entity, TestAppContext, VisualTestContext};
-use playpen_core::{OpenShellError, Phase, Provider, Sandbox};
+use playpen_core::{Agent, OpenShellError, Phase, Provider, Sandbox};
 
 /// Opens a window under the Root the app runs in, whose own bindings are part of what keys do. It asks OpenShell for
 /// nothing; each test gives it the sandboxes it needs.
@@ -132,6 +132,35 @@ fn new_agent_names_the_sandbox_after_the_folder_and_chooses_a_claude_provider(
         let making = view.making.as_ref().expect("New Agent… is showing");
         assert_eq!(making.chosen_provider(), Some("claude-sub"));
         assert_eq!(making.name_typed(cx), "claude-my-app");
+    });
+}
+
+#[gpui_kit::test]
+fn choosing_codex_renames_the_sandbox_and_chooses_a_chatgpt_provider(cx: &mut TestAppContext) {
+    let (view, cx) = open(cx);
+    cx.simulate_keystrokes("cmd-n");
+    cx.run_until_parked();
+    view.update_in(cx, |view, window, cx| {
+        view.providers_listed(
+            Ok(vec![
+                Provider {
+                    name: "claude-sub".to_string(),
+                    kind: "claude-code-oauth".to_string(),
+                },
+                Provider {
+                    name: "chatgpt".to_string(),
+                    kind: "playpen-chatgpt".to_string(),
+                },
+            ]),
+            cx,
+        );
+        view.folder_chosen("/Users/sam/src/Patchbay".into(), window, cx);
+        view.choose_agent(Agent::Codex, window, cx);
+    });
+    view.read_with(cx, |view, cx| {
+        let making = view.making.as_ref().expect("New Agent… is showing");
+        assert_eq!(making.chosen_provider(), Some("chatgpt"));
+        assert_eq!(making.name_typed(cx), "codex-patchbay");
     });
 }
 

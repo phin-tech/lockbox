@@ -9,7 +9,8 @@ use std::process::{Command, Output, Stdio};
 
 use serde::Deserialize;
 
-use crate::provider::{Kind, NewProvider};
+use crate::chatgpt::Tokens;
+use crate::provider::{CHATGPT_CLIENT_ID, Kind, NewProvider};
 
 /// The label Playpen puts on a sandbox it made, naming its [`crate::Agent`].
 pub const AGENT_LABEL: &str = "playpen.agent";
@@ -439,6 +440,99 @@ impl OpenShell {
             Some((variable, key)),
         )
         .map(drop)
+    }
+
+    /// Adds a ChatGPT provider holding a sign-in's access token, and has OpenShell renew it with the sign-in's refresh
+    /// token. A provider that can't be renewed would stop working within days, so it's deleted again if that fails.
+    pub fn add_signed_in(&self, new: &NewProvider, tokens: &Tokens) -> Result<(), OpenShellError> {
+        self.add_provider(new, &tokens.access)?;
+        if let Err(error) = self.renew_with(&new.name, tokens) {
+            let _ = self.run(&error.to_string(), &["provider", "delete", &new.name]);
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// Gives a ChatGPT provider a new sign-in.
+    pub fn sign_in_again(
+        &self,
+        provider: &Provider,
+        tokens: &Tokens,
+    ) -> Result<(), OpenShellError> {
+        self.replace_key(provider, &tokens.access)?;
+        self.renew_with(&provider.name, tokens)
+    }
+
+    /// Has OpenShell renew the ChatGPT provider `name`'s access token with `tokens`' refresh token, as Codex itself
+    /// would, a day before it expires. The refresh token reaches `openshell` through its environment.
+    fn renew_with(&self, name: &str, tokens: &Tokens) -> Result<(), OpenShellError> {
+        const VARIABLE: &str = "PLAYPEN_REFRESH_TOKEN";
+        let client = format!("client_id={CHATGPT_CLIENT_ID}");
+        let refresh = format!("refresh_token={VARIABLE}");
+        let expires = tokens.expires_at_ms.to_string();
+        self.run_with(
+            &format!("set up renewing “{name}”"),
+            &[
+                "provider",
+                "refresh",
+                "configure",
+                name,
+                "--credential-key",
+                Kind::ChatGptSubscription.variable(),
+                "--strategy",
+                "oauth2-refresh-token",
+                "--material",
+                &client,
+                "--secret-material-env",
+                &refresh,
+                "--credential-expires-at",
+                &expires,
+            ],
+            Some((VARIABLE, &tokens.refresh)),
+        )
+        .map(drop)
+    }
+
+    /// Runs `command` in the sandbox `name`, in its home, with `input` on its standard input, and gives what it
+    /// printed. What a sandbox needs that holds anything private goes in this way, never as an argument.
+    pub fn exec_with_input(
+        &self,
+        name: &str,
+        doing: &str,
+        command: &[&str],
+        input: &[u8],
+    ) -> Result<String, OpenShellError> {
+        use std::io::Write as _;
+
+        let mut args = vec!["sandbox", "exec", "--name", name, "--"];
+        args.extend_from_slice(command);
+        let mut child = Command::new(&self.binary)
+            .args(&args)
+            .env("NO_COLOR", "1")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|error| OpenShellError::Run(error.to_string()))?;
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin
+                .write_all(input)
+                .map_err(|error| OpenShellError::Failed(doing.to_string(), error.to_string()))?;
+        }
+        let output = child
+            .wait_with_output()
+            .map_err(|error| OpenShellError::Run(error.to_string()))?;
+        if output.status.success() {
+            Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+        } else {
+            let said = match said(&output.stderr) {
+                said if said == "it gave no reason" => {
+                    String::from_utf8_lossy(&output.stdout).trim().to_string()
+                }
+                said => said,
+            };
+            Err(OpenShellError::Failed(doing.to_string(), said))
+        }
     }
 
     /// Deletes `provider`, and the profile Playpen made for it alone. OpenShell won't while a sandbox uses it.

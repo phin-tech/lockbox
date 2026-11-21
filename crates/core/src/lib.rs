@@ -2,6 +2,7 @@
 //! makes them for.
 
 mod agent;
+mod chatgpt;
 pub mod crash;
 mod docker;
 mod files;
@@ -15,6 +16,7 @@ mod settings;
 mod state;
 
 pub use agent::{Agent, MakeError, Plan, Step, is_sandbox_name, open_command, suggested_name};
+pub use chatgpt::{Account, ChatGptError, Login, Tokens, find_codex};
 pub use docker::{Docker, DockerError};
 pub use files::write_atomically;
 pub use herdr::{AgentState, HerdrApp, HerdrCore, HerdrError};

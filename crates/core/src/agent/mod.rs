@@ -3,6 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::chatgpt::Account;
 use crate::docker::{Docker, DockerError};
 use crate::openshell::{
     AGENT_LABEL, FOLDER_ANNOTATION, OpenShell, OpenShellError, Sandbox, WORKDIR_ANNOTATION,
@@ -12,6 +13,17 @@ use crate::session::What;
 /// The Claude Code release the image is built with. Raising it builds a new image the next time one is needed.
 const CLAUDE_CODE_VERSION: &str = "2.1.329";
 
+/// The Codex release its image is built with.
+const CODEX_VERSION: &str = "0.171.0";
+
+/// Codex's real program, which npm installs for the sandbox's architecture: the Mac's, since Docker on a Mac runs
+/// Linux for the Mac's own chip.
+const CODEX_BINARY: &str = if cfg!(target_arch = "aarch64") {
+    "/usr/local/lib/node_modules/@openai/codex/node_modules/@openai/codex-linux-arm64/vendor/aarch64-unknown-linux-musl/bin/codex"
+} else {
+    "/usr/local/lib/node_modules/@openai/codex/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex"
+};
+
 /// Where a sandbox's own files are, and where a folder is copied to.
 const SANDBOX_HOME: &str = "/sandbox";
 
@@ -19,15 +31,17 @@ const SANDBOX_HOME: &str = "/sandbox";
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Agent {
     ClaudeCode,
+    Codex,
 }
 
 impl Agent {
-    pub const ALL: [Agent; 1] = [Agent::ClaudeCode];
+    pub const ALL: [Agent; 2] = [Agent::ClaudeCode, Agent::Codex];
 
     /// Its name in a sandbox's label.
     pub fn id(self) -> &'static str {
         match self {
             Agent::ClaudeCode => "claude-code",
+            Agent::Codex => "codex",
         }
     }
 
@@ -38,6 +52,7 @@ impl Agent {
     pub fn name(self) -> &'static str {
         match self {
             Agent::ClaudeCode => "Claude Code",
+            Agent::Codex => "Codex",
         }
     }
 
@@ -45,18 +60,21 @@ impl Agent {
     pub fn image(self) -> String {
         match self {
             Agent::ClaudeCode => format!("playpen-claude-code:{CLAUDE_CODE_VERSION}"),
+            Agent::Codex => format!("playpen-codex:{CODEX_VERSION}"),
         }
     }
 
     fn dockerfile(self) -> &'static str {
         match self {
             Agent::ClaudeCode => include_str!("claude-code.Dockerfile"),
+            Agent::Codex => include_str!("codex.Dockerfile"),
         }
     }
 
     fn build_args(self) -> Vec<(&'static str, &'static str)> {
         match self {
             Agent::ClaudeCode => vec![("CLAUDE_CODE_VERSION", CLAUDE_CODE_VERSION)],
+            Agent::Codex => vec![("CODEX_VERSION", CODEX_VERSION)],
         }
     }
 
@@ -64,6 +82,15 @@ impl Agent {
     pub fn command(self) -> &'static str {
         match self {
             Agent::ClaudeCode => "claude",
+            Agent::Codex => "codex",
+        }
+    }
+
+    /// The command that carries on its last conversation in the folder.
+    fn continue_command(self) -> &'static str {
+        match self {
+            Agent::ClaudeCode => "claude --continue",
+            Agent::Codex => "codex resume --last",
         }
     }
 
@@ -74,6 +101,7 @@ impl Agent {
             Agent::ClaudeCode => {
                 "/usr/local/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe"
             }
+            Agent::Codex => CODEX_BINARY,
         }
     }
 
@@ -86,6 +114,7 @@ impl Agent {
                 "anthropic",
                 "playpen-anthropic",
             ],
+            Agent::Codex => &["playpen-chatgpt", "playpen-openai"],
         }
     }
 
@@ -94,6 +123,7 @@ impl Agent {
     fn hosts(self) -> &'static [&'static str] {
         match self {
             Agent::ClaudeCode => &["api.anthropic.com", "platform.claude.com"],
+            Agent::Codex => &["chatgpt.com", "api.openai.com"],
         }
     }
 
@@ -105,6 +135,7 @@ impl Agent {
                 ("DISABLE_AUTOUPDATER", "1"),
                 ("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1"),
             ],
+            Agent::Codex => &[],
         }
     }
 
@@ -136,6 +167,8 @@ pub struct Plan {
     pub agent: Agent,
     /// The provider holding its model's key, by name.
     pub provider: Option<String>,
+    /// The ChatGPT account, when the provider is a ChatGPT subscription.
+    pub account: Option<Account>,
     /// A folder on the Mac to copy in, for it to work on.
     pub folder: Option<PathBuf>,
 }
@@ -148,6 +181,8 @@ pub enum Step {
     Creating,
     /// Copying the folder in.
     Copying,
+    /// Writing the agent's settings in the sandbox.
+    Preparing,
 }
 
 /// Why a sandbox couldn't be made.
@@ -240,17 +275,73 @@ impl Plan {
         let created = openshell.create(&self.name, &self.create_args(&policy));
         let _ = std::fs::remove_file(&policy);
         created?;
+        // A sandbox without its folder or its settings isn't what was asked for, and would keep the name from being
+        // tried again.
         if let Some(folder) = &self.folder {
             step(Step::Copying);
-            // A sandbox without its folder isn't what was asked for, and would keep the name from being tried again.
             if let Err(error) = openshell.upload(&self.name, folder, SANDBOX_HOME) {
+                let _ = openshell.delete(&self.name);
+                return Err(error.into());
+            }
+        }
+        if let Some(setup) = self.setup() {
+            step(Step::Preparing);
+            let input = setup.to_string();
+            if let Err(error) = openshell.exec_with_input(
+                &self.name,
+                &format!("set up {} in “{}”", self.agent.name(), self.name),
+                &["node", "-e", SETUP_SCRIPT],
+                input.as_bytes(),
+            ) {
                 let _ = openshell.delete(&self.name);
                 return Err(error.into());
             }
         }
         Ok(())
     }
+
+    /// What the agent needs written in the sandbox before it starts, given to [`SETUP_SCRIPT`]; none for Claude Code.
+    ///
+    /// Codex runs with its own sandbox off, since OpenShell's is the one that counts and Codex's needs kernel features
+    /// a sandbox doesn't have. On a ChatGPT subscription it gets Codex's own `auth.json`, holding OpenShell's
+    /// stand-in for the access token, which OpenShell swaps for the real one on Codex's requests and renews, and a
+    /// refresh token that isn't one, since OpenShell holds that. Its last refresh is put far ahead so Codex never
+    /// tries to renew the login itself, which it couldn't: the sandbox can't reach OpenAI's sign-in.
+    fn setup(&self) -> Option<serde_json::Value> {
+        match self.agent {
+            Agent::ClaudeCode => None,
+            Agent::Codex => Some(serde_json::json!({
+                "config": "# Written by Playpen.\nsandbox_mode = \"danger-full-access\"\ncheck_for_update_on_startup = false\n",
+                "account": self.account,
+            })),
+        }
+    }
 }
+
+/// Writes an agent's settings in its sandbox, from what [`Plan::setup`] gives on its standard input. It runs in the
+/// sandbox, where the stand-in for a provider's key is in the environment.
+const SETUP_SCRIPT: &str = r#"
+const fs = require("fs");
+const setup = JSON.parse(fs.readFileSync(0, "utf8"));
+const home = "/sandbox/.codex";
+fs.mkdirSync(home, { recursive: true, mode: 0o700 });
+fs.writeFileSync(home + "/config.toml", setup.config);
+if (setup.account) {
+  const access = process.env.CHATGPT_ACCESS_TOKEN;
+  if (!access) throw new Error("the ChatGPT provider's token isn't in the sandbox");
+  fs.writeFileSync(home + "/auth.json", JSON.stringify({
+    auth_mode: "chatgpt",
+    OPENAI_API_KEY: null,
+    tokens: {
+      id_token: setup.account.id_token,
+      access_token: access,
+      refresh_token: "held-by-openshell",
+      account_id: setup.account.account_id,
+    },
+    last_refresh: "2099-01-01T00:00:00Z",
+  }), { mode: 0o600 });
+}
+"#;
 
 /// Whether OpenShell takes `name` for a sandbox: a DNS label, as a container's name is.
 pub fn is_sandbox_name(name: &str) -> bool {
@@ -291,7 +382,7 @@ pub fn open_command(openshell: &Path, sandbox: &Sandbox, what: What) -> String {
     };
     let run = match what {
         What::Agent => agent.command().to_string(),
-        What::Continue => format!("{} --continue", agent.command()),
+        What::Continue => agent.continue_command().to_string(),
         What::Shell => "bash -l".to_string(),
     };
     format!(
@@ -318,6 +409,7 @@ mod tests {
             name: "claude-patchbay".to_string(),
             agent: Agent::ClaudeCode,
             provider: Some("claude-sub".to_string()),
+            account: None,
             folder: Some(PathBuf::from("/Users/sam/src/Patchbay")),
         }
     }
@@ -325,6 +417,37 @@ mod tests {
     #[test]
     fn claude_codes_policy_allows_its_model_from_its_real_binary_and_nothing_else() {
         insta::assert_snapshot!(Agent::ClaudeCode.policy());
+    }
+
+    #[test]
+    fn codexs_policy_allows_chatgpt_and_openai_from_its_real_binary() {
+        let policy = Agent::Codex.policy();
+        assert!(policy.contains("host: chatgpt.com") && policy.contains("host: api.openai.com"));
+        assert!(
+            policy.contains("/bin/codex\n"),
+            "the binary, not codex.js: {policy}"
+        );
+    }
+
+    #[test]
+    fn codex_on_a_chatgpt_subscription_is_set_up_with_the_account_and_its_sandbox_off() {
+        let codex = Plan {
+            agent: Agent::Codex,
+            account: Some(crate::chatgpt::Account {
+                account_id: "acct-1".to_string(),
+                id_token: "x.y.".to_string(),
+            }),
+            ..plan()
+        };
+        let setup = codex.setup().unwrap();
+        assert_eq!(setup["account"]["account_id"], "acct-1");
+        assert!(
+            setup["config"]
+                .as_str()
+                .unwrap()
+                .contains("danger-full-access")
+        );
+        assert!(plan().setup().is_none(), "Claude Code needs none");
     }
 
     #[test]
@@ -385,6 +508,7 @@ mod tests {
     #[test]
     fn an_agent_is_found_by_its_label() {
         assert_eq!(Agent::from_id("claude-code"), Some(Agent::ClaudeCode));
-        assert_eq!(Agent::from_id("codex"), None);
+        assert_eq!(Agent::from_id("codex"), Some(Agent::Codex));
+        assert_eq!(Agent::from_id("cursor"), None);
     }
 }

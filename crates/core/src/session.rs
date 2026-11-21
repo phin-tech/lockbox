@@ -191,6 +191,11 @@ fn in_ghostty(line: &str) -> Result<(), SessionError> {
     }
 }
 
+/// Runs `line` in a new Terminal window of its own, for something the person has to do there, such as signing in.
+pub fn show_in_terminal(name: &str, line: &str) -> Result<(), SessionError> {
+    in_terminal(name, line)
+}
+
 /// Runs `line` in a new Terminal window, as a `.command` script called `name`, which Terminal runs without asking to
 /// be controlled.
 fn in_terminal(name: &str, line: &str) -> Result<(), SessionError> {

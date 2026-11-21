@@ -27,8 +27,17 @@ fn once_in(openshell: &OpenShell, name: &str, phase: Phase) -> Result<Sandbox, S
     }
 }
 
-/// Asks Claude Code in the sandbox for the password in the folder copied in, and gives its answer.
+const QUESTION: &str = "Read NOTES.md and reply with only the password in it.";
+
+/// Asks the agent in the sandbox for the password in the folder copied in, and gives its answer.
 fn ask(openshell: &OpenShell, plan: &Plan) -> String {
+    let codex = format!(
+        "node /sandbox/.codex/playpen-sign-in.js; exec codex exec --skip-git-repo-check '{QUESTION}'"
+    );
+    let command: Vec<&str> = match plan.agent {
+        Agent::ClaudeCode => vec!["claude", "-p", QUESTION],
+        Agent::Codex => vec!["sh", "-c", &codex],
+    };
     let output = Command::new(openshell.binary())
         .args([
             "sandbox",
@@ -40,11 +49,7 @@ fn ask(openshell: &OpenShell, plan: &Plan) -> String {
             &plan.workdir(),
             "--",
         ])
-        .args([
-            "claude",
-            "-p",
-            "Read NOTES.md and reply with only the password in it.",
-        ])
+        .args(&command)
         .output()
         .unwrap();
     format!(
@@ -101,4 +106,51 @@ fn claude_code_answers_from_a_sandbox_playpen_made() {
         "the folder and the key are still there after a restart: {again}"
     );
     eprintln!("steps: {:?}", steps.lock().unwrap());
+}
+
+#[test]
+#[ignore = "needs OpenShell, Docker and a ChatGPT provider Playpen signed in: PLAYPEN_TEST_CHATGPT_PROVIDER"]
+fn codex_answers_on_a_chatgpt_subscription_from_a_sandbox_playpen_made() {
+    let provider = std::env::var("PLAYPEN_TEST_CHATGPT_PROVIDER")
+        .expect("PLAYPEN_TEST_CHATGPT_PROVIDER names a provider");
+    let accounts = std::path::PathBuf::from(std::env::var_os("HOME").unwrap())
+        .join("Library/Application Support/tech.phin.playpen/chatgpt");
+    let account = playpen_core::Account::load(&accounts, &provider).unwrap();
+    let openshell = OpenShell::find().unwrap();
+    let docker = Docker::find().unwrap();
+    let folder = std::env::temp_dir()
+        .join(format!("playpen-codex-test-{}", std::process::id()))
+        .join("Project");
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(folder.join("NOTES.md"), "The password is periwinkle.\n").unwrap();
+    let plan = Plan {
+        name: format!("playpen-codex-test-{}", std::process::id()),
+        agent: Agent::Codex,
+        provider: Some(provider),
+        account: Some(account),
+        folder: Some(folder),
+    };
+    let made = plan.make(&openshell, &docker, |_| {});
+    let tried = made.map_err(|error| error.to_string()).and_then(|()| {
+        once_in(&openshell, &plan.name, Phase::Ready)?;
+        let first = ask(&openshell, &plan);
+        openshell
+            .stop(&plan.name)
+            .map_err(|error| error.to_string())?;
+        once_in(&openshell, &plan.name, Phase::Stopped)?;
+        openshell
+            .start(&plan.name)
+            .map_err(|error| error.to_string())?;
+        once_in(&openshell, &plan.name, Phase::Ready)?;
+        let again = ask(&openshell, &plan);
+        Ok((first, again))
+    });
+    let _ = openshell.delete(&plan.name);
+
+    let (first, again) = tried.unwrap();
+    assert!(first.to_lowercase().contains("periwinkle"), "{first}");
+    assert!(
+        again.to_lowercase().contains("periwinkle"),
+        "still signed in after a restart: {again}"
+    );
 }

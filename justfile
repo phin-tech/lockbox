@@ -44,6 +44,10 @@ providers-test:
 openshell-test provider:
     PLAYPEN_TEST_PROVIDER={{provider}} cargo test -p playpen-core --test openshell -- --ignored
 
+# Make a Codex sandbox on a ChatGPT provider Playpen signed in, and ask Codex something in it
+codex-test provider:
+    PLAYPEN_TEST_CHATGPT_PROVIDER={{provider}} cargo test -p playpen-core --test openshell codex -- --ignored
+
 # Build Playpen.app and put it in /Applications, signed only for this Mac
 install-local:
     scripts/install-local.sh

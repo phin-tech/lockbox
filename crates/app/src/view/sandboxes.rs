@@ -3,6 +3,7 @@
 
 use std::time::Duration;
 
+use gpui_kit::component::Icon;
 use playpen_core::{HerdrCore, Installed, Keep, Opened, Phase, session};
 
 use super::*;
@@ -92,7 +93,9 @@ impl MainView {
         cx: &mut Context<Self>,
     ) {
         self.sandboxes = match listed {
-            Ok(sandboxes) => {
+            Ok(mut sandboxes) => {
+                // The running ones first, as the list shows them, so the arrows go down it in the order it's seen.
+                sandboxes.sort_by_key(|sandbox| !is_running(&sandbox.phase));
                 let still_there = self
                     .selected
                     .as_ref()
@@ -319,67 +322,260 @@ impl MainView {
         cx.notify();
     }
 
+    /// The list's heading, in the title bar after the traffic lights: what's listed, how many are running, and New
+    /// Agent….
+    pub(super) fn list_heading(&self, cx: &Context<Self>) -> Div {
+        let theme = cx.theme();
+        let said = match &self.sandboxes {
+            Listing::Loading => t!("Asking OpenShell…").into_owned(),
+            Listing::Failed(_) => t!("OpenShell isn't answering").into_owned(),
+            Listing::Listed(sandboxes) => {
+                let running = sandboxes
+                    .iter()
+                    .filter(|sandbox| sandbox.phase.can_stop())
+                    .count();
+                match (sandboxes.len(), running) {
+                    (0, _) => t!("No sandboxes").into_owned(),
+                    (_, 0) => t!("None running").into_owned(),
+                    (_, running) => t!("%{count} running", count = running).into_owned(),
+                }
+            }
+        };
+        h_flex()
+            .flex_none()
+            .h_full()
+            .w(rems(LIST_WIDTH))
+            .pl(TRAFFIC_LIGHTS)
+            .pr_2()
+            .gap_2()
+            .justify_between()
+            .child(
+                v_flex()
+                    .min_w_0()
+                    .child(
+                        div()
+                            .truncate()
+                            .text_sm()
+                            .font_semibold()
+                            .child(t!("Sandboxes").into_owned()),
+                    )
+                    .child(
+                        div()
+                            .truncate()
+                            .text_xs()
+                            .text_color(theme.muted_foreground)
+                            .child(said),
+                    ),
+            )
+            .child(
+                Button::new("new-agent")
+                    .ghost()
+                    .small()
+                    .rounded(px(999.))
+                    .icon(assets::IconName::Plus)
+                    .tooltip(t!("New Agent…").into_owned())
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.run("sandbox.new", window, cx)),
+                    ),
+            )
+    }
+
+    /// The sandboxes as a sidebar: the running ones, then the rest under a heading of their own, as each is listed.
     pub(super) fn sandbox_list(&self, cx: &Context<Self>) -> Div {
-        let header = Self::panel_header(t!("Sandboxes"), cx).child(
-            Button::new("new-agent")
-                .ghost()
-                .xsmall()
-                .label(t!("New Agent…").into_owned())
-                .on_click(cx.listener(|this, _, window, cx| this.run("sandbox.new", window, cx))),
-        );
-        let rows = self.listed_sandboxes().iter().map(|sandbox| {
-            let chosen = self.selected.as_ref() == Some(&sandbox.name) && self.making.is_none();
-            let name = sandbox.name.clone();
-            list_row(chosen, cx)
-                .id(ElementId::from((ElementId::from("sandbox"), name.clone())))
-                .justify_between()
-                .child(div().min_w_0().truncate().child(sandbox.name.clone()))
-                .child(state_badge(
-                    &sandbox.phase,
-                    self.agent_states.get(&sandbox.name).copied(),
-                ))
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.select(name.clone(), cx);
-                    this.focus.focus(window, cx);
-                }))
-        });
+        let sandboxes = self.listed_sandboxes();
+        let (running, resting): (Vec<_>, Vec<_>) = sandboxes
+            .iter()
+            .partition(|sandbox| is_running(&sandbox.phase));
+        let rows = |list: Vec<&Sandbox>| {
+            list.into_iter()
+                .map(|sandbox| self.sandbox_row(sandbox, cx))
+                .collect::<Vec<_>>()
+        };
         let mut footer = Footer::new()
             .busy(!self.working.is_empty() || matches!(self.sandboxes, Listing::Loading));
         match &self.sandboxes {
             Listing::Loading => footer = footer.line(t!("Asking OpenShell…").into_owned()),
             Listing::Failed(error) => footer = footer.error(error.clone()),
-            Listing::Listed(sandboxes) => {
-                footer = footer.line(match sandboxes.len() {
-                    0 => t!("No sandboxes").into_owned(),
-                    1 => t!("One sandbox").into_owned(),
-                    count => t!("%{count} sandboxes", count = count).into_owned(),
-                });
-            }
+            Listing::Listed(_) => {}
         }
         if let Some(failed) = &self.failed {
             footer = footer.error(failed.clone());
         }
         v_flex()
             .size_full()
-            .child(header)
             .child(
-                div()
+                v_flex()
                     .id("sandboxes")
                     .flex_1()
                     .overflow_y_scroll()
-                    .children(rows),
+                    .px_2()
+                    .pt_1()
+                    .gap(px(2.))
+                    .children(rows(running))
+                    .when(!resting.is_empty(), |list| {
+                        list.child(
+                            div()
+                                .px_2()
+                                .pt_4()
+                                .pb_1()
+                                .text_xs()
+                                .font_semibold()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(t!("Stopped").into_owned()),
+                        )
+                        .children(rows(resting))
+                    }),
             )
-            .child(footer)
+            .when(!footer.is_empty(), |list| list.child(footer))
+    }
+
+    /// A sandbox in the list: its agent's mark in the colour of its state, its name, what it's doing, and a button
+    /// each to start or stop it and to delete it.
+    fn sandbox_row(&self, sandbox: &Sandbox, cx: &Context<Self>) -> Stateful<Div> {
+        let theme = cx.theme();
+        let chosen = self.selected.as_ref() == Some(&sandbox.name) && self.making.is_none();
+        let busy = self.working.contains_key(&sandbox.name);
+        let agent = sandbox.agent.as_deref().and_then(Agent::from_id);
+        let state = self.agent_states.get(&sandbox.name).copied();
+        let resting = !is_running(&sandbox.phase);
+        let name = sandbox.name.clone();
+        let id = |what: &str| {
+            ElementId::from((
+                ElementId::from(SharedString::from(what.to_string())),
+                name.clone(),
+            ))
+        };
+        let (act, icon, tip) = if sandbox.phase.needs_restart() {
+            ("sandbox.restart", assets::IconName::RotateCw, t!("Restart"))
+        } else if sandbox.phase.can_start() {
+            ("sandbox.start", assets::IconName::CirclePlay, t!("Start"))
+        } else {
+            ("sandbox.stop", assets::IconName::CircleStop, t!("Stop"))
+        };
+        let acts = h_flex()
+            .flex_none()
+            .gap_0p5()
+            .child(
+                Button::new(id("row-act"))
+                    .ghost()
+                    .xsmall()
+                    .icon(icon)
+                    .tooltip(tip.into_owned())
+                    .disabled(busy || (act == "sandbox.stop" && !sandbox.phase.can_stop()))
+                    .on_click(cx.listener({
+                        let name = name.clone();
+                        move |this, _, window, cx| {
+                            this.select(name.clone(), cx);
+                            this.run(act, window, cx);
+                        }
+                    })),
+            )
+            .child(
+                Button::new(id("row-delete"))
+                    .ghost()
+                    .xsmall()
+                    .icon(assets::IconName::Trash)
+                    .tooltip(t!("Delete…").into_owned())
+                    .disabled(busy)
+                    .on_click(cx.listener({
+                        let name = name.clone();
+                        move |this, _, window, cx| {
+                            this.select(name.clone(), cx);
+                            this.run("sandbox.delete", window, cx);
+                        }
+                    })),
+            );
+        let blocked = state == Some(AgentState::Blocked) && sandbox.phase.is_ready();
+        let hover = theme.list_hover;
+        h_flex()
+            .id(id("sandbox"))
+            .flex_none()
+            .gap_2p5()
+            .px_2()
+            .py_1p5()
+            .rounded_lg()
+            .cursor_pointer()
+            .when(chosen, |row| row.bg(theme.list_active))
+            .when(!chosen, |row| row.hover(move |row| row.bg(hover)))
+            .child(agent_tile(
+                agent,
+                state_colour(&sandbox.phase, state, cx),
+                rems(28. / 13.),
+                cx,
+            ))
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .child(
+                        div()
+                            .truncate()
+                            .text_sm()
+                            .font_medium()
+                            .when(resting, |name| name.text_color(theme.muted_foreground))
+                            .child(sandbox.name.clone()),
+                    )
+                    .child(
+                        div()
+                            .truncate()
+                            .text_xs()
+                            .text_color(if blocked {
+                                theme.warning
+                            } else {
+                                theme.muted_foreground
+                            })
+                            .child(
+                                t!(
+                                    "%{agent} · %{state}",
+                                    agent = agent_name(agent),
+                                    state = state_words(&sandbox.phase, state)
+                                )
+                                .into_owned(),
+                            ),
+                    ),
+            )
+            .child(acts)
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.select(name.clone(), cx);
+                this.focus.focus(window, cx);
+            }))
     }
 
     pub(super) fn sandbox_detail(&self, cx: &Context<Self>) -> AnyElement {
         let Some(sandbox) = self.selected_sandbox() else {
             return self.nothing_chosen(cx).into_any_element();
         };
+        let theme = cx.theme();
         let busy = self.working.contains_key(&sandbox.name);
         let agent = sandbox.agent.as_deref().and_then(Agent::from_id);
-        let header =
-            Self::panel_header(sandbox.name.clone(), cx).child(phase_badge(&sandbox.phase));
+        let state = self.agent_states.get(&sandbox.name).copied();
+        let hero = h_flex()
+            .gap_3()
+            .child(agent_tile(
+                agent,
+                state_colour(&sandbox.phase, state, cx),
+                rems(44. / 13.),
+                cx,
+            ))
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .child(
+                        div()
+                            .truncate()
+                            .text_lg()
+                            .font_semibold()
+                            .child(sandbox.name.clone()),
+                    )
+                    .child(
+                        div()
+                            .truncate()
+                            .text_sm()
+                            .text_color(theme.muted_foreground)
+                            .child(agent_name(agent)),
+                    ),
+            );
         // They wrap rather than run out of a narrow window.
         let actions = h_flex()
             .flex_wrap()
@@ -394,6 +590,7 @@ impl MainView {
                 Button::new("restart")
                     .small()
                     .disabled(busy)
+                    .icon(assets::IconName::RotateCw)
                     .label(t!("Restart").into_owned())
                     .on_click(
                         cx.listener(|this, _, window, cx| this.run("sandbox.restart", window, cx)),
@@ -402,6 +599,7 @@ impl MainView {
                 Button::new("start")
                     .small()
                     .disabled(busy)
+                    .icon(assets::IconName::CirclePlay)
                     .label(t!("Start").into_owned())
                     .on_click(
                         cx.listener(|this, _, window, cx| this.run("sandbox.start", window, cx)),
@@ -410,6 +608,7 @@ impl MainView {
                 Button::new("stop")
                     .small()
                     .disabled(busy || !sandbox.phase.can_stop())
+                    .icon(assets::IconName::CircleStop)
                     .label(t!("Stop").into_owned())
                     .on_click(
                         cx.listener(|this, _, window, cx| this.run("sandbox.stop", window, cx)),
@@ -420,36 +619,46 @@ impl MainView {
                     .small()
                     .ghost()
                     .disabled(busy)
+                    .icon(assets::IconName::Trash)
                     .label(t!("Delete…").into_owned())
                     .on_click(
                         cx.listener(|this, _, window, cx| this.run("sandbox.delete", window, cx)),
                     ),
             );
+        let mut info = vec![
+            (t!("Agent").into_owned(), text_value(agent_name(agent))),
+            (
+                t!("Status").into_owned(),
+                text_value(state_words(&sandbox.phase, state)),
+            ),
+        ];
+        if let Some(folder) = sandbox.folder.clone() {
+            info.push((t!("Copied from").into_owned(), shell::code_chip(folder, cx)));
+        }
+        if let Some(workdir) = sandbox.workdir.clone() {
+            info.push((t!("Works in").into_owned(), shell::code_chip(workdir, cx)));
+        }
+        info.push((
+            t!("Made").into_owned(),
+            text_value(t!("%{when} UTC", when = sandbox.created.clone()).into_owned()),
+        ));
         let body = v_flex()
             .gap_5()
-            .p_4()
+            .p_5()
+            .child(hero)
             .child(actions)
-            .child(section(t!("Agent"), cx).child(match agent {
-                Some(agent) => div().child(agent.name()),
-                None => hint(t!("Not one Playpen made"), cx),
-            }))
-            .when_some(sandbox.folder.clone(), |body, folder| {
-                body.child(section(t!("Copied from"), cx).child(h_flex().child(shell::code_chip(folder, cx))))
-            })
-            .when_some(sandbox.workdir.clone(), |body, workdir| {
-                body.child(section(t!("Works in"), cx).child(h_flex().child(shell::code_chip(workdir, cx))))
-            })
-            .child(section(t!("Made"), cx).child(div().child(t!("%{when} UTC", when = sandbox.created.clone()).into_owned())))
+            .child(info_card(info, cx))
             .child(hint(
                 t!(
                     "Its agent reaches its model and nothing else. Stopping keeps its files; deleting doesn't."
                 ),
                 cx,
             ));
-        v_flex()
+        div()
+            .id("sandbox")
             .size_full()
-            .child(header)
-            .child(div().id("sandbox").flex_1().overflow_y_scroll().child(body))
+            .overflow_y_scroll()
+            .child(body)
             .into_any_element()
     }
 
@@ -498,31 +707,142 @@ impl MainView {
     }
 }
 
-/// A row of the list: the chosen one in the list's selection colour.
-fn list_row(chosen: bool, cx: &App) -> Div {
-    let theme = cx.theme();
-    let hover = theme.list_hover;
-    h_flex()
-        .gap_2()
-        .px_3()
-        .py_2()
-        .cursor_pointer()
-        .when(chosen, |row| row.bg(theme.list_active))
-        .when(!chosen, |row| row.hover(move |row| row.bg(hover)))
+/// Sandboxes for a capture to show, of every agent and in each state the list sets apart.
+pub(super) fn stand_ins() -> Vec<Sandbox> {
+    let sandbox = |name: &str, phase: Phase, agent: Option<&str>| Sandbox {
+        name: name.to_string(),
+        phase,
+        created: "2026-11-21 09:41:00".to_string(),
+        agent: agent.map(str::to_string),
+        folder: agent.map(|_| "/Users/sam/src/Patchbay".to_string()),
+        workdir: agent.map(|_| "/sandbox/Patchbay".to_string()),
+    };
+    vec![
+        sandbox("claude-patchbay", Phase::Ready, Some("claude-code")),
+        sandbox("codex-patchbay", Phase::Provisioning, Some("codex")),
+        sandbox("scratch", Phase::Error, None),
+        sandbox("claude-typecase", Phase::Stopped, Some("claude-code")),
+        sandbox("codex-red-pen", Phase::Stopped, Some("codex")),
+    ]
 }
 
-fn phase_badge(phase: &Phase) -> Tag {
-    let (tag, words) = match phase {
-        Phase::Ready => (Tag::success(), t!("Ready").into_owned()),
-        Phase::Provisioning => (Tag::info(), t!("Starting").into_owned()),
-        Phase::Stopped => (Tag::secondary(), t!("Stopped").into_owned()),
-        Phase::Suspended => (Tag::secondary(), t!("Suspended").into_owned()),
-        Phase::Completed => (Tag::secondary(), t!("Finished").into_owned()),
-        Phase::Deleting => (Tag::warning(), t!("Deleting").into_owned()),
-        Phase::Error => (Tag::danger(), t!("Failed").into_owned()),
-        Phase::Other(name) => (Tag::secondary(), name.clone()),
-    };
-    shell::badge(tag).xsmall().child(words)
+/// Whether a sandbox is up, or on its way up or down, rather than resting: the list shows these first.
+pub(super) fn is_running(phase: &Phase) -> bool {
+    !matches!(phase, Phase::Stopped | Phase::Suspended | Phase::Completed)
+}
+
+/// An agent's name, or what a sandbox Playpen didn't make offers instead.
+fn agent_name(agent: Option<Agent>) -> String {
+    match agent {
+        Some(agent) => agent.name().to_string(),
+        None => t!("Shell").into_owned(),
+    }
+}
+
+/// The mark for an agent, or a plain box for a sandbox Playpen didn't make.
+fn agent_icon(agent: Option<Agent>) -> assets::IconName {
+    match agent {
+        Some(Agent::ClaudeCode) => assets::IconName::Asterisk,
+        Some(Agent::Codex) => assets::IconName::SquareTerminal,
+        None => assets::IconName::Box,
+    }
+}
+
+/// A rounded square holding an agent's mark, tinted with the colour of its sandbox's state, so the list says at a
+/// glance which are running, which want the person, and which failed.
+fn agent_tile(agent: Option<Agent>, colour: Hsla, size: Rems, cx: &App) -> Div {
+    let theme = cx.theme();
+    div()
+        .flex_none()
+        .size(size)
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(theme.radius * 1.5)
+        .bg(colour.opacity(0.16))
+        .border_1()
+        .border_color(colour.opacity(0.3))
+        .text_color(colour)
+        .child(Icon::new(agent_icon(agent)).size(size * 0.55))
+}
+
+/// The colour of a sandbox's state: what its agent's doing while it runs, or its phase.
+fn state_colour(phase: &Phase, agent: Option<AgentState>, cx: &App) -> Hsla {
+    let theme = cx.theme();
+    match (phase, agent) {
+        (Phase::Ready, Some(AgentState::Working)) => theme.info,
+        (Phase::Ready, Some(AgentState::Blocked)) => theme.warning,
+        (Phase::Ready, _) => theme.success,
+        (Phase::Provisioning, _) => theme.info,
+        (Phase::Deleting, _) => theme.warning,
+        (Phase::Error, _) => theme.danger,
+        (Phase::Stopped | Phase::Suspended | Phase::Completed | Phase::Other(_), _) => {
+            theme.muted_foreground
+        }
+    }
+}
+
+/// What a sandbox is doing, in words: its agent's state while it runs, or its phase.
+fn state_words(phase: &Phase, agent: Option<AgentState>) -> String {
+    match (phase, agent) {
+        (Phase::Ready, Some(state)) => match state {
+            AgentState::Working => t!("Working"),
+            AgentState::Blocked => t!("Waiting for you"),
+            AgentState::Done => t!("Done"),
+            AgentState::Idle => t!("Idle"),
+        }
+        .into_owned(),
+        _ => phase_words(phase),
+    }
+}
+
+/// A value in an info card, in plain text.
+fn text_value(text: impl Into<SharedString>) -> Div {
+    div().min_w_0().truncate().child(text.into())
+}
+
+/// Facts about something, in a rounded card set back from the panel: a row each, its name on the left and its value
+/// on the right, with a hairline between them.
+fn info_card(rows: Vec<(String, Div)>, cx: &App) -> Div {
+    let theme = cx.theme();
+    let count = rows.len();
+    v_flex()
+        .rounded(theme.radius * 1.5)
+        .border_1()
+        .border_color(theme.border)
+        .bg(shell::recessed_colour(theme))
+        .text_sm()
+        .children(rows.into_iter().enumerate().map(|(at, (name, value))| {
+            h_flex()
+                .gap_4()
+                .justify_between()
+                .px_3()
+                .py_2()
+                .when(at + 1 < count, |row| {
+                    row.border_b_1().border_color(shell::hairline(theme))
+                })
+                .child(
+                    div()
+                        .flex_none()
+                        .text_color(theme.muted_foreground)
+                        .child(name),
+                )
+                .child(h_flex().min_w_0().justify_end().child(value))
+        }))
+}
+
+/// A phase in words.
+fn phase_words(phase: &Phase) -> String {
+    match phase {
+        Phase::Ready => t!("Ready").into_owned(),
+        Phase::Provisioning => t!("Starting").into_owned(),
+        Phase::Stopped => t!("Stopped").into_owned(),
+        Phase::Suspended => t!("Suspended").into_owned(),
+        Phase::Completed => t!("Finished").into_owned(),
+        Phase::Deleting => t!("Deleting").into_owned(),
+        Phase::Error => t!("Failed").into_owned(),
+        Phase::Other(name) => name.clone(),
+    }
 }
 
 /// A place's name, as the menus give it.
@@ -531,22 +851,6 @@ fn place_name(place: Place) -> String {
         Place::HerdrApp => t!("The Herdr app").into_owned(),
         Place::Ghostty => t!("Ghostty").into_owned(),
         Place::Terminal => t!("Terminal").into_owned(),
-    }
-}
-
-/// What the agent in a sandbox's sessions is doing, as a badge, or its phase when no session says.
-fn state_badge(phase: &Phase, agent: Option<AgentState>) -> Tag {
-    match (phase, agent) {
-        (Phase::Ready, Some(state)) => {
-            let (tag, words) = match state {
-                AgentState::Working => (Tag::info(), t!("Working")),
-                AgentState::Blocked => (Tag::warning(), t!("Waiting for you")),
-                AgentState::Done => (Tag::success(), t!("Done")),
-                AgentState::Idle => (Tag::secondary(), t!("Idle")),
-            };
-            shell::badge(tag).xsmall().child(words.into_owned())
-        }
-        _ => phase_badge(phase),
     }
 }
 

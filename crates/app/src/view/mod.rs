@@ -11,7 +11,6 @@ use std::collections::BTreeMap;
 use gpui_kit::component::button::DropdownButton;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::radio::Radio;
-use gpui_kit::component::tag::Tag;
 use gpui_kit::component::{
     ActiveTheme, Disableable as _, Sizable as _, StyledExt as _, TitleBar,
     button::{Button, ButtonVariants},
@@ -61,6 +60,8 @@ pub fn open_with(
         window_min_size: Some(size(px(480.), px(320.))),
         titlebar: Some(TitlebarOptions {
             title: Some("Playpen".into()),
+            // Centred down the taller title bar, which holds the list's heading.
+            traffic_light_position: Some(point(px(16.), px(16.))),
             ..TitleBar::title_bar_options()
         }),
         // Captures run hidden, so they never take over the screen.
@@ -110,6 +111,13 @@ pub struct MainView {
 
 impl MainView {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        // `PLAYPEN_SHOT_SANDBOXES=1` gives a capture stand-in sandboxes, so the list can be seen full without making
+        // any.
+        if cfg!(feature = "screenshot") && std::env::var_os("PLAYPEN_SHOT_SANDBOXES").is_some() {
+            let mut view = Self::watching(Watch::Nothing, window, cx);
+            view.listed(Ok(sandboxes::stand_ins()), cx);
+            return view;
+        }
         Self::watching(Watch::OpenShell, window, cx)
     }
 
@@ -210,7 +218,13 @@ impl MainView {
 }
 
 /// How wide the list of sandboxes is.
-const LIST_WIDTH: f32 = 240. / 13.;
+const LIST_WIDTH: f32 = 260. / 13.;
+
+/// The title bar's height: taller than the kit's, since the list's heading and its buttons sit in it.
+const TITLE_BAR_HEIGHT: Pixels = px(46.);
+
+/// How far the traffic lights reach into the title bar from its left edge, with a gap after them.
+const TRAFFIC_LIGHTS: Pixels = px(84.);
 
 /// The sandboxes, as far as they're known.
 enum Listing {
@@ -284,12 +298,20 @@ impl Render for MainView {
             .on_action(cx.listener(|this, action: &RunAction, window, cx| {
                 this.run(action.name, window, cx);
             }))
-            .child(shell::title_bar(cx).child("Playpen"))
             .child(
-                shell::columns(Lead::Panel)
+                shell::title_bar(cx)
+                    .h(TITLE_BAR_HEIGHT)
+                    .pl_0()
+                    .child(self.list_heading(cx))
+                    .child(div().flex_1()),
+            )
+            .child(
+                // The list is on the window's own colour, as a sidebar, and the chosen sandbox on a panel beside it.
+                shell::columns(Lead::Sidebar)
                     .child(
-                        shell::panel(false, cx)
+                        div()
                             .flex_none()
+                            .h_full()
                             .w(rems(LIST_WIDTH))
                             .child(self.sandbox_list(cx)),
                     )

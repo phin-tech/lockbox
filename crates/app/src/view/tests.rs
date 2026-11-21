@@ -68,6 +68,27 @@ fn the_first_sandbox_listed_is_chosen_and_the_arrows_move_through_them(cx: &mut 
 }
 
 #[gpui_kit::test]
+fn stopped_sandboxes_are_listed_after_the_running_ones_and_the_arrows_follow_that_order(
+    cx: &mut TestAppContext,
+) {
+    let (view, cx) = open(cx);
+    listed(
+        &view,
+        vec![
+            sandbox("alpha", Phase::Stopped),
+            sandbox("beta", Phase::Ready),
+            sandbox("gamma", Phase::Error),
+        ],
+        cx,
+    );
+    assert_eq!(selected(&view, cx).as_deref(), Some("beta"));
+    cx.simulate_keystrokes("down");
+    assert_eq!(selected(&view, cx).as_deref(), Some("gamma"));
+    cx.simulate_keystrokes("down");
+    assert_eq!(selected(&view, cx).as_deref(), Some("alpha"));
+}
+
+#[gpui_kit::test]
 fn a_chosen_sandbox_stays_chosen_until_its_gone(cx: &mut TestAppContext) {
     let (view, cx) = open(cx);
     listed(

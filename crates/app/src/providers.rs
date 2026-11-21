@@ -2,8 +2,10 @@
 //! call to OpenShell runs off the window's thread. A key goes from its field to OpenShell and nowhere else: it isn't
 //! kept, logged or shown again.
 
+use gpui_kit::component::IndexPath;
 use gpui_kit::component::input::{Input, InputState};
-use gpui_kit::component::radio::Radio;
+use gpui_kit::component::searchable_list::SearchableVec;
+use gpui_kit::component::select::{Select, SelectEvent, SelectItem, SelectState};
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Sizable as _, StyledExt as _,
     button::{Button, ButtonVariants as _},
@@ -35,12 +37,31 @@ struct Form {
     /// The provider being given a new key, or none for a new one.
     replacing: Option<Provider>,
     kind: Kind,
+    /// The kinds to choose from, narrowed as the person types.
+    kinds: Entity<SelectState<SearchableVec<KindChoice>>>,
     name: Entity<InputState>,
     address: Entity<InputState>,
     key: Entity<InputState>,
     /// The name Lockbox last suggested, which choosing another kind changes while the person hasn't typed one.
     suggested: String,
     saving: bool,
+    _chose: Subscription,
+}
+
+/// A kind of provider, as the Kind menu lists it.
+#[derive(Clone)]
+struct KindChoice(Kind);
+
+impl SelectItem for KindChoice {
+    type Value = Kind;
+
+    fn title(&self) -> SharedString {
+        self.0.name().into()
+    }
+
+    fn value(&self) -> &Kind {
+        &self.0
+    }
 }
 
 impl Providers {
@@ -123,16 +144,38 @@ impl Providers {
         let address =
             cx.new(|cx| InputState::new(window, cx).placeholder("https://litellm.example.com"));
         let key = cx.new(|cx| InputState::new(window, cx).masked(true));
+        let chosen = Kind::ALL.iter().position(|known| *known == kind);
+        let kinds = cx.new(|cx| {
+            SelectState::new(
+                SearchableVec::new(Kind::ALL.map(KindChoice).to_vec()),
+                chosen.map(IndexPath::new),
+                window,
+                cx,
+            )
+            .searchable(true)
+        });
+        let chose = cx.subscribe_in(
+            &kinds,
+            window,
+            |this, _, event: &SelectEvent<_>, window, cx| {
+                let SelectEvent::Confirm(Some(kind)) = event else {
+                    return;
+                };
+                this.choose_kind(*kind, window, cx);
+            },
+        );
         let first = if replacing.is_some() { &key } else { &name };
         first.read(cx).focus_handle(cx).focus(window, cx);
         self.form = Some(Form {
             replacing,
             kind,
+            kinds,
             name,
             address,
             key,
             suggested,
             saving: false,
+            _chose: chose,
         });
         self.failed = None;
         cx.notify();
@@ -323,19 +366,12 @@ impl Providers {
             Some(provider) => t!("New Key for “%{name}”", name = provider.name),
             None => t!("Add a Provider"),
         };
-        let kinds = h_flex()
-            .flex_wrap()
-            .gap_x_4()
-            .gap_y_1()
-            .children(Kind::ALL.map(|kind| {
-                Radio::new(ElementId::from((ElementId::from("kind"), kind.name())))
-                    .label(kind.name())
-                    .checked(form.kind == kind)
-                    .disabled(form.saving)
-                    .on_click(
-                        cx.listener(move |this, _, window, cx| this.choose_kind(kind, window, cx)),
-                    )
-            }));
+        let kinds = div().w(rems(16.)).child(
+            Select::new(&form.kinds)
+                .small()
+                .search_placeholder(t!("Search").into_owned())
+                .disabled(form.saving),
+        );
         v_flex()
             .gap_3()
             .p_3()

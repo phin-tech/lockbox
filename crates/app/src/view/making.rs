@@ -59,10 +59,26 @@ pub(super) enum MakeState {
 impl MainView {
     /// Shows New Agent…'s form in place of the chosen sandbox, and asks OpenShell for its providers.
     pub(super) fn start_making(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // From Agents, for the agent chosen there.
+        let agent = match self.page {
+            Page::Agents => self.agents.selected,
+            Page::Sandboxes | Page::Providers => Agent::ALL[0],
+        };
+        self.start_making_for(agent, window, cx);
+    }
+
+    /// New Agent…, with `agent` chosen, over the Sandboxes place.
+    pub(super) fn start_making_for(
+        &mut self,
+        agent: Agent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.page = Page::Sandboxes;
         if self.making.is_some() {
+            self.choose_agent(agent, window, cx);
             return;
         }
-        let agent = Agent::ClaudeCode;
         let suggested = suggested_name(agent, &[]);
         let name = cx.new(|cx| {
             let mut state = InputState::new(window, cx).placeholder(suggested.clone());
@@ -386,7 +402,7 @@ impl MainView {
                 .child(error.clone()),
             Some(Ok(providers)) if providers.is_empty() => hint(
                 t!(
-                    "OpenShell has no provider with a key for %{agent}. Add one in Settings ▸ Providers, then open New Agent… again.",
+                    "OpenShell has no provider with a key for %{agent}. Add one in Providers, then open New Agent… again.",
                     agent = making.agent.name()
                 ),
                 cx,
@@ -504,7 +520,7 @@ impl Making {
             .context("Playpen keeps no files here, so it has no ChatGPT account")?;
         playpen_core::Account::load(&folder, &provider.name)
             .map(Some)
-            .context("Sign the ChatGPT provider in again in Settings ▸ Providers")
+            .context("Sign the ChatGPT provider in again in Providers")
     }
 }
 

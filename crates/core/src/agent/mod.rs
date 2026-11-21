@@ -64,6 +64,19 @@ impl Agent {
         }
     }
 
+    /// The version of the agent its image is built with.
+    pub fn version(self) -> &'static str {
+        match self {
+            Agent::ClaudeCode => CLAUDE_CODE_VERSION,
+            Agent::Codex => CODEX_VERSION,
+        }
+    }
+
+    /// Builds its image, or builds it again over the one there, as making a sandbox does when there's none.
+    pub fn build_image(self, docker: &Docker) -> Result<(), DockerError> {
+        docker.build(&self.image(), self.dockerfile(), &self.build_args())
+    }
+
     fn dockerfile(self) -> &'static str {
         match self {
             Agent::ClaudeCode => include_str!("claude-code.Dockerfile"),
@@ -284,7 +297,7 @@ impl Plan {
         let image = self.agent.image();
         if !docker.has_image(&image)? {
             step(Step::Building);
-            docker.build(&image, self.agent.dockerfile(), &self.agent.build_args())?;
+            self.agent.build_image(docker)?;
         }
         step(Step::Creating);
         let policy = std::env::temp_dir().join(format!(

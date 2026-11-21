@@ -4,7 +4,6 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use gpui_kit::component::Icon;
 use playpen_core::{HerdrCore, Installed, Keep, Opened, Phase, session};
 
 use super::*;
@@ -125,7 +124,7 @@ impl MainView {
         cx.notify();
     }
 
-    fn listed_sandboxes(&self) -> &[Sandbox] {
+    pub(super) fn listed_sandboxes(&self) -> &[Sandbox] {
         match &self.sandboxes {
             Listing::Listed(sandboxes) => sandboxes,
             Listing::Loading | Listing::Failed(_) => &[],
@@ -415,10 +414,8 @@ impl MainView {
         cx.notify();
     }
 
-    /// The list's heading, in the title bar after the traffic lights: what's listed, how many are running, and New
-    /// Agent….
+    /// The list's heading: how many are running.
     pub(super) fn list_heading(&self, cx: &Context<Self>) -> Div {
-        let theme = cx.theme();
         let said = match &self.sandboxes {
             Listing::Loading => t!("Asking OpenShell…").into_owned(),
             Listing::Failed(_) => t!("OpenShell isn't answering").into_owned(),
@@ -434,43 +431,15 @@ impl MainView {
                 }
             }
         };
-        h_flex()
-            .flex_none()
-            .h_full()
-            .w(rems(LIST_WIDTH))
-            .pl(TRAFFIC_LIGHTS)
-            .pr_2()
-            .gap_2()
-            .justify_between()
-            .child(
-                v_flex()
-                    .min_w_0()
-                    .child(
-                        div()
-                            .truncate()
-                            .text_sm()
-                            .font_semibold()
-                            .child(t!("Sandboxes").into_owned()),
-                    )
-                    .child(
-                        div()
-                            .truncate()
-                            .text_xs()
-                            .text_color(theme.muted_foreground)
-                            .child(said),
-                    ),
-            )
-            .child(
-                Button::new("new-agent")
-                    .ghost()
-                    .small()
-                    .rounded(px(999.))
-                    .icon(assets::IconName::Plus)
-                    .tooltip(t!("New Agent…").into_owned())
-                    .on_click(
-                        cx.listener(|this, _, window, cx| this.run("sandbox.new", window, cx)),
-                    ),
-            )
+        heading(t!("Sandboxes").into_owned(), said, cx).child(
+            Button::new("new-agent")
+                .ghost()
+                .small()
+                .rounded(px(999.))
+                .icon(assets::IconName::Plus)
+                .tooltip(t!("New Agent…").into_owned())
+                .on_click(cx.listener(|this, _, window, cx| this.run("sandbox.new", window, cx))),
+        )
     }
 
     /// The sandboxes as a sidebar: the running ones, then the rest under a heading of their own, as each is listed.
@@ -864,7 +833,7 @@ fn agent_icon(agent: Option<Agent>) -> assets::IconName {
 
 /// A rounded square holding an agent's mark, tinted with the colour of its sandbox's state, so the list says at a
 /// glance which are running, which want the person, and which failed.
-fn agent_tile(agent: Option<Agent>, colour: Hsla, size: Rems, cx: &App) -> Div {
+pub(super) fn agent_tile(agent: Option<Agent>, colour: Hsla, size: Rems, cx: &App) -> Div {
     let theme = cx.theme();
     div()
         .flex_none()
@@ -911,13 +880,13 @@ fn state_words(phase: &Phase, agent: Option<AgentState>) -> String {
 }
 
 /// A value in an info card, in plain text.
-fn text_value(text: impl Into<SharedString>) -> Div {
+pub(super) fn text_value(text: impl Into<SharedString>) -> Div {
     div().min_w_0().truncate().child(text.into())
 }
 
 /// Facts about something, in a rounded card set back from the panel: a row each, its name on the left and its value
 /// on the right, with a hairline between them.
-fn info_card(rows: Vec<(String, Div)>, cx: &App) -> Div {
+pub(super) fn info_card(rows: Vec<(String, Div)>, cx: &App) -> Div {
     let theme = cx.theme();
     let count = rows.len();
     v_flex()

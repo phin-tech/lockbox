@@ -84,6 +84,14 @@ pub fn menus() -> Vec<Menu> {
             ],
         ),
         menu(
+            t!("Go"),
+            vec![
+                run(t!("Sandboxes"), "go.sandboxes"),
+                run(t!("Agents"), "go.agents"),
+                run(t!("Providers"), "go.providers"),
+            ],
+        ),
+        menu(
             t!("Sandbox"),
             vec![
                 run(t!("Open Agent"), "sandbox.open"),

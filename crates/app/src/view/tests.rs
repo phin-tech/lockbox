@@ -1,5 +1,5 @@
 // Not a glob: the kit's `test` macro would shadow the `#[test]` it expands to.
-use super::{Listing, MainView, Watch};
+use super::{Listing, MainView, Page, Watch};
 use crate::commands::COMMANDS;
 use crate::shortcuts::SHORTCUTS;
 use crate::{palette, shortcuts, theme};
@@ -234,6 +234,24 @@ fn several_folders_name_the_sandbox_together_and_leaving_one_out_renames_it(
             view.making.as_ref().unwrap().name_typed(cx),
             "claude-typecase"
         );
+    });
+}
+
+#[gpui_kit::test]
+fn new_agent_from_agents_chooses_the_agent_shown_there_and_goes_back_to_sandboxes(
+    cx: &mut TestAppContext,
+) {
+    let (view, cx) = open(cx);
+    cx.simulate_keystrokes("cmd-2 down");
+    view.read_with(cx, |view, _| {
+        assert_eq!(view.page, Page::Agents);
+        assert_eq!(view.agents.selected, Agent::Codex);
+    });
+    cx.simulate_keystrokes("cmd-n");
+    cx.run_until_parked();
+    view.read_with(cx, |view, cx| {
+        assert_eq!(view.page, Page::Sandboxes);
+        assert_eq!(view.making.as_ref().unwrap().name_typed(cx), "codex");
     });
 }
 

@@ -1,4 +1,4 @@
-//! Settings ▸ Providers: the model keys OpenShell holds for sandboxes, added, given new keys and deleted here. Every
+//! Providers, a place in the main window: the model keys OpenShell holds for sandboxes, added, given new keys and deleted here. Every
 //! call to OpenShell runs off the window's thread. A key goes from its field to OpenShell and nowhere else: it isn't
 //! kept, logged or shown again.
 
@@ -133,6 +133,12 @@ impl Providers {
             return;
         };
         self.open_form(Some(provider), kind, window, cx);
+    }
+
+    /// Opens the form for a new provider of `kind`, as Add Provider… does with it chosen.
+    pub(crate) fn add(&mut self, kind: Kind, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_form(None, kind, window, cx);
+        cx.notify();
     }
 
     fn open_form(

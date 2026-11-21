@@ -1,6 +1,7 @@
 //! The window's content: the sandboxes on OpenShell's gateway, or New Agent…'s form in their place, under the title
 //! bar, with the cards over the window (the palette and Keys).
 
+mod agents;
 mod making;
 mod sandboxes;
 #[cfg(test)]
@@ -8,6 +9,7 @@ mod tests;
 
 use std::collections::BTreeMap;
 
+use gpui_kit::component::Icon;
 use gpui_kit::component::button::DropdownButton;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::radio::Radio;
@@ -28,8 +30,46 @@ use typecase::palette::{CommandPalette, PaletteEvent};
 use typecase::shell::{self, Footer, Lead};
 
 use crate::commands::{self, COMMANDS};
+use crate::providers::Providers;
 use crate::shortcuts::{CONTEXT, RunAction};
 use crate::{about, palette, restore, theme};
+
+/// A place in the sidebar, each a kind of thing Playpen keeps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Page {
+    Sandboxes,
+    Agents,
+    Providers,
+}
+
+impl Page {
+    const ALL: [Page; 3] = [Page::Sandboxes, Page::Agents, Page::Providers];
+
+    fn name(self) -> String {
+        match self {
+            Page::Sandboxes => t!("Sandboxes").into_owned(),
+            Page::Agents => t!("Agents").into_owned(),
+            Page::Providers => t!("Providers").into_owned(),
+        }
+    }
+
+    fn icon(self) -> assets::IconName {
+        match self {
+            Page::Sandboxes => assets::IconName::Box,
+            Page::Agents => assets::IconName::Bot,
+            Page::Providers => assets::IconName::KeyRound,
+        }
+    }
+
+    /// The Command that shows it.
+    fn command(self) -> &'static str {
+        match self {
+            Page::Sandboxes => "go.sandboxes",
+            Page::Agents => "go.agents",
+            Page::Providers => "go.providers",
+        }
+    }
+}
 
 /// A Typecase card over the window, which holds the keyboard until it's done.
 enum Card {
@@ -107,6 +147,11 @@ pub struct MainView {
     /// The last thing done that failed, or a note on it, until something else is done.
     failed: Option<String>,
     making: Option<making::Making>,
+    /// The place shown, chosen in the sidebar.
+    page: Page,
+    agents: agents::AgentsPage,
+    /// The Providers place, made the first time it's shown, since it asks OpenShell for its providers.
+    providers: Option<Entity<Providers>>,
     card: Option<Card>,
     _watching: Option<Task<()>>,
     _appearance: Subscription,
@@ -148,6 +193,9 @@ impl MainView {
             herdr_failed: None,
             failed: None,
             making: None,
+            page: Page::Sandboxes,
+            agents: agents::AgentsPage::new(),
+            providers: None,
             card: None,
             _watching: watching,
             _appearance: appearance,
@@ -176,8 +224,17 @@ impl MainView {
             "sandbox.restart" => self.act_on_selected(sandboxes::Act::Restart, window, cx),
             "sandbox.stop" => self.act_on_selected(sandboxes::Act::Stop, window, cx),
             "sandbox.delete" => self.confirm_delete(window, cx),
-            "sandbox.next" => self.select_next(1, cx),
-            "sandbox.previous" => self.select_next(-1, cx),
+            "sandbox.next" => match self.page {
+                Page::Agents => self.select_next_agent(1, cx),
+                Page::Sandboxes | Page::Providers => self.select_next(1, cx),
+            },
+            "sandbox.previous" => match self.page {
+                Page::Agents => self.select_next_agent(-1, cx),
+                Page::Sandboxes | Page::Providers => self.select_next(-1, cx),
+            },
+            "go.sandboxes" => self.show_page(Page::Sandboxes, window, cx),
+            "go.agents" => self.show_page(Page::Agents, window, cx),
+            "go.providers" => self.show_page(Page::Providers, window, cx),
             "sandboxes.refresh" => self.refresh(window, cx),
             "app.palette" => self.open_palette(window, cx),
             "app.keys" => self.open_keys(window, cx),
@@ -220,20 +277,34 @@ impl MainView {
         cx.notify();
     }
 
+    /// Shows a place, asking for what it needs the first time.
+    fn show_page(&mut self, page: Page, window: &mut Window, cx: &mut Context<Self>) {
+        match page {
+            Page::Agents => self.check_images(window, cx),
+            Page::Providers if self.providers.is_none() => {
+                self.providers = Some(cx.new(|cx| Providers::new(window, cx)));
+            }
+            Page::Sandboxes | Page::Providers => {}
+        }
+        self.page = page;
+        self.focus.focus(window, cx);
+        cx.notify();
+    }
+
     fn close_card(&mut self, cx: &mut Context<Self>) {
         self.card = None;
         cx.notify();
     }
 }
 
+/// How wide the sidebar of places is, which the traffic lights sit above.
+const NAV_WIDTH: f32 = 180. / 13.;
+
 /// How wide the list of sandboxes is.
 const LIST_WIDTH: f32 = 260. / 13.;
 
 /// The title bar's height: taller than the kit's, since the list's heading and its buttons sit in it.
 const TITLE_BAR_HEIGHT: Pixels = px(46.);
-
-/// How far the traffic lights reach into the title bar from its left edge, with a gap after them.
-const TRAFFIC_LIGHTS: Pixels = px(84.);
 
 /// The sandboxes, as far as they're known.
 enum Listing {
@@ -264,6 +335,44 @@ impl MainView {
     }
 }
 
+/// A place's heading, in the title bar over its list: its name, a line about it, and whatever goes on the right.
+fn heading(title: String, said: String, cx: &App) -> Div {
+    h_flex()
+        .flex_none()
+        .h_full()
+        .w(rems(LIST_WIDTH))
+        .px_3()
+        .gap_2()
+        .justify_between()
+        .child(
+            v_flex()
+                .min_w_0()
+                .child(div().truncate().text_sm().font_semibold().child(title))
+                .child(
+                    div()
+                        .truncate()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(said),
+                ),
+        )
+}
+
+/// A row of a list: the chosen one in the list's selection colour.
+fn list_row(chosen: bool, cx: &App) -> Div {
+    let theme = cx.theme();
+    let hover = theme.list_hover;
+    h_flex()
+        .flex_none()
+        .gap_2p5()
+        .px_2()
+        .py_1p5()
+        .rounded_lg()
+        .cursor_pointer()
+        .when(chosen, |row| row.bg(theme.list_active))
+        .when(!chosen, |row| row.hover(move |row| row.bg(hover)))
+}
+
 /// Something in a detail panel: a small heading and what's under it.
 fn section(title: impl Into<SharedString>, cx: &App) -> Div {
     v_flex().gap_2().child(
@@ -288,11 +397,83 @@ fn small_field(state: &Entity<InputState>) -> Input {
     Input::new(state).small().h(rems(24. / 13.))
 }
 
+impl MainView {
+    /// The sidebar of places, each with how many things it holds.
+    fn places(&self, cx: &Context<Self>) -> Div {
+        let theme = cx.theme();
+        let rows = Page::ALL.map(|page| {
+            let shown = self.page == page;
+            let count = match page {
+                Page::Sandboxes => Some(self.listed_sandboxes().len()),
+                Page::Agents => Some(Agent::ALL.len()),
+                Page::Providers => None,
+            };
+            shell::sidebar_row(shown, cx)
+                .id(ElementId::from((ElementId::from("place"), page.command())))
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .min_w_0()
+                        .child(
+                            Icon::new(page.icon())
+                                .small()
+                                .when(shown, |icon| icon.text_color(theme.accent_foreground)),
+                        )
+                        .child(div().truncate().text_sm().child(page.name())),
+                )
+                .when_some(count.filter(|count| *count > 0), |row, count| {
+                    row.child(shell::count(count, cx))
+                })
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.run(page.command(), window, cx);
+                }))
+        });
+        v_flex()
+            .flex_none()
+            .h_full()
+            .w(rems(NAV_WIDTH))
+            .px_2()
+            .pt_1()
+            .gap(px(2.))
+            .border_r_1()
+            .border_color(shell::hairline(theme))
+            .children(rows)
+    }
+}
+
 impl Render for MainView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let detail = match &self.making {
-            Some(making) => self.making_panel(making, cx),
-            None => self.sandbox_detail(cx),
+        let (heading, list, detail) = match self.page {
+            Page::Sandboxes => (
+                self.list_heading(cx),
+                Some(self.sandbox_list(cx)),
+                match &self.making {
+                    Some(making) => self.making_panel(making, cx),
+                    None => self.sandbox_detail(cx),
+                },
+            ),
+            Page::Agents => (
+                self.agents_heading(cx),
+                Some(self.agent_list(cx)),
+                self.agent_detail(cx),
+            ),
+            Page::Providers => (
+                heading(
+                    t!("Providers").into_owned(),
+                    t!("The model keys OpenShell holds").into_owned(),
+                    cx,
+                ),
+                None,
+                match &self.providers {
+                    Some(providers) => div()
+                        .id("providers")
+                        .size_full()
+                        .overflow_y_scroll()
+                        .child(providers.clone())
+                        .into_any_element(),
+                    None => div().into_any_element(),
+                },
+            ),
         };
         shell::window(cx)
             .relative()
@@ -311,19 +492,18 @@ impl Render for MainView {
                 shell::title_bar(cx)
                     .h(TITLE_BAR_HEIGHT)
                     .pl_0()
-                    .child(self.list_heading(cx))
+                    // Over the places, where the traffic lights are, then over the list.
+                    .child(div().flex_none().w(rems(NAV_WIDTH)))
+                    .child(heading)
                     .child(div().flex_1()),
             )
             .child(
-                // The list is on the window's own colour, as a sidebar, and the chosen sandbox on a panel beside it.
+                // The places and the list are on the window's own colour, and what's chosen on a panel beside them.
                 shell::columns(Lead::Sidebar)
-                    .child(
-                        div()
-                            .flex_none()
-                            .h_full()
-                            .w(rems(LIST_WIDTH))
-                            .child(self.sandbox_list(cx)),
-                    )
+                    .child(self.places(cx))
+                    .when_some(list, |columns, list| {
+                        columns.child(div().flex_none().h_full().w(rems(LIST_WIDTH)).child(list))
+                    })
                     .child(shell::panel(false, cx).flex_1().child(detail)),
             )
             // Last, so it's over everything; a click outside it closes it.

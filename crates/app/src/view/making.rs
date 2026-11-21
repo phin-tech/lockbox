@@ -411,7 +411,7 @@ impl MainView {
         let state = match &making.state {
             MakeState::Choosing => hint(
                 t!(
-                    "The folders are copied in, leaving out what each .gitignore does, so the agent works on copies; with several, it works in the folder above them. The provider's key never enters the sandbox: OpenShell puts it on the agent's requests to its model, and the agent can reach nothing else."
+                    "The folders are copied in, leaving out what each .gitignore does, so the agent works on copies, side by side in /sandbox, where it starts. The provider's key never enters the sandbox: OpenShell puts it on the agent's requests to its model, and the agent can reach nothing else."
                 ),
                 cx,
             ),

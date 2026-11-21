@@ -90,6 +90,8 @@ pub fn menus() -> Vec<Menu> {
                 run(t!("Continue Last Conversation"), "sandbox.continue"),
                 run(t!("Open Shell"), "sandbox.shell"),
                 MenuItem::separator(),
+                run(t!("Add Folders…"), "sandbox.add-folders"),
+                MenuItem::separator(),
                 run(t!("Open in Herdr App"), "sandbox.open-herdr"),
                 run(t!("Open in Ghostty"), "sandbox.open-ghostty"),
                 run(t!("Open in Terminal"), "sandbox.open-terminal"),

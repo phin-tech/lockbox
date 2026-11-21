@@ -222,7 +222,8 @@ fn several_folders_name_the_sandbox_together_and_leaving_one_out_renames_it(
     view.read_with(cx, |view, cx| {
         assert_eq!(
             view.making.as_ref().unwrap().name_typed(cx),
-            "claude-patchbay-typecase"
+            "claude-patchbay",
+            "as many whole names as fit OpenShell's"
         );
     });
     view.update_in(cx, |view, window, cx| {

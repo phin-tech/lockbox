@@ -1,6 +1,7 @@
 //! What Playpen does, free of UI, so tests reach it without a window: OpenShell's sandboxes, and the agents Playpen
 //! makes them for.
 
+mod added;
 mod agent;
 mod chatgpt;
 pub mod crash;
@@ -15,6 +16,7 @@ pub mod session;
 mod settings;
 mod state;
 
+pub use added::{AddError, AddedFolders};
 pub use agent::{Agent, MakeError, Plan, Step, is_sandbox_name, open_command, suggested_name};
 pub use chatgpt::{Account, ChatGptError, Login, Tokens, find_codex};
 pub use docker::{Docker, DockerError};

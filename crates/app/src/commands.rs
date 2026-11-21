@@ -23,6 +23,7 @@ pub const COMMANDS: &[&str] = &[
     "app.show-all",
     "file.close",
     "file.new",
+    "sandbox.add-folders",
     "sandbox.continue",
     "sandbox.delete",
     "sandbox.new",

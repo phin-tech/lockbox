@@ -1,6 +1,7 @@
 //! The sandboxes on OpenShell's gateway: listed every few seconds, the chosen one shown beside the list, and
 //! opening, starting, stopping and deleting it. Every call to OpenShell runs off the window's thread.
 
+use std::path::PathBuf;
 use std::time::Duration;
 
 use gpui_kit::component::Icon;
@@ -26,12 +27,19 @@ impl MainView {
     pub(super) fn watch_sandboxes(window: &mut Window, cx: &mut Context<Self>) -> Task<()> {
         cx.spawn_in(window, async move |this, cx| {
             loop {
-                let Ok(openshell) = this.update(cx, |this, _| this.openshell()) else {
+                let Ok((openshell, added)) =
+                    this.update(cx, |this, _| (this.openshell(), this.added.clone()))
+                else {
                     break;
                 };
+                // With the folders added to each since it was made, after those it was made with.
                 let listed = cx
                     .background_spawn(async move {
-                        openshell.and_then(|openshell| openshell.sandboxes())
+                        let mut listed = openshell.and_then(|openshell| openshell.sandboxes());
+                        if let (Ok(sandboxes), Some(added)) = (&mut listed, &added) {
+                            added.fill(sandboxes);
+                        }
+                        listed
                     })
                     .await;
                 // What each agent is doing, when herdr-core keeps their sessions; nothing without it.
@@ -232,7 +240,14 @@ impl MainView {
                 let _ = this.update_in(cx, |this, window, cx| {
                     this.working.remove(&name);
                     match done {
-                        Ok(()) => tracing::info!(sandbox = %name, ?act, "done"),
+                        Ok(()) => {
+                            tracing::info!(sandbox = %name, ?act, "done");
+                            if act == Act::Delete
+                                && let Some(added) = &this.added
+                            {
+                                added.forget(&name);
+                            }
+                        }
                         Err(error) => {
                             tracing::warn!(sandbox = %name, ?act, "failed: {error}");
                             this.failed = Some(error.to_string());
@@ -244,6 +259,84 @@ impl MainView {
             }
         });
         self.working.insert(name, task);
+        cx.notify();
+    }
+
+    /// Asks for folders to copy into the chosen sandbox while it runs, then copies them in beside the others.
+    pub(super) fn choose_folders_to_add(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(sandbox) = self.selected_sandbox() else {
+            return;
+        };
+        if !sandbox.phase.is_ready() || self.working.contains_key(&sandbox.name) {
+            return;
+        }
+        let name = sandbox.name.clone();
+        let chosen = cx.prompt_for_paths(PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: true,
+            prompt: Some(t!("Add").into_owned().into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(folders))) = chosen.await else {
+                return;
+            };
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.add_folders(&name, folders, window, cx);
+            });
+        })
+        .detach();
+    }
+
+    /// Copies `folders` into the sandbox `name`, off the window's thread, and lists the sandboxes again after.
+    pub(super) fn add_folders(
+        &mut self,
+        name: &str,
+        folders: Vec<PathBuf>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(sandbox) = self
+            .listed_sandboxes()
+            .iter()
+            .find(|sandbox| sandbox.name == name)
+            .cloned()
+        else {
+            return;
+        };
+        if folders.is_empty() || self.working.contains_key(name) {
+            return;
+        }
+        let openshell = match self.openshell() {
+            Ok(openshell) => openshell,
+            Err(error) => {
+                self.failed = Some(error.to_string());
+                cx.notify();
+                return;
+            }
+        };
+        let Some(added) = self.added.clone() else {
+            return;
+        };
+        self.failed = None;
+        tracing::info!(sandbox = %name, count = folders.len(), "adding folders");
+        let done = cx.background_spawn(async move { added.add(&openshell, &sandbox, &folders) });
+        let task = cx.spawn_in(window, {
+            let name = name.to_string();
+            async move |this, cx| {
+                let done = done.await;
+                let _ = this.update_in(cx, |this, window, cx| {
+                    this.working.remove(&name);
+                    if let Err(error) = done {
+                        tracing::warn!(sandbox = %name, "couldn't add folders: {error}");
+                        this.failed = Some(error.to_string());
+                    }
+                    this.refresh(window, cx);
+                    cx.notify();
+                });
+            }
+        });
+        self.working.insert(name.to_string(), task);
         cx.notify();
     }
 
@@ -615,6 +708,17 @@ impl MainView {
                     )
             })
             .child(
+                Button::new("add-folders")
+                    .small()
+                    .ghost()
+                    .disabled(busy || !sandbox.phase.is_ready() || self.added.is_none())
+                    .icon(assets::IconName::FolderPlus)
+                    .label(t!("Add Folders…").into_owned())
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.run("sandbox.add-folders", window, cx);
+                    })),
+            )
+            .child(
                 Button::new("delete")
                     .small()
                     .ghost()
@@ -725,7 +829,7 @@ pub(super) fn stand_ins() -> Vec<Sandbox> {
         folders: agent
             .map(|_| vec!["/Users/sam/src/Patchbay".to_string()])
             .unwrap_or_default(),
-        workdir: agent.map(|_| "/sandbox/Patchbay".to_string()),
+        workdir: agent.map(|_| "/sandbox".to_string()),
     };
     vec![
         sandbox("claude-patchbay", Phase::Ready, Some("claude-code")),

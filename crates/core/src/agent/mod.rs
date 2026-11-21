@@ -196,7 +196,7 @@ pub enum MakeError {
     #[error("Couldn't write the sandbox's policy: {0}")]
     Policy(String),
     #[error(
-        "“{0}” can't name a sandbox: use lowercase letters, digits and dashes, starting with a letter."
+        "“{0}” can't name a sandbox: use up to 19 lowercase letters, digits and dashes, starting with a letter."
     )]
     Name(String),
     #[error(
@@ -206,16 +206,10 @@ pub enum MakeError {
 }
 
 impl Plan {
-    /// Where the agent works in the sandbox: the one folder copied in, or the sandbox's home, where several are side
-    /// by side.
+    /// Where the agent works in the sandbox: always its home, where the folders are side by side, so one added later
+    /// is beside the rest rather than outside where the agent started.
     pub fn workdir(&self) -> String {
-        match self.folders.as_slice() {
-            [folder] => match folder.file_name() {
-                Some(name) => format!("{SANDBOX_HOME}/{}", name.to_string_lossy()),
-                None => SANDBOX_HOME.to_string(),
-            },
-            _ => SANDBOX_HOME.to_string(),
-        }
+        SANDBOX_HOME.to_string()
     }
 
     /// A name two of the folders share, which would put one on top of the other in the sandbox.
@@ -391,9 +385,13 @@ if (access && fs.existsSync(file)) {
 }
 "#;
 
-/// Whether OpenShell takes `name` for a sandbox: a DNS label, as a container's name is.
+/// The longest name OpenShell 0.1.8 takes for a sandbox, as it says when given a longer one.
+pub const SANDBOX_NAME_MAX: usize = 19;
+
+/// Whether OpenShell takes `name` for a sandbox: a DNS label, as a container's name is, of no more than
+/// [`SANDBOX_NAME_MAX`] characters.
 pub fn is_sandbox_name(name: &str) -> bool {
-    (1..=63).contains(&name.len())
+    (1..=SANDBOX_NAME_MAX).contains(&name.len())
         && name.starts_with(|c: char| c.is_ascii_lowercase())
         && !name.ends_with('-')
         && name
@@ -402,23 +400,35 @@ pub fn is_sandbox_name(name: &str) -> bool {
 }
 
 /// A sandbox name made from the folders' names, for `agent`: `claude-patchbay` for a folder `Patchbay`, and
-/// `claude-patchbay-typecase` for that and `Typecase`.
+/// `claude-app-web` for `app` and `web`. Since OpenShell's names are short, it takes as many whole folder names as
+/// fit, cutting the first short only when even that doesn't.
 pub fn suggested_name(agent: Agent, folders: &[PathBuf]) -> String {
     let mut name = agent.command().to_string();
     for folder in folders.iter().filter_map(|folder| folder.file_name()) {
-        if !name.ends_with('-') {
-            name.push('-');
-        }
+        let mut part = String::new();
         for c in folder.to_string_lossy().chars() {
             let c = c.to_ascii_lowercase();
             if c.is_ascii_lowercase() || c.is_ascii_digit() {
-                name.push(c);
-            } else if !name.ends_with('-') {
-                name.push('-');
+                part.push(c);
+            } else if !part.is_empty() && !part.ends_with('-') {
+                part.push('-');
             }
         }
+        let part = part.trim_end_matches('-');
+        if part.is_empty() {
+            continue;
+        }
+        let longer = format!("{name}-{part}");
+        if longer.len() <= SANDBOX_NAME_MAX {
+            name = longer;
+        } else {
+            if name == agent.command() {
+                name = longer;
+                name.truncate(SANDBOX_NAME_MAX);
+            }
+            break;
+        }
     }
-    name.truncate(63);
     name.trim_end_matches('-').to_string()
 }
 
@@ -517,8 +527,8 @@ mod tests {
     }
 
     #[test]
-    fn the_agent_works_in_the_folder_copied_in() {
-        assert_eq!(plan().workdir(), "/sandbox/Patchbay");
+    fn the_agent_works_above_the_folders_however_many_there_are() {
+        assert_eq!(plan().workdir(), "/sandbox");
         let none = Plan {
             folders: Vec::new(),
             ..plan()
@@ -560,16 +570,21 @@ mod tests {
         assert_eq!(named("/src/Patchbay"), "claude-patchbay");
         assert_eq!(named("/src/my app (2)"), "claude-my-app-2");
         assert_eq!(suggested_name(Agent::ClaudeCode, &[]), "claude");
+        let several = |folders: &[&str]| {
+            let folders: Vec<PathBuf> = folders.iter().map(PathBuf::from).collect();
+            suggested_name(Agent::ClaudeCode, &folders)
+        };
+        assert_eq!(several(&["/src/app", "/src/web"]), "claude-app-web");
         assert_eq!(
-            suggested_name(
-                Agent::ClaudeCode,
-                &[
-                    PathBuf::from("/src/Patchbay"),
-                    PathBuf::from("/src/Typecase")
-                ]
-            ),
-            "claude-patchbay-typecase"
+            several(&["/src/Patchbay", "/src/Typecase"]),
+            "claude-patchbay",
+            "as many whole names as fit"
         );
+        assert_eq!(
+            several(&["/src/A Very Long Project Name"]),
+            "claude-a-very-long"
+        );
+        assert!(!is_sandbox_name("claude-patchbay-type"), "20 characters");
         assert!(is_sandbox_name(&named("/src/Playpen")));
         assert!(!is_sandbox_name("Claude"));
         assert!(!is_sandbox_name("1claude"));

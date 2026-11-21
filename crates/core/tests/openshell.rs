@@ -119,12 +119,12 @@ fn codex_answers_on_a_chatgpt_subscription_from_a_sandbox_playpen_made() {
     let openshell = OpenShell::find().unwrap();
     let docker = Docker::find().unwrap();
     let folder = std::env::temp_dir()
-        .join(format!("playpen-codex-test-{}", std::process::id()))
+        .join(format!("pp-codex-{}", std::process::id()))
         .join("Project");
     std::fs::create_dir_all(&folder).unwrap();
     std::fs::write(folder.join("NOTES.md"), "The password is periwinkle.\n").unwrap();
     let plan = Plan {
-        name: format!("playpen-codex-test-{}", std::process::id()),
+        name: format!("pp-codex-{}", std::process::id()),
         agent: Agent::Codex,
         provider: Some(provider),
         account: Some(account),

@@ -1,6 +1,6 @@
 ---
 source: crates/core/src/agent/mod.rs
-assertion_line: 327
+assertion_line: 511
 expression: "args.join(\"\\n\")"
 ---
 --name
@@ -16,7 +16,7 @@ manual
 --label
 playpen.agent=claude-code
 --annotation
-playpen.workdir=/sandbox/Patchbay
+playpen.workdir=/sandbox
 --env
 DISABLE_AUTOUPDATER=1
 --env

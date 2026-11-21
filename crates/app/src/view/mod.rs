@@ -18,7 +18,9 @@ use gpui_kit::component::{
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
-use playpen_core::{Agent, AgentState, OpenShell, OpenShellError, Place, Sandbox, What};
+use playpen_core::{
+    AddedFolders, Agent, AgentState, OpenShell, OpenShellError, Place, Sandbox, What,
+};
 use rust_i18n::t;
 use typecase::help::{HelpEvent, KeyHelp};
 use typecase::overlay;
@@ -94,6 +96,8 @@ pub struct MainView {
     sandboxes: Listing,
     /// The chosen sandbox, by name, which the Sandbox menu's Commands act on.
     selected: Option<String>,
+    /// Where Playpen notes the folders added to sandboxes since they were made; none in a capture or a test.
+    added: Option<AddedFolders>,
     /// What's being done to a sandbox, by its name, while it's done.
     working: BTreeMap<String, Task<()>>,
     /// Why herdr-core's sessions couldn't be read last time, so it's logged once rather than every few seconds.
@@ -135,6 +139,10 @@ impl MainView {
             watch,
             sandboxes: Listing::Loading,
             selected: None,
+            added: (watch == Watch::OpenShell)
+                .then(|| crate::settings::file("added-folders"))
+                .flatten()
+                .map(AddedFolders::new),
             working: BTreeMap::new(),
             agent_states: BTreeMap::new(),
             herdr_failed: None,
@@ -163,6 +171,7 @@ impl MainView {
             }
             "sandbox.continue" => self.open_session(None, What::Continue, window, cx),
             "sandbox.shell" => self.open_session(None, What::Shell, window, cx),
+            "sandbox.add-folders" => self.choose_folders_to_add(window, cx),
             "sandbox.start" => self.act_on_selected(sandboxes::Act::Start, window, cx),
             "sandbox.restart" => self.act_on_selected(sandboxes::Act::Restart, window, cx),
             "sandbox.stop" => self.act_on_selected(sandboxes::Act::Stop, window, cx),

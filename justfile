@@ -40,6 +40,10 @@ shot name="app" appearance="light":
 providers-test:
     cargo test -p playpen-core --test providers -- --ignored
 
+# Make a sandbox on the real OpenShell gateway with two folders, then add a third while it runs
+folders-test:
+    cargo test -p playpen-core --test folders -- --ignored
+
 # Make a Claude Code sandbox on the real OpenShell gateway and ask Claude Code something in it, with the provider named
 openshell-test provider:
     PLAYPEN_TEST_PROVIDER={{provider}} cargo test -p playpen-core --test openshell -- --ignored

@@ -16,7 +16,7 @@ pub(super) struct Services {
     /// The providers attached to it, by name, or why they couldn't be listed.
     attached: Option<Result<Vec<String>, String>>,
     /// Every provider and profile, to say which can be attached.
-    catalog: Option<(Vec<Provider>, Vec<Profile>)>,
+    pub(super) catalog: Option<(Vec<Provider>, Vec<Profile>)>,
     /// Attaching or detaching one, while it's done.
     changing: Option<String>,
     _asking: Option<Task<()>>,
@@ -111,6 +111,53 @@ impl MainView {
         cx.notify();
     }
 
+    /// Attaches every service in the kit `name` that the chosen sandbox hasn't, one after another.
+    fn attach_kit(&mut self, name: &str, cx: &mut Context<Self>) {
+        let Some(kit) = self.kits.kits.find(name).cloned() else {
+            return;
+        };
+        let attached = match &self.services.attached {
+            Some(Ok(attached)) => attached.clone(),
+            _ => return,
+        };
+        let missing: Vec<Service> = self
+            .service_catalog()
+            .into_iter()
+            .filter(|service| kit.services.contains(&service.provider))
+            .filter(|service| !attached.contains(&service.provider))
+            .collect();
+        let (Some(sandbox), Ok(openshell)) = (self.selected.clone(), self.openshell()) else {
+            return;
+        };
+        if missing.is_empty() || self.services.changing.is_some() {
+            return;
+        }
+        self.failed = None;
+        self.services.changing = Some(kit.name.clone());
+        self.services._changing = Some(cx.spawn(async move |this, cx| {
+            let done = cx
+                .background_spawn({
+                    let sandbox = sandbox.clone();
+                    async move {
+                        missing
+                            .iter()
+                            .try_for_each(|service| openshell.attach_service(&sandbox, service))
+                    }
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.services.changing = None;
+                if let Err(error) = done {
+                    tracing::warn!(sandbox = %sandbox, "couldn't attach a kit: {error}");
+                    this.failed = Some(error.to_string());
+                }
+                this.look_up_services(cx);
+                cx.notify();
+            });
+        }));
+        cx.notify();
+    }
+
     /// The services that can be attached, with their profiles.
     fn service_catalog(&self) -> Vec<Service> {
         let Some((providers, profiles)) = &self.services.catalog else {
@@ -146,11 +193,24 @@ impl MainView {
             .cloned()
             .collect();
         let view = cx.entity().downgrade();
+        let kits: Vec<String> = self
+            .kits
+            .kits
+            .kits
+            .iter()
+            .filter(|kit| {
+                kit.services
+                    .iter()
+                    .any(|name| spare.iter().any(|service| &service.provider == name))
+            })
+            .map(|kit| kit.name.clone())
+            .collect();
+        let has_spare = !spare.is_empty();
         let attach = Button::new("attach-service")
             .xsmall()
             .icon(assets::IconName::Plus)
             .label(t!("Attach…").into_owned())
-            .disabled(!ready || changing.is_some() || spare.is_empty())
+            .disabled(!ready || changing.is_some() || !has_spare)
             .loading(
                 changing
                     .as_ref()
@@ -171,6 +231,19 @@ impl MainView {
                                 let _ = view.update(cx, |this, cx| {
                                     this.change_service(service.clone(), true, cx);
                                 });
+                            }),
+                    );
+                }
+                if !kits.is_empty() {
+                    menu = menu.separator();
+                }
+                for kit in &kits {
+                    let view = view.clone();
+                    let kit = kit.clone();
+                    menu = menu.item(
+                        PopupMenuItem::new(t!("Everything in %{kit}", kit = kit).into_owned())
+                            .on_click(move |_, _, cx| {
+                                let _ = view.update(cx, |this, cx| this.attach_kit(&kit, cx));
                             }),
                     );
                 }

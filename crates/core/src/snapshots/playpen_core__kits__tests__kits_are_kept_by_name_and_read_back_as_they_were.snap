@@ -1,0 +1,11 @@
+---
+source: crates/core/src/kits.rs
+expression: "std::fs::read_to_string(&path).unwrap()"
+---
+[[kit]]
+name = "work"
+model_key = "claude-work"
+services = [
+    "github-work",
+    "linear",
+]

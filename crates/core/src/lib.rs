@@ -8,8 +8,10 @@ pub mod crash;
 mod docker;
 mod files;
 mod herdr;
+mod kits;
 mod links;
 mod locale;
+mod new_service;
 mod openshell;
 mod provider;
 pub mod session;
@@ -22,8 +24,10 @@ pub use chatgpt::{Account, ChatGptError, Login, Tokens, find_codex};
 pub use docker::{Docker, DockerError};
 pub use files::write_atomically;
 pub use herdr::{AgentState, HerdrApp, HerdrCore, HerdrError};
+pub use kits::{Kit, Kits};
 pub use links::{link_target, path_from_file_url};
 pub use locale::best_locale;
+pub use new_service::{Access, KeySource, NewService, find_op};
 pub use openshell::{
     Key, OpenShell, OpenShellError, Phase, Profile, ProfileEndpoint, Provider, Sandbox, Service,
 };

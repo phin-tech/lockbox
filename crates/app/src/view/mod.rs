@@ -2,6 +2,7 @@
 //! bar, with the cards over the window (the palette and Keys).
 
 mod agents;
+mod kits;
 mod making;
 mod sandboxes;
 mod services;
@@ -40,16 +41,18 @@ use crate::{about, palette, restore, theme};
 pub enum Page {
     Sandboxes,
     Agents,
+    Kits,
     Providers,
 }
 
 impl Page {
-    const ALL: [Page; 3] = [Page::Sandboxes, Page::Agents, Page::Providers];
+    const ALL: [Page; 4] = [Page::Sandboxes, Page::Agents, Page::Kits, Page::Providers];
 
     fn name(self) -> String {
         match self {
             Page::Sandboxes => t!("Sandboxes").into_owned(),
             Page::Agents => t!("Agents").into_owned(),
+            Page::Kits => t!("Kits").into_owned(),
             Page::Providers => t!("Providers").into_owned(),
         }
     }
@@ -58,6 +61,7 @@ impl Page {
         match self {
             Page::Sandboxes => assets::IconName::Box,
             Page::Agents => assets::IconName::Bot,
+            Page::Kits => assets::IconName::Package,
             Page::Providers => assets::IconName::KeyRound,
         }
     }
@@ -67,6 +71,7 @@ impl Page {
         match self {
             Page::Sandboxes => "go.sandboxes",
             Page::Agents => "go.agents",
+            Page::Kits => "go.kits",
             Page::Providers => "go.providers",
         }
     }
@@ -153,6 +158,9 @@ pub struct MainView {
     /// The place shown, chosen in the sidebar.
     page: Page,
     agents: agents::AgentsPage,
+    kits: kits::KitsPage,
+    /// Asking OpenShell for what kits can hold.
+    kits_asking: Option<Task<()>>,
     /// The Providers place, made the first time it's shown, since it asks OpenShell for its providers.
     providers: Option<Entity<Providers>>,
     card: Option<Card>,
@@ -199,6 +207,8 @@ impl MainView {
             services: services::Services::default(),
             page: Page::Sandboxes,
             agents: agents::AgentsPage::new(),
+            kits: kits::KitsPage::new(watch),
+            kits_asking: None,
             providers: None,
             card: None,
             _watching: watching,
@@ -230,12 +240,15 @@ impl MainView {
             "sandbox.delete" => self.confirm_delete(window, cx),
             "sandbox.next" => match self.page {
                 Page::Agents => self.select_next_agent(1, cx),
+                Page::Kits => self.select_next_kit(1, window, cx),
                 Page::Sandboxes | Page::Providers => self.select_next(1, cx),
             },
             "sandbox.previous" => match self.page {
                 Page::Agents => self.select_next_agent(-1, cx),
+                Page::Kits => self.select_next_kit(-1, window, cx),
                 Page::Sandboxes | Page::Providers => self.select_next(-1, cx),
             },
+            "go.kits" => self.show_page(Page::Kits, window, cx),
             "go.sandboxes" => self.show_page(Page::Sandboxes, window, cx),
             "go.agents" => self.show_page(Page::Agents, window, cx),
             "go.providers" => self.show_page(Page::Providers, window, cx),
@@ -285,6 +298,14 @@ impl MainView {
     fn show_page(&mut self, page: Page, window: &mut Window, cx: &mut Context<Self>) {
         match page {
             Page::Agents => self.check_images(window, cx),
+            Page::Kits => {
+                self.look_up_catalog(cx);
+                if self.kits.selected.is_some()
+                    && let Some(name) = self.kits.selected.clone()
+                {
+                    self.select_kit(name, window, cx);
+                }
+            }
             Page::Providers if self.providers.is_none() => {
                 self.providers = Some(cx.new(|cx| Providers::new(window, cx)));
             }
@@ -410,6 +431,7 @@ impl MainView {
             let count = match page {
                 Page::Sandboxes => Some(self.listed_sandboxes().len()),
                 Page::Agents => Some(Agent::ALL.len()),
+                Page::Kits => Some(self.kits.kits.kits.len()),
                 Page::Providers => None,
             };
             shell::sidebar_row(shown, cx)
@@ -461,10 +483,15 @@ impl Render for MainView {
                 Some(self.agent_list(cx)),
                 self.agent_detail(cx),
             ),
+            Page::Kits => (
+                self.kits_heading(cx),
+                Some(self.kit_list(cx)),
+                self.kit_detail(cx),
+            ),
             Page::Providers => (
                 heading(
                     t!("Providers").into_owned(),
-                    t!("The model keys OpenShell holds").into_owned(),
+                    t!("Model keys and services OpenShell holds").into_owned(),
                     cx,
                 ),
                 None,

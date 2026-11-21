@@ -49,6 +49,8 @@ pub struct Making {
     profiles: Option<Vec<Profile>>,
     /// The services chosen, by provider name.
     services: BTreeSet<String>,
+    /// The kit last used, whose model key is chosen once the providers are listed, if the agent can use it.
+    kit: Option<String>,
     pub(super) state: MakeState,
     _changed: Subscription,
     _chose: Subscription,
@@ -69,7 +71,7 @@ impl MainView {
         // From Agents, for the agent chosen there.
         let agent = match self.page {
             Page::Agents => self.agents.selected,
-            Page::Sandboxes | Page::Providers => Agent::ALL[0],
+            Page::Sandboxes | Page::Kits | Page::Providers => Agent::ALL[0],
         };
         self.start_making_for(agent, window, cx);
     }
@@ -149,6 +151,7 @@ impl MainView {
             provider: None,
             profiles: None,
             services: BTreeSet::new(),
+            kit: None,
             state: MakeState::Choosing,
             _changed: changed,
             _chose: chose,
@@ -177,6 +180,10 @@ impl MainView {
         };
         making.listed = Some(listed);
         making.choose_first_provider();
+        let kit = making.kit.clone();
+        if let Some(kit) = kit {
+            self.use_kit(&kit, cx);
+        }
         cx.notify();
     }
 
@@ -201,6 +208,44 @@ impl MainView {
         });
         making.choose_first_provider();
         cx.notify();
+    }
+
+    /// Fills New Agent from the kit `name`: its services, and its model key if the agent can use it.
+    pub(super) fn use_kit(&mut self, name: &str, cx: &mut Context<Self>) {
+        let Some(kit) = self.kits.kits.find(name).cloned() else {
+            return;
+        };
+        let Some(making) = &mut self.making else {
+            return;
+        };
+        making.kit = Some(kit.name.clone());
+        making.services = kit.services.iter().cloned().collect();
+        if let Some(model_key) = &kit.model_key
+            && let Some(Ok(usable)) = making.usable()
+            && usable.iter().any(|provider| &provider.name == model_key)
+        {
+            making.provider = Some(model_key.clone());
+        }
+        cx.notify();
+    }
+
+    /// The kits as chips, the one last used marked, which fill the form when chosen.
+    fn kit_choices(&self, making: &Making, working: bool, cx: &Context<Self>) -> Div {
+        h_flex()
+            .flex_wrap()
+            .gap_2()
+            .children(self.kits.kits.kits.iter().map(|kit| {
+                let name = kit.name.clone();
+                shell::chip(making.kit.as_ref() == Some(&kit.name), cx)
+                    .id(ElementId::from((
+                        ElementId::from("use-kit"),
+                        kit.name.clone(),
+                    )))
+                    .child(kit.name.clone())
+                    .when(!working, |chip| {
+                        chip.on_click(cx.listener(move |this, _, _, cx| this.use_kit(&name, cx)))
+                    })
+            }))
     }
 
     /// Chooses a service, or leaves it out.
@@ -527,6 +572,9 @@ impl MainView {
                 section(t!("Name"), cx).child(div().w(rems(20.)).child(small_field(&making.name))),
             )
             .child(section(t!("Folders"), cx).child(folders))
+            .when(!self.kits.kits.kits.is_empty(), |body| {
+                body.child(section(t!("Kit"), cx).child(self.kit_choices(making, working, cx)))
+            })
             .child(section(t!("Model key"), cx).child(providers))
             .child(section(t!("Services"), cx).child(self.service_choices(making, working, cx)))
             .child(state);
@@ -606,6 +654,11 @@ impl Making {
 
 #[cfg(test)]
 impl Making {
+    #[cfg(test)]
+    pub(super) fn ticked_services(&self) -> Vec<&str> {
+        self.services.iter().map(String::as_str).collect()
+    }
+
     pub(super) fn chosen_provider(&self) -> Option<&str> {
         self.provider.as_deref()
     }

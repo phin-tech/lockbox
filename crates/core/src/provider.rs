@@ -60,6 +60,20 @@ pub enum ProviderError {
     Address(String),
     #[error("Paste the key first.")]
     NoKey,
+    #[error(
+        "“{0}” can't name the key's variable: use capitals, digits and underscores, like GITHUB_TOKEN."
+    )]
+    Variable(String),
+    #[error(
+        "1Password's command line, `op`, isn't installed. Install it with `brew install 1password-cli`."
+    )]
+    NoOp,
+    #[error(
+        "“{0}” isn't a 1Password secret reference: copy one from 1Password, like op://Private/GitHub/token."
+    )]
+    Reference(String),
+    #[error("Give the 1Password Environment's ID, from Manage environment ▸ Copy environment ID.")]
+    Environment,
 }
 
 impl Kind {
@@ -359,6 +373,7 @@ impl Provider {
     /// Whether its profile is one Playpen made for it alone, which goes when it does.
     pub(crate) fn has_own_profile(&self) -> bool {
         self.kind.starts_with(LITELLM_PREFIX)
+            || self.kind.starts_with(crate::new_service::SERVICE_PREFIX)
     }
 }
 

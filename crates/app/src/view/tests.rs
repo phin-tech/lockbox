@@ -186,6 +186,45 @@ fn choosing_codex_renames_the_sandbox_and_chooses_a_chatgpt_provider(cx: &mut Te
 }
 
 #[gpui_kit::test]
+fn a_kit_fills_new_agent_with_its_services_and_its_model_key_once_listed(cx: &mut TestAppContext) {
+    let (view, cx) = open(cx);
+    view.update(cx, |view, _| {
+        view.kits.kits.kits.push(playpen_core::Kit {
+            name: "work".to_string(),
+            model_key: Some("claude-work".to_string()),
+            services: vec!["github-work".to_string()],
+        });
+    });
+    cx.simulate_keystrokes("cmd-n");
+    cx.run_until_parked();
+    view.update(cx, |view, cx| {
+        view.use_kit("work", cx);
+        view.providers_listed(
+            Ok(vec![
+                Provider {
+                    name: "claude-sub".to_string(),
+                    kind: "claude-code-oauth".to_string(),
+                },
+                Provider {
+                    name: "claude-work".to_string(),
+                    kind: "claude-code-oauth".to_string(),
+                },
+            ]),
+            cx,
+        );
+    });
+    view.read_with(cx, |view, _| {
+        let making = view.making.as_ref().expect("New Agent… is showing");
+        assert_eq!(
+            making.chosen_provider(),
+            Some("claude-work"),
+            "the kit's, not the first"
+        );
+        assert_eq!(making.ticked_services(), ["github-work"]);
+    });
+}
+
+#[gpui_kit::test]
 fn a_name_typed_isnt_replaced_by_choosing_a_folder(cx: &mut TestAppContext) {
     let (view, cx) = open(cx);
     cx.simulate_keystrokes("cmd-n");

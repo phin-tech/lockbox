@@ -1,0 +1,23 @@
+---
+source: crates/core/src/new_service.rs
+assertion_line: 187
+expression: github().profile()
+---
+# Written by Playpen.
+id: playpen-service-github
+display_name: "github (api.github.com)"
+description: "A service at api.github.com:443, added by Playpen"
+category: other
+credentials:
+  - name: key
+    description: "github key"
+    env_vars: [GITHUB_TOKEN]
+    required: true
+    auth_style: bearer
+    header_name: authorization
+endpoints:
+  - host: api.github.com
+    port: 443
+    protocol: rest
+    access: read-only
+    enforcement: enforce

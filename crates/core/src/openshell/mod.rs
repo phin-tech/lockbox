@@ -14,6 +14,7 @@ use std::process::{Command, Output, Stdio};
 use serde::Deserialize;
 
 use crate::chatgpt::Tokens;
+use crate::new_service::{KeySource, NewService, with_key};
 use crate::provider::{CHATGPT_CLIENT_ID, Kind, NewProvider};
 
 /// The label Playpen puts on a sandbox it made, naming its [`crate::Agent`].
@@ -353,34 +354,7 @@ impl OpenShell {
             ));
         }
         let id = new.profile_id();
-        let file =
-            std::env::temp_dir().join(format!("playpen-profile-{}-{id}.yaml", std::process::id()));
-        std::fs::write(&file, new.profile()).map_err(|error| {
-            OpenShellError::Failed(
-                format!("write the profile for “{}”", new.name),
-                error.to_string(),
-            )
-        })?;
-        let path = file.to_string_lossy().into_owned();
-        let doing = format!("add the profile for “{}”", new.name);
-        let imported = self.run(
-            &doing,
-            &["provider", "profile", "import", "--global", "--file", &path],
-        );
-        let imported = match imported {
-            Ok(_) => Ok(Imported::New),
-            Err(OpenShellError::Failed(_, said)) if said.contains("already exists") => {
-                if id.starts_with("playpen-") {
-                    self.update_profile(&doing, &id, &new.profile(), &file)
-                        .map(|()| Imported::Existing)
-                } else {
-                    Ok(Imported::Existing)
-                }
-            }
-            Err(error) => Err(error),
-        };
-        let _ = std::fs::remove_file(&file);
-        let imported = imported?;
+        let imported = self.import_profile(&new.name, &id, &new.profile())?;
         let variable = new.kind.variable();
         let created = self.run_with(
             &adding,
@@ -398,9 +372,104 @@ impl OpenShell {
         );
         if created.is_err() && imported == Imported::New && new.kind == Kind::LiteLlm {
             // A proxy's profile is its provider's alone, so it shouldn't outlive a provider that wasn't made.
-            let _ = self.run(&doing, &["provider", "profile", "delete", &id, "--global"]);
+            let _ = self.run(&adding, &["provider", "profile", "delete", &id, "--global"]);
         }
         created.map(drop)
+    }
+
+    /// Imports the profile `id`, `profile`, for the provider `name`, bringing one Playpen wrote up to date when it's
+    /// there already and leaving any other as it is.
+    fn import_profile(
+        &self,
+        name: &str,
+        id: &str,
+        profile: &str,
+    ) -> Result<Imported, OpenShellError> {
+        let file =
+            std::env::temp_dir().join(format!("playpen-profile-{}-{id}.yaml", std::process::id()));
+        std::fs::write(&file, profile).map_err(|error| {
+            OpenShellError::Failed(format!("write the profile for “{name}”"), error.to_string())
+        })?;
+        let path = file.to_string_lossy().into_owned();
+        let doing = format!("add the profile for “{name}”");
+        let imported = self.run(
+            &doing,
+            &["provider", "profile", "import", "--global", "--file", &path],
+        );
+        let imported = match imported {
+            Ok(_) => Ok(Imported::New),
+            Err(OpenShellError::Failed(_, said)) if said.contains("already exists") => {
+                if id.starts_with("playpen-") {
+                    self.update_profile(&doing, id, profile, &file)
+                        .map(|()| Imported::Existing)
+                } else {
+                    Ok(Imported::Existing)
+                }
+            }
+            Err(error) => Err(error),
+        };
+        let _ = std::fs::remove_file(&file);
+        imported
+    }
+
+    /// Adds a service, its key from `source`: pasted, or from 1Password through `op`, which hands it to `openshell`
+    /// itself. Its profile is its own, so it goes again if the provider isn't made.
+    pub fn add_service(
+        &self,
+        new: &NewService,
+        source: &KeySource,
+        op: Option<&Path>,
+    ) -> Result<(), OpenShellError> {
+        let adding = format!("add “{}”", new.name);
+        if self
+            .providers()?
+            .iter()
+            .any(|provider| provider.name == new.name)
+        {
+            return Err(OpenShellError::Failed(
+                adding,
+                "there's a provider called that already".to_string(),
+            ));
+        }
+        let args = [
+            "provider",
+            "create",
+            "--name",
+            &new.name,
+            "--type",
+            &new.profile_id(),
+            "--credential",
+            &new.variable,
+        ];
+        let (program, all, set) = with_key(source, op, &self.binary, &args)
+            .map_err(|error| OpenShellError::Failed(adding.clone(), error.to_string()))?;
+        let id = new.profile_id();
+        let imported = self.import_profile(&new.name, &id, &new.profile())?;
+        let mut command = Command::new(&program);
+        command.args(&all).env("NO_COLOR", "1").stdin(Stdio::null());
+        match (source, set) {
+            (KeySource::Key(key), _) => {
+                command.env(&new.variable, &key.0);
+            }
+            (_, Some(reference)) => {
+                command.env(&new.variable, reference);
+            }
+            (_, None) => {}
+        }
+        let created = command
+            .output()
+            .map_err(|error| OpenShellError::Run(error.to_string()))
+            .and_then(|output| {
+                if output.status.success() {
+                    Ok(())
+                } else {
+                    Err(OpenShellError::Failed(adding.clone(), said(&output.stderr)))
+                }
+            });
+        if created.is_err() && imported == Imported::New {
+            let _ = self.run(&adding, &["provider", "profile", "delete", &id, "--global"]);
+        }
+        created
     }
 
     /// Replaces the profile `id` with `profile`, written to `file`. OpenShell takes an update only with the version it

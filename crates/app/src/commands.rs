@@ -24,6 +24,7 @@ pub const COMMANDS: &[&str] = &[
     "file.close",
     "file.new",
     "go.agents",
+    "go.kits",
     "go.providers",
     "go.sandboxes",
     "sandbox.add-folders",

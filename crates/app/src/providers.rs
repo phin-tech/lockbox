@@ -15,9 +15,10 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use std::time::{Duration, Instant};
 
+use gpui_kit::component::radio::Radio;
 use playpen_core::{
-    Account, ChatGptError, Key, Kind, Login, NewProvider, OpenShell, Provider, ProviderError,
-    find_codex,
+    Access, Account, ChatGptError, Key, KeySource, Kind, Login, NewProvider, NewService, OpenShell,
+    Provider, ProviderError, find_codex, find_op,
 };
 use rust_i18n::t;
 
@@ -25,6 +26,7 @@ use rust_i18n::t;
 pub struct Providers {
     listing: Listing,
     form: Option<Form>,
+    service: Option<ServiceForm>,
     /// The last thing done that failed, until something else is done.
     failed: Option<String>,
     /// Whatever is being asked of OpenShell, ended with the pane.
@@ -55,6 +57,27 @@ struct Form {
     _chose: Subscription,
 }
 
+/// Adding a service: a key for something other than a model, sent to the one host given.
+struct ServiceForm {
+    name: Entity<InputState>,
+    address: Entity<InputState>,
+    variable: Entity<InputState>,
+    access: Access,
+    from: From,
+    key: Entity<InputState>,
+    reference: Entity<InputState>,
+    environment: Entity<InputState>,
+    saving: bool,
+}
+
+/// Where a service's key comes from, as the form offers it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum From {
+    Pasted,
+    Reference,
+    Environment,
+}
+
 /// A kind of provider, as the Kind menu lists it.
 #[derive(Clone)]
 struct KindChoice(Kind);
@@ -76,6 +99,7 @@ impl Providers {
         let mut this = Self {
             listing: Listing::Loading,
             form: None,
+            service: None,
             failed: None,
             _working: None,
         };
@@ -95,8 +119,11 @@ impl Providers {
                 stand_in("claude-subscription", "claude-code-oauth"),
                 stand_in("openrouter", "playpen-openrouter"),
                 stand_in("work", "playpen-litellm-work"),
+                stand_in("github", "playpen-service-github"),
             ]);
-            if let Ok(kind) = std::env::var("PLAYPEN_SHOT_ADD") {
+            if std::env::var("PLAYPEN_SHOT_ADD").as_deref() == Ok("service") {
+                self.start_adding_service(window, cx);
+            } else if let Ok(kind) = std::env::var("PLAYPEN_SHOT_ADD") {
                 let kind = Kind::ALL
                     .into_iter()
                     .find(|known| known.suggested_name() == kind)
@@ -124,6 +151,217 @@ impl Providers {
         }));
     }
 
+    /// Opens the form for a new service.
+    pub(crate) fn start_adding_service(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let field = |placeholder: &str, window: &mut Window, cx: &mut Context<Self>| {
+            let placeholder = placeholder.to_string();
+            cx.new(|cx| InputState::new(window, cx).placeholder(placeholder))
+        };
+        let name = field("github", window, cx);
+        name.read(cx).focus_handle(cx).focus(window, cx);
+        self.form = None;
+        self.failed = None;
+        self.service = Some(ServiceForm {
+            name,
+            address: field("api.github.com", window, cx),
+            variable: field("GITHUB_TOKEN", window, cx),
+            access: Access::ReadOnly,
+            from: if find_op().is_some() {
+                From::Reference
+            } else {
+                From::Pasted
+            },
+            key: cx.new(|cx| InputState::new(window, cx).masked(true)),
+            reference: field("op://Private/GitHub/token", window, cx),
+            environment: field("Environment ID", window, cx),
+            saving: false,
+        });
+        cx.notify();
+    }
+
+    /// Adds the service, off the window's thread. A 1Password key goes from `op` to OpenShell, never through here.
+    fn save_service(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(form) = &mut self.service else {
+            return;
+        };
+        if form.saving {
+            return;
+        }
+        let new = match NewService::new(
+            &form.name.read(cx).value(),
+            &form.address.read(cx).value(),
+            &form.variable.read(cx).value(),
+            form.access,
+        ) {
+            Ok(new) => new,
+            Err(error) => {
+                self.failed = Some(error.to_string());
+                cx.notify();
+                return;
+            }
+        };
+        let source = match form.from {
+            From::Pasted => KeySource::Key(Key::new(&form.key.read(cx).value())),
+            From::Reference => KeySource::Reference(form.reference.read(cx).value().to_string()),
+            From::Environment => {
+                KeySource::Environment(form.environment.read(cx).value().to_string())
+            }
+        };
+        form.saving = true;
+        self.failed = None;
+        let saved = cx.background_spawn(async move {
+            OpenShell::find()?.add_service(&new, &source, find_op().as_deref())?;
+            anyhow::Ok(new.name)
+        });
+        self._working = Some(cx.spawn_in(window, async move |this, cx| {
+            let saved = saved.await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                match saved {
+                    Ok(name) => {
+                        tracing::info!(service = %name, "added a service");
+                        this.service = None;
+                        this.refresh(window, cx);
+                    }
+                    Err(error) => {
+                        tracing::warn!("couldn't add a service: {error:#}");
+                        if let Some(form) = &mut this.service {
+                            form.saving = false;
+                        }
+                        this.failed = Some(format!("{error:#}"));
+                    }
+                }
+                cx.notify();
+            });
+        }));
+        cx.notify();
+    }
+
+    fn service_form(&self, form: &ServiceForm, cx: &Context<Self>) -> Div {
+        let has_op = find_op().is_some();
+        let access = |access: Access, label: std::borrow::Cow<str>, id: &'static str| {
+            Radio::new(id)
+                .label(label.into_owned())
+                .checked(form.access == access)
+                .disabled(form.saving)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if let Some(form) = &mut this.service {
+                        form.access = access;
+                        cx.notify();
+                    }
+                }))
+        };
+        let from = |from: From, label: std::borrow::Cow<str>, id: &'static str| {
+            Radio::new(id)
+                .label(label.into_owned())
+                .checked(form.from == from)
+                .disabled(form.saving || (from != From::Pasted && !has_op))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if let Some(form) = &mut this.service {
+                        form.from = from;
+                        cx.notify();
+                    }
+                }))
+        };
+        let (key_field, key_note) = match form.from {
+            From::Pasted => (&form.key, t!("OpenShell keeps it; Playpen doesn't.")),
+            From::Reference => (
+                &form.reference,
+                t!(
+                    "In 1Password, a field's menu has Copy Secret Reference. `op` reads it and hands it to OpenShell."
+                ),
+            ),
+            From::Environment => (
+                &form.environment,
+                t!(
+                    "From the Environment's Manage environment ▸ Copy environment ID. It needs a secret named as the variable."
+                ),
+            ),
+        };
+        v_flex()
+            .gap_3()
+            .p_3()
+            .rounded(cx.theme().radius)
+            .border_1()
+            .border_color(cx.theme().border)
+            .child(div().font_semibold().child(t!("Add a Service").into_owned()))
+            .child(field(t!("Name"), div().w(rems(16.)).child(small_field(&form.name)), cx))
+            .child(field(
+                t!("Host"),
+                v_flex()
+                    .gap_1()
+                    .child(div().w(rems(20.)).child(small_field(&form.address)))
+                    .child(note(t!("The only host its key is sent to."), cx)),
+                cx,
+            ))
+            .child(field(
+                t!("Variable"),
+                v_flex()
+                    .gap_1()
+                    .child(div().w(rems(16.)).child(small_field(&form.variable)))
+                    .child(note(
+                        t!("Where programs in the sandbox find its stand-in, sent as a bearer token."),
+                        cx,
+                    )),
+                cx,
+            ))
+            .child(field(
+                t!("Access"),
+                h_flex()
+                    .gap_4()
+                    .child(access(Access::ReadOnly, t!("Read only"), "access-read"))
+                    .child(access(Access::ReadWrite, t!("Read and write"), "access-write")),
+                cx,
+            ))
+            .child(field(
+                t!("Key from"),
+                v_flex()
+                    .gap_2()
+                    .child(
+                        h_flex()
+                            .flex_wrap()
+                            .gap_4()
+                            .child(from(From::Reference, t!("1Password reference"), "from-reference"))
+                            .child(from(From::Environment, t!("1Password Environment"), "from-environment"))
+                            .child(from(From::Pasted, t!("Paste"), "from-pasted")),
+                    )
+                    .child(div().w(rems(20.)).child(small_field(key_field)))
+                    .child(note(key_note, cx))
+                    .when(!has_op, |this| {
+                        this.child(note(
+                            t!("Install 1Password's command line, `brew install 1password-cli`, to take keys from 1Password."),
+                            cx,
+                        ))
+                    }),
+                cx,
+            ))
+            .child(
+                h_flex()
+                    .gap_2()
+                    .justify_end()
+                    .child(
+                        Button::new("cancel-service")
+                            .ghost()
+                            .small()
+                            .disabled(form.saving)
+                            .label(t!("Cancel").into_owned())
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.service = None;
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        Button::new("save-service")
+                            .primary()
+                            .small()
+                            .loading(form.saving)
+                            .label(t!("Add Service").into_owned())
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.save_service(window, cx);
+                            })),
+                    ),
+            )
+    }
+
     fn start_adding(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.open_form(None, Kind::OpenRouter, window, cx);
     }
@@ -148,6 +386,7 @@ impl Providers {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.service = None;
         let suggested = kind.suggested_name().to_string();
         let name = cx.new(|cx| {
             let mut state = InputState::new(window, cx);
@@ -432,9 +671,11 @@ impl Providers {
             Listing::Listed(providers) => providers,
         };
         v_flex().gap_2().children(providers.iter().map(|provider| {
-            let kind = provider
-                .playpen_kind()
-                .map_or_else(|| provider.kind.clone(), |kind| kind.name().to_string());
+            let kind = match provider.playpen_kind() {
+                Some(kind) => kind.name().to_string(),
+                None if provider.kind.starts_with("playpen-service-") => t!("Service").into_owned(),
+                None => provider.kind.clone(),
+            };
             let replace = provider.clone();
             let delete = provider.clone();
             let id = |what: &'static str| {
@@ -604,16 +845,30 @@ impl Render for Providers {
             .when_some(self.failed.clone(), |this, failed| {
                 this.child(div().text_sm().text_color(cx.theme().danger).child(failed))
             })
-            .map(|this| match &self.form {
-                Some(form) => this.child(self.form(form, cx)),
-                None => this.child(
-                    h_flex().child(
-                        Button::new("add-provider")
-                            .outline()
-                            .label(t!("Add Provider…").into_owned())
-                            .disabled(matches!(self.listing, Listing::Failed(_)))
-                            .on_click(cx.listener(|this, _, window, cx| this.start_adding(window, cx))),
-                    ),
+            .map(|this| match (&self.form, &self.service) {
+                (Some(form), _) => this.child(self.form(form, cx)),
+                (None, Some(service)) => this.child(self.service_form(service, cx)),
+                (None, None) => this.child(
+                    h_flex()
+                        .gap_2()
+                        .child(
+                            Button::new("add-provider")
+                                .outline()
+                                .label(t!("Add Model Key…").into_owned())
+                                .disabled(matches!(self.listing, Listing::Failed(_)))
+                                .on_click(
+                                    cx.listener(|this, _, window, cx| this.start_adding(window, cx)),
+                                ),
+                        )
+                        .child(
+                            Button::new("add-service")
+                                .outline()
+                                .label(t!("Add Service…").into_owned())
+                                .disabled(matches!(self.listing, Listing::Failed(_)))
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.start_adding_service(window, cx);
+                                })),
+                        ),
                 ),
             })
     }

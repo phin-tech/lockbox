@@ -168,3 +168,41 @@ fn a_service_reaches_only_its_host_with_its_access_and_detaching_closes_it() {
     assert_eq!(while_attached, "GET real\nPOST 403");
     assert_eq!(after, "GET blocked\nPOST blocked", "closed again");
 }
+
+#[test]
+#[ignore = "needs OpenShell's gateway"]
+fn a_service_playpen_adds_is_offered_as_one_and_goes_with_its_profile() {
+    use playpen_core::{Access, Key, KeySource, NewService};
+
+    let openshell = OpenShell::find().unwrap();
+    let name = format!("pp-svc-{}", std::process::id());
+    let new = NewService::new(&name, "postman-echo.com", "ECHO_TOKEN", Access::ReadOnly).unwrap();
+    let added = openshell.add_service(&new, &KeySource::Key(Key::new("pp-secret-123")), None);
+    let found = (|| {
+        let providers = openshell.providers().map_err(|error| error.to_string())?;
+        let profiles = openshell.profiles().map_err(|error| error.to_string())?;
+        let offered = Service::choices(&providers, &profiles)
+            .into_iter()
+            .find(|(provider, _)| provider.name == name)
+            .map(|(provider, profile)| Service::new(provider, profile));
+        Ok::<_, String>((
+            providers.into_iter().find(|provider| provider.name == name),
+            offered,
+        ))
+    })();
+    if let Ok((Some(provider), _)) = &found {
+        openshell.delete_provider(provider).unwrap();
+    }
+    let profile_left = openshell
+        .profiles()
+        .unwrap()
+        .into_iter()
+        .any(|profile| profile.id == new.profile_id());
+    added.unwrap();
+    let (provider, offered) = found.unwrap();
+    assert!(provider.is_some());
+    let offered = offered.expect("offered as a service");
+    assert_eq!(offered.endpoints[0].host, "postman-echo.com");
+    assert_eq!(offered.endpoints[0].access, "read-only");
+    assert!(!profile_left, "its profile goes with it");
+}

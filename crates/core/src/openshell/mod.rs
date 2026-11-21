@@ -9,6 +9,8 @@ use std::process::{Command, Output, Stdio};
 
 use serde::Deserialize;
 
+use crate::provider::{Kind, NewProvider};
+
 /// The label Lockbox puts on a sandbox it made, naming its [`crate::Agent`].
 pub const AGENT_LABEL: &str = "lockbox.agent";
 
@@ -105,6 +107,25 @@ pub struct Provider {
     pub kind: String,
 }
 
+/// A provider's key, kept out of anything printed or logged.
+pub struct Key(String);
+
+impl Key {
+    pub fn new(key: &str) -> Key {
+        Key(key.trim().to_string())
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl std::fmt::Debug for Key {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("Key(…)")
+    }
+}
+
 #[derive(Deserialize)]
 struct Listed {
     #[serde(default)]
@@ -128,6 +149,8 @@ struct ListedSandbox {
 struct ListedProviders {
     #[serde(default)]
     providers: Vec<Provider>,
+    #[serde(default)]
+    next_page_token: String,
 }
 
 /// The sandboxes in what `openshell sandbox list -o json` printed, by name.
@@ -150,11 +173,9 @@ pub fn parse_sandboxes(json: &str) -> Result<Vec<Sandbox>, OpenShellError> {
     Ok(sandboxes)
 }
 
-/// The providers in what `openshell provider list -o json` printed.
-pub fn parse_providers(json: &str) -> Result<Vec<Provider>, OpenShellError> {
-    let listed: ListedProviders = serde_json::from_str(json)
-        .map_err(|error| OpenShellError::Unreadable(error.to_string()))?;
-    Ok(listed.providers)
+/// A page of the providers in what `openshell provider list -o json` printed.
+fn parse_provider_page(json: &str) -> Result<ListedProviders, OpenShellError> {
+    serde_json::from_str(json).map_err(|error| OpenShellError::Unreadable(error.to_string()))
 }
 
 /// What `openshell` said on its standard error, without the box it draws around an error.
@@ -218,7 +239,18 @@ impl OpenShell {
 
     /// Runs `openshell` with `args`, and gives what it printed, or why it failed while doing `doing`.
     fn run(&self, doing: &str, args: &[&str]) -> Result<String, OpenShellError> {
-        let output = self.output(args)?;
+        self.run_with(doing, args, None)
+    }
+
+    /// Runs `openshell` with `args`, and with `key` in its environment as `variable` when given: a key goes to it
+    /// that way, never as an argument, which any process on the Mac can read.
+    fn run_with(
+        &self,
+        doing: &str,
+        args: &[&str],
+        key: Option<(&str, &Key)>,
+    ) -> Result<String, OpenShellError> {
+        let output = self.output_with(args, key)?;
         if output.status.success() {
             Ok(String::from_utf8_lossy(&output.stdout).into_owned())
         } else {
@@ -229,8 +261,16 @@ impl OpenShell {
         }
     }
 
-    fn output(&self, args: &[&str]) -> Result<Output, OpenShellError> {
-        Command::new(&self.binary)
+    fn output_with(
+        &self,
+        args: &[&str],
+        key: Option<(&str, &Key)>,
+    ) -> Result<Output, OpenShellError> {
+        let mut command = Command::new(&self.binary);
+        if let Some((variable, key)) = key {
+            command.env(variable, &key.0);
+        }
+        command
             .args(args)
             // Plain text, since its errors are read back and shown.
             .env("NO_COLOR", "1")
@@ -246,11 +286,116 @@ impl OpenShell {
         )?)
     }
 
+    /// Every provider, by name, a page at a time as OpenShell gives them.
     pub fn providers(&self) -> Result<Vec<Provider>, OpenShellError> {
-        parse_providers(&self.run(
-            "list the providers",
-            &["provider", "list", "--output", "json"],
-        )?)
+        let mut providers = Vec::new();
+        let mut token = String::new();
+        loop {
+            let page = parse_provider_page(&self.run(
+                "list the providers",
+                &[
+                    "provider",
+                    "list",
+                    "--output",
+                    "json",
+                    "--page-token",
+                    &token,
+                ],
+            )?)?;
+            providers.extend(page.providers);
+            if page.next_page_token.is_empty() || page.next_page_token == token {
+                break;
+            }
+            token = page.next_page_token;
+        }
+        providers.sort_by(|one, other| one.name.cmp(&other.name));
+        Ok(providers)
+    }
+
+    /// Adds a provider holding `key`, first importing the profile its type comes from, or bringing that profile up to
+    /// date when it's there already.
+    pub fn add_provider(&self, new: &NewProvider, key: &Key) -> Result<(), OpenShellError> {
+        let id = new.profile_id();
+        let file =
+            std::env::temp_dir().join(format!("lockbox-profile-{}-{id}.yaml", std::process::id()));
+        std::fs::write(&file, new.profile()).map_err(|error| {
+            OpenShellError::Failed(
+                format!("write the profile for “{}”", new.name),
+                error.to_string(),
+            )
+        })?;
+        let path = file.to_string_lossy().into_owned();
+        let doing = format!("add the profile for “{}”", new.name);
+        let imported = self.run(
+            &doing,
+            &["provider", "profile", "import", "--global", "--file", &path],
+        );
+        let imported = match imported {
+            Err(OpenShellError::Failed(_, said)) if said.contains("already exists") => self
+                .run(
+                    &doing,
+                    &[
+                        "provider", "profile", "update", &id, "--global", "--file", &path,
+                    ],
+                )
+                .map(drop),
+            other => other.map(drop),
+        };
+        let _ = std::fs::remove_file(&file);
+        imported?;
+        let variable = new.kind.variable();
+        self.run_with(
+            &format!("add “{}”", new.name),
+            &[
+                "provider",
+                "create",
+                "--name",
+                &new.name,
+                "--type",
+                &id,
+                "--credential",
+                variable,
+            ],
+            Some((variable, key)),
+        )
+        .map(drop)
+    }
+
+    /// Gives `provider` a new key. Sandboxes it's attached to take it up for the processes they start next.
+    pub fn replace_key(&self, provider: &Provider, key: &Key) -> Result<(), OpenShellError> {
+        let variable = provider.lockbox_kind().map(Kind::variable).ok_or_else(|| {
+            OpenShellError::Failed(
+                format!("replace the key for “{}”", provider.name),
+                "Lockbox doesn't know its kind".to_string(),
+            )
+        })?;
+        self.run_with(
+            &format!("replace the key for “{}”", provider.name),
+            &[
+                "provider",
+                "update",
+                &provider.name,
+                "--credential",
+                variable,
+            ],
+            Some((variable, key)),
+        )
+        .map(drop)
+    }
+
+    /// Deletes `provider`, and the profile Lockbox made for it alone. OpenShell won't while a sandbox uses it.
+    pub fn delete_provider(&self, provider: &Provider) -> Result<(), OpenShellError> {
+        self.run(
+            &format!("delete “{}”", provider.name),
+            &["provider", "delete", &provider.name],
+        )?;
+        if provider.has_own_profile() {
+            self.run(
+                &format!("delete the profile for “{}”", provider.name),
+                &["provider", "profile", "delete", &provider.kind, "--global"],
+            )?;
+        }
+        Ok(())
     }
 
     pub fn start(&self, name: &str) -> Result<(), OpenShellError> {
@@ -294,7 +439,7 @@ impl OpenShell {
 
 #[cfg(test)]
 mod tests {
-    use super::{Phase, parse_providers, parse_sandboxes, said};
+    use super::{Phase, parse_provider_page, parse_sandboxes, said};
 
     /// What OpenShell 0.1.8 listed with one sandbox Lockbox made.
     const SANDBOXES: &str = include_str!("sandboxes.json");
@@ -336,7 +481,7 @@ mod tests {
 
     #[test]
     fn providers_are_read_with_their_types() {
-        let providers = parse_providers(PROVIDERS).unwrap();
+        let providers = parse_provider_page(PROVIDERS).unwrap().providers;
         assert_eq!(providers[0].name, "claude-sub");
         assert_eq!(providers[0].kind, "claude-code-oauth");
     }

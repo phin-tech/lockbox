@@ -80,7 +80,12 @@ impl Agent {
     /// The types of provider that hold a key it can use: a subscription's token, or an API key.
     pub fn provider_kinds(self) -> &'static [&'static str] {
         match self {
-            Agent::ClaudeCode => &["claude-code-oauth", "claude-code", "anthropic"],
+            Agent::ClaudeCode => &[
+                "claude-code-oauth",
+                "claude-code",
+                "anthropic",
+                "lockbox-anthropic",
+            ],
         }
     }
 

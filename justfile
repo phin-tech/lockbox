@@ -36,6 +36,10 @@ shot name="app" appearance="light":
     LOCKBOX_APPEARANCE={{appearance}} LOCKBOX_SHOT="$(cd "${CARGO_TARGET_DIR:-target}/shots" && pwd)/{{name}}.png" \
         cargo run -p lockbox --features screenshot
 
+# Add a LiteLLM provider with a made-up key to the real OpenShell gateway, give it another, and delete it
+providers-test:
+    cargo test -p lockbox-core --test providers -- --ignored
+
 # Make a Claude Code sandbox on the real OpenShell gateway and ask Claude Code something in it, with the provider named
 openshell-test provider:
     LOCKBOX_TEST_PROVIDER={{provider}} cargo test -p lockbox-core --test openshell -- --ignored

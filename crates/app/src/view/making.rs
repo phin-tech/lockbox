@@ -276,7 +276,7 @@ impl MainView {
                 .child(error.clone()),
             Some(Ok(providers)) if providers.is_empty() => hint(
                 t!(
-                    "OpenShell has no provider with a key for %{agent}. Make one with `openshell provider create`, then open New Agent… again.",
+                    "OpenShell has no provider with a key for %{agent}. Add one in Settings ▸ Providers, then open New Agent… again.",
                     agent = making.agent.name()
                 ),
                 cx,
@@ -284,7 +284,13 @@ impl MainView {
             Some(Ok(providers)) => v_flex().gap_1().children(providers.iter().map(|provider| {
                 let name = provider.name.clone();
                 Radio::new(ElementId::from((ElementId::from("provider"), name.clone())))
-                    .label(format!("{} ({})", provider.name, provider.kind))
+                    .label(format!(
+                        "{} ({})",
+                        provider.name,
+                        provider
+                            .lockbox_kind()
+                            .map_or(provider.kind.as_str(), |kind| kind.name())
+                    ))
                     .checked(making.provider.as_ref() == Some(&provider.name))
                     .disabled(working)
                     .on_click(

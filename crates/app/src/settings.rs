@@ -16,6 +16,7 @@ use rust_i18n::t;
 use typecase::settings::{Section, SettingsFrame};
 
 use crate::login_item;
+use crate::providers::Providers;
 use crate::shortcuts::RunAction;
 use crate::update;
 use crate::{commands, theme};
@@ -156,11 +157,23 @@ pub fn open(cx: &mut App) {
     }
 }
 
-/// The sections, in the sidebar's order.
-fn sections() -> Vec<Section> {
+/// The sections, in the sidebar's order. `providers` is the Providers section, which keeps what OpenShell listed.
+fn sections(providers: Entity<Providers>) -> Vec<Section> {
     vec![
         Section::new(t!("General").into_owned(), |_, cx| general(cx)).keywords([
             "text", "size", "herdr", "ghostty", "terminal", "sessions", "agents",
+        ]),
+        Section::new(t!("Providers").into_owned(), move |_, _| providers.clone()).keywords([
+            "keys",
+            "api",
+            "openrouter",
+            "fireworks",
+            "litellm",
+            "anthropic",
+            "openai",
+            "z.ai",
+            "subscription",
+            "claude",
         ]),
         Section::appearance(),
         Section::new(t!("Updates").into_owned(), |_, cx| updates(cx)).keywords(["beta", "sparkle"]),
@@ -175,7 +188,20 @@ pub struct SettingsWindow {
 
 impl SettingsWindow {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let frame = cx.new(|cx| SettingsFrame::new(sections(), window, cx));
+        let providers = cx.new(|cx| Providers::new(window, cx));
+        let frame = cx.new(|cx| {
+            #[cfg_attr(
+                not(feature = "screenshot"),
+                expect(unused_mut, reason = "only shots change it")
+            )]
+            let mut frame = SettingsFrame::new(sections(providers), window, cx);
+            // A shot can't click in this window, since its keys go to the main one, so it names the section to show.
+            #[cfg(feature = "screenshot")]
+            if let Ok(section) = std::env::var("LOCKBOX_SETTINGS_SECTION") {
+                frame.show(&section, cx);
+            }
+            frame
+        });
         let focus = cx.focus_handle();
         focus.focus(window, cx);
         Self { frame, focus }

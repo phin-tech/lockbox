@@ -9,6 +9,7 @@ mod login_item;
 mod menu_bar;
 mod menus;
 mod palette;
+mod providers;
 mod restore;
 #[cfg(feature = "screenshot")]
 mod screenshot;

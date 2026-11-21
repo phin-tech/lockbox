@@ -300,6 +300,14 @@ impl MainView {
             Page::Agents => self.check_images(window, cx),
             Page::Kits => {
                 self.look_up_catalog(cx);
+                // `PLAYPEN_SHOT_ENV=<file>` shows a capture a kit being made from that `.env` file.
+                if cfg!(feature = "screenshot")
+                    && self.kits.import.is_none()
+                    && let Some(path) = std::env::var_os("PLAYPEN_SHOT_ENV")
+                {
+                    self.read_env_file(path.into(), window, cx);
+                    return;
+                }
                 if self.kits.selected.is_some()
                     && let Some(name) = self.kits.selected.clone()
                 {

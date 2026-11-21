@@ -431,28 +431,88 @@ impl OpenShell {
                 "there's a provider called that already".to_string(),
             ));
         }
+        let id = new.profile_id();
+        self.create_with(
+            &adding,
+            &new.name,
+            &id,
+            &new.profile(),
+            &new.variable,
+            source,
+            op,
+            true,
+        )
+    }
+
+    /// Adds a model key whose key comes from `source`, as [`OpenShell::add_provider`] does with a pasted one.
+    pub fn add_provider_from(
+        &self,
+        new: &NewProvider,
+        source: &KeySource,
+        op: Option<&Path>,
+    ) -> Result<(), OpenShellError> {
+        let adding = format!("add “{}”", new.name);
+        if self
+            .providers()?
+            .iter()
+            .any(|provider| provider.name == new.name)
+        {
+            return Err(OpenShellError::Failed(
+                adding,
+                "there's a provider called that already".to_string(),
+            ));
+        }
+        let own = new.kind == Kind::LiteLlm;
+        self.create_with(
+            &adding,
+            &new.name,
+            &new.profile_id(),
+            &new.profile(),
+            new.kind.variable(),
+            source,
+            op,
+            own,
+        )
+    }
+
+    /// Imports the profile `id` and makes the provider `name` of it, its key in `variable` from `source`: set here
+    /// when pasted, or by `op run` from 1Password. A profile that's the provider's `own` goes again if it isn't made.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "each is a different part of the one provider"
+    )]
+    fn create_with(
+        &self,
+        adding: &str,
+        name: &str,
+        id: &str,
+        profile: &str,
+        variable: &str,
+        source: &KeySource,
+        op: Option<&Path>,
+        own: bool,
+    ) -> Result<(), OpenShellError> {
         let args = [
             "provider",
             "create",
             "--name",
-            &new.name,
+            name,
             "--type",
-            &new.profile_id(),
+            id,
             "--credential",
-            &new.variable,
+            variable,
         ];
         let (program, all, set) = with_key(source, op, &self.binary, &args)
-            .map_err(|error| OpenShellError::Failed(adding.clone(), error.to_string()))?;
-        let id = new.profile_id();
-        let imported = self.import_profile(&new.name, &id, &new.profile())?;
+            .map_err(|error| OpenShellError::Failed(adding.to_string(), error.to_string()))?;
+        let imported = self.import_profile(name, id, profile)?;
         let mut command = Command::new(&program);
         command.args(&all).env("NO_COLOR", "1").stdin(Stdio::null());
         match (source, set) {
             (KeySource::Key(key), _) => {
-                command.env(&new.variable, &key.0);
+                command.env(variable, &key.0);
             }
             (_, Some(reference)) => {
-                command.env(&new.variable, reference);
+                command.env(variable, reference);
             }
             (_, None) => {}
         }
@@ -463,11 +523,14 @@ impl OpenShell {
                 if output.status.success() {
                     Ok(())
                 } else {
-                    Err(OpenShellError::Failed(adding.clone(), said(&output.stderr)))
+                    Err(OpenShellError::Failed(
+                        adding.to_string(),
+                        said(&output.stderr),
+                    ))
                 }
             });
-        if created.is_err() && imported == Imported::New {
-            let _ = self.run(&adding, &["provider", "profile", "delete", &id, "--global"]);
+        if created.is_err() && own && imported == Imported::New {
+            let _ = self.run(adding, &["provider", "profile", "delete", id, "--global"]);
         }
         created
     }

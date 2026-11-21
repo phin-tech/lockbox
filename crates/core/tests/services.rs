@@ -206,3 +206,27 @@ fn a_service_playpen_adds_is_offered_as_one_and_goes_with_its_profile() {
     assert_eq!(offered.endpoints[0].access, "read-only");
     assert!(!profile_left, "its profile goes with it");
 }
+
+#[test]
+#[ignore = "needs OpenShell's gateway"]
+fn a_model_key_from_a_env_file_is_added_as_a_model_key() {
+    use playpen_core::{Key, KeySource, Kind, NewProvider};
+
+    let openshell = OpenShell::find().unwrap();
+    let name = format!("pp-model-{}", std::process::id());
+    let new = NewProvider::new(Kind::Anthropic, &name, "").unwrap();
+    let added = openshell.add_provider_from(&new, &KeySource::Key(Key::new("sk-ant-test")), None);
+    let found = openshell
+        .providers()
+        .unwrap()
+        .into_iter()
+        .find(|provider| provider.name == name);
+    if let Some(provider) = &found {
+        openshell.delete_provider(provider).unwrap();
+    }
+    added.unwrap();
+    assert_eq!(
+        found.map(|provider| provider.kind).as_deref(),
+        Some("playpen-anthropic")
+    );
+}

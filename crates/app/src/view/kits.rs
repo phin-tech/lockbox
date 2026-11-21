@@ -5,7 +5,10 @@ use std::path::PathBuf;
 
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::radio::Radio;
-use playpen_core::{Kind, Kit, Kits, OpenShell, Service};
+use playpen_core::{
+    Access, EnvLine, Guess, Key, KeySource, Kind, Kit, Kits, NewProvider, NewService, OpenShell,
+    Service, env_provider_name, find_op, guess_env, parse_env,
+};
 
 use super::sandboxes::{info_card, text_value};
 use super::*;
@@ -19,6 +22,8 @@ pub(super) struct KitsPage {
     /// The chosen kit's name, as it's typed.
     name: Option<Entity<InputState>>,
     failed: Option<String>,
+    /// A kit being made from a `.env` file, shown in place of the chosen kit.
+    pub(super) import: Option<EnvImport>,
     _renamed: Option<Subscription>,
 }
 
@@ -42,6 +47,7 @@ impl KitsPage {
             selected,
             name: None,
             failed,
+            import: None,
             _renamed: None,
         }
     }
@@ -217,13 +223,28 @@ impl MainView {
             cx,
         )
         .child(
-            Button::new("new-kit")
-                .ghost()
-                .small()
-                .rounded(px(999.))
-                .icon(assets::IconName::Plus)
-                .tooltip(t!("New Kit").into_owned())
-                .on_click(cx.listener(|this, _, window, cx| this.new_kit(window, cx))),
+            h_flex()
+                .flex_none()
+                .child(
+                    Button::new("new-kit-from-env")
+                        .ghost()
+                        .small()
+                        .rounded(px(999.))
+                        .icon(assets::IconName::FileInput)
+                        .tooltip(t!("New Kit from .env…").into_owned())
+                        .on_click(
+                            cx.listener(|this, _, window, cx| this.choose_env_file(window, cx)),
+                        ),
+                )
+                .child(
+                    Button::new("new-kit")
+                        .ghost()
+                        .small()
+                        .rounded(px(999.))
+                        .icon(assets::IconName::Plus)
+                        .tooltip(t!("New Kit").into_owned())
+                        .on_click(cx.listener(|this, _, window, cx| this.new_kit(window, cx))),
+                ),
         )
     }
 
@@ -271,6 +292,9 @@ impl MainView {
     }
 
     pub(super) fn kit_detail(&self, cx: &Context<Self>) -> AnyElement {
+        if let Some(import) = &self.kits.import {
+            return self.import_panel(import, cx);
+        }
         let theme = cx.theme();
         let Some(kit) = self.kits.chosen() else {
             return v_flex()
@@ -490,4 +514,407 @@ fn kit_tile(colour: Hsla, size: Rems, cx: &App) -> Div {
         .border_color(colour.opacity(0.3))
         .text_color(colour)
         .child(Icon::new(assets::IconName::Package).size(size * 0.55))
+}
+
+/// A kit being made from a `.env` file: each variable, what Playpen takes it for, and whether it goes in.
+pub(super) struct EnvImport {
+    from: PathBuf,
+    kit_name: Entity<InputState>,
+    rows: Vec<ImportRow>,
+    saving: bool,
+    _saving: Option<Task<()>>,
+}
+
+struct ImportRow {
+    line: EnvLine,
+    guess: Guess,
+    include: bool,
+    name: Entity<InputState>,
+    host: Entity<InputState>,
+    writes: bool,
+}
+
+/// What became of each variable, by provider name, and what went wrong with any.
+struct Imported {
+    model_key: Option<String>,
+    services: Vec<String>,
+    failures: Vec<String>,
+}
+
+impl MainView {
+    /// The kit's name and each line's variable, whether it's ticked, its name and its host, for tests.
+    #[cfg(test)]
+    pub(super) fn import_rows(&self, cx: &App) -> (String, Vec<(String, bool, String, String)>) {
+        let import = self
+            .kits
+            .import
+            .as_ref()
+            .expect("a kit is being made from a .env file");
+        (
+            import.kit_name.read(cx).value().to_string(),
+            import
+                .rows
+                .iter()
+                .map(|row| {
+                    (
+                        row.line.variable.clone(),
+                        row.include,
+                        row.name.read(cx).value().to_string(),
+                        row.host.read(cx).value().to_string(),
+                    )
+                })
+                .collect(),
+        )
+    }
+
+    /// Asks for a `.env` file and shows what a kit made from it would hold.
+    pub(super) fn choose_env_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let chosen = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some(t!("Read").into_owned().into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(paths))) = chosen.await else {
+                return;
+            };
+            let Some(path) = paths.into_iter().next() else {
+                return;
+            };
+            let _ = this.update_in(cx, |this, window, cx| this.read_env_file(path, window, cx));
+        })
+        .detach();
+    }
+
+    pub(super) fn read_env_file(
+        &mut self,
+        path: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let text = match std::fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(error) => {
+                self.kits.failed = Some(
+                    t!(
+                        "Couldn't read %{path}: %{error}",
+                        path = path.display(),
+                        error = error.to_string()
+                    )
+                    .into_owned(),
+                );
+                cx.notify();
+                return;
+            }
+        };
+        let field = |value: String, window: &mut Window, cx: &mut Context<Self>| {
+            cx.new(|cx| {
+                let mut state = InputState::new(window, cx);
+                state.set_value(value, window, cx);
+                state
+            })
+        };
+        let rows = parse_env(&text)
+            .into_iter()
+            .map(|line| {
+                let guess = guess_env(&line.variable);
+                let host = match guess {
+                    Guess::Service(host) => host.to_string(),
+                    Guess::Model(_) | Guess::Unknown => String::new(),
+                };
+                ImportRow {
+                    include: guess != Guess::Unknown,
+                    name: field(env_provider_name(&line.variable), window, cx),
+                    host: field(host, window, cx),
+                    writes: false,
+                    guess,
+                    line,
+                }
+            })
+            .collect();
+        // Named after the folder the file's in, as the project it's for.
+        let base = path
+            .parent()
+            .and_then(|folder| folder.file_name())
+            .map(|name| env_provider_name(&name.to_string_lossy()))
+            .unwrap_or_else(|| "kit".to_string());
+        let kit_name = self.kits.kits.unused_name(&base);
+        self.kits.import = Some(EnvImport {
+            from: path,
+            kit_name: field(kit_name, window, cx),
+            rows,
+            saving: false,
+            _saving: None,
+        });
+        self.kits.failed = None;
+        self.show_page(Page::Kits, window, cx);
+        self.look_up_catalog(cx);
+        cx.notify();
+    }
+
+    /// Adds every variable ticked as a model key or a service, leaving any whose name OpenShell has already as it
+    /// is, then makes the kit of them.
+    fn finish_import(&mut self, cx: &mut Context<Self>) {
+        let Some(import) = &mut self.kits.import else {
+            return;
+        };
+        if import.saving {
+            return;
+        }
+        let kit_name = import.kit_name.read(cx).value().trim().to_string();
+        if kit_name.is_empty() || self.kits.kits.find(&kit_name).is_some() {
+            self.kits.failed = Some(t!("Give the kit a name no other kit has.").into_owned());
+            cx.notify();
+            return;
+        }
+        // Each ticked line as what to add: its name, and a model kind or a host.
+        let mut wanted = Vec::new();
+        for row in import.rows.iter().filter(|row| row.include) {
+            let name = row.name.read(cx).value().trim().to_string();
+            let host = row.host.read(cx).value().trim().to_string();
+            let source = if row.line.is_reference() {
+                KeySource::Reference(row.line.value.clone())
+            } else {
+                KeySource::Key(Key::new(&row.line.value))
+            };
+            let access = if row.writes {
+                Access::ReadWrite
+            } else {
+                Access::ReadOnly
+            };
+            wanted.push((
+                row.line.variable.clone(),
+                row.guess.clone(),
+                name,
+                host,
+                access,
+                source,
+            ));
+        }
+        import.saving = true;
+        self.kits.failed = None;
+        let done = cx.background_spawn(async move {
+            let openshell = OpenShell::find().map_err(|error| error.to_string())?;
+            let there: Vec<String> = openshell
+                .providers()
+                .map_err(|error| error.to_string())?
+                .into_iter()
+                .map(|provider| provider.name)
+                .collect();
+            let op = find_op();
+            let mut imported = Imported {
+                model_key: None,
+                services: Vec::new(),
+                failures: Vec::new(),
+            };
+            for (variable, guess, name, host, access, source) in wanted {
+                let is_model = matches!(guess, Guess::Model(_));
+                let added = if there.contains(&name) {
+                    Ok(())
+                } else {
+                    match guess {
+                        Guess::Model(kind) => NewProvider::new(kind, &name, "")
+                            .map_err(|error| error.to_string())
+                            .and_then(|new| {
+                                openshell
+                                    .add_provider_from(&new, &source, op.as_deref())
+                                    .map_err(|error| error.to_string())
+                            }),
+                        Guess::Service(_) | Guess::Unknown => {
+                            NewService::new(&name, &host, &variable, access)
+                                .map_err(|error| error.to_string())
+                                .and_then(|new| {
+                                    openshell
+                                        .add_service(&new, &source, op.as_deref())
+                                        .map_err(|error| error.to_string())
+                                })
+                        }
+                    }
+                };
+                match added {
+                    Ok(()) if is_model && imported.model_key.is_none() => {
+                        imported.model_key = Some(name);
+                    }
+                    Ok(()) if is_model => {}
+                    Ok(()) => imported.services.push(name),
+                    Err(error) => imported.failures.push(format!("{variable}: {error}")),
+                }
+            }
+            Ok::<_, String>(imported)
+        });
+        let task = cx.spawn(async move |this, cx| {
+            let done = done.await;
+            let _ = this.update(cx, |this, cx| {
+                match done {
+                    Ok(imported) => {
+                        this.kits.kits.kits.push(Kit {
+                            name: kit_name.clone(),
+                            model_key: imported.model_key,
+                            services: imported.services,
+                        });
+                        this.kits.save();
+                        this.kits.import = None;
+                        this.kits.selected = Some(kit_name.clone());
+                        this.kits.name = None;
+                        if !imported.failures.is_empty() {
+                            this.kits.failed = Some(imported.failures.join("\n"));
+                        }
+                        tracing::info!(kit = %kit_name, "made a kit from a .env file");
+                    }
+                    Err(error) => {
+                        if let Some(import) = &mut this.kits.import {
+                            import.saving = false;
+                        }
+                        this.kits.failed = Some(error);
+                    }
+                }
+                this.look_up_catalog(cx);
+                cx.notify();
+            });
+        });
+        if let Some(import) = &mut self.kits.import {
+            import._saving = Some(task);
+        }
+        cx.notify();
+    }
+
+    /// What a kit made from a `.env` file would hold, each line to tick, name and point at a host.
+    pub(super) fn import_panel(&self, import: &EnvImport, cx: &Context<Self>) -> AnyElement {
+        let theme = cx.theme();
+        let header = Self::panel_header(t!("New Kit from .env"), cx).child(
+            h_flex()
+                .gap_1()
+                .child(
+                    Button::new("cancel-import")
+                        .ghost()
+                        .xsmall()
+                        .disabled(import.saving)
+                        .label(t!("Cancel").into_owned())
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.kits.import = None;
+                            cx.notify();
+                        })),
+                )
+                .child(
+                    Button::new("finish-import")
+                        .primary()
+                        .xsmall()
+                        .loading(import.saving)
+                        .disabled(!import.rows.iter().any(|row| row.include))
+                        .label(t!("Add and Make Kit").into_owned())
+                        .on_click(cx.listener(|this, _, _, cx| this.finish_import(cx))),
+                ),
+        );
+        let there: Vec<String> = self
+            .services
+            .catalog
+            .as_ref()
+            .map(|(providers, _)| {
+                providers
+                    .iter()
+                    .map(|provider| provider.name.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let rows = import.rows.iter().enumerate().map(|(at, row)| {
+            let what = match &row.guess {
+                Guess::Model(kind) => t!("%{kind} model key", kind = kind.name()).into_owned(),
+                Guess::Service(_) => t!("Service").into_owned(),
+                Guess::Unknown => t!("Service, if you say where it goes").into_owned(),
+            };
+            let value = if row.line.is_reference() {
+                row.line.value.clone()
+            } else {
+                t!("a key, kept by OpenShell").into_owned()
+            };
+            let name = row.name.read(cx).value().trim().to_string();
+            let toggle = move |change: fn(&mut ImportRow, bool)| {
+                cx.listener(move |this: &mut MainView, checked: &bool, _, cx| {
+                    if let Some(import) = &mut this.kits.import
+                        && let Some(row) = import.rows.get_mut(at)
+                    {
+                        change(row, *checked);
+                        cx.notify();
+                    }
+                })
+            };
+            // An index into a list that's only ever read in this order, since a file's lines don't move.
+            v_flex()
+                .gap_2()
+                .p_3()
+                .rounded(theme.radius * 1.5)
+                .border_1()
+                .border_color(theme.border)
+                .bg(shell::recessed_colour(theme))
+                .child(
+                    h_flex()
+                        .gap_3()
+                        .child(
+                            Checkbox::new(("import-row", at))
+                                .checked(row.include)
+                                .disabled(import.saving)
+                                .on_click(toggle(|row, checked| row.include = checked)),
+                        )
+                        .child(h_flex().flex_none().child(shell::code_chip(row.line.variable.clone(), cx)))
+                        .child(div().flex_1().min_w_0().truncate().text_sm().text_color(theme.muted_foreground).child(what))
+                        .child(div().min_w_0().truncate().text_xs().text_color(theme.muted_foreground).child(value)),
+                )
+                .when(row.include, |card| {
+                    card.child(
+                        h_flex()
+                            .flex_wrap()
+                            .gap_3()
+                            .child(
+                                v_flex()
+                                    .gap_1()
+                                    .child(div().text_xs().text_color(theme.muted_foreground).child(t!("Name").into_owned()))
+                                    .child(div().w(rems(11.)).child(small_field(&row.name))),
+                            )
+                            .when(!matches!(row.guess, Guess::Model(_)), |line| {
+                                line.child(
+                                    v_flex()
+                                        .gap_1()
+                                        .child(div().text_xs().text_color(theme.muted_foreground).child(t!("Host").into_owned()))
+                                        .child(div().w(rems(14.)).child(small_field(&row.host))),
+                                )
+                                .child(
+                                    Checkbox::new(("import-writes", at))
+                                        .label(t!("Allow writes").into_owned())
+                                        .checked(row.writes)
+                                        .disabled(import.saving)
+                                        .on_click(toggle(|row, checked| row.writes = checked)),
+                                )
+                            }),
+                    )
+                    .when(there.contains(&name), |card| {
+                        card.child(hint(
+                            t!("OpenShell has a provider called that already, so the kit uses it as it is."),
+                            cx,
+                        ))
+                    })
+                })
+        });
+        let body = v_flex()
+            .gap_4()
+            .p_4()
+            .child(hint(
+                t!("From %{path}. A .env says what a key's called but not where it goes, so give each service its host; one Playpen doesn't know starts unticked.", path = import.from.display()),
+                cx,
+            ))
+            .child(section(t!("Kit"), cx).child(div().w(rems(16.)).child(small_field(&import.kit_name))))
+            .children(rows)
+            .when_some(self.kits.failed.clone(), |body, failed| {
+                body.child(div().text_sm().text_color(theme.danger).child(failed))
+            })
+            .child(hint(
+                t!("Values that are 1Password references, op://…, go from op to OpenShell; Playpen never reads them."),
+                cx,
+            ));
+        v_flex()
+            .size_full()
+            .child(header)
+            .child(div().id("import").flex_1().overflow_y_scroll().child(body))
+            .into_any_element()
+    }
 }

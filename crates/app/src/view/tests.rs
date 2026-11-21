@@ -225,6 +225,53 @@ fn a_kit_fills_new_agent_with_its_services_and_its_model_key_once_listed(cx: &mu
 }
 
 #[gpui_kit::test]
+fn a_env_file_offers_its_known_keys_ticked_and_asks_where_the_rest_go(cx: &mut TestAppContext) {
+    let (view, cx) = open(cx);
+    let folder = std::env::temp_dir()
+        .join(format!("pp-env-{}", std::process::id()))
+        .join("Shop");
+    std::fs::create_dir_all(&folder).unwrap();
+    let file = folder.join(".env");
+    std::fs::write(
+        &file,
+        "ANTHROPIC_API_KEY=sk-ant-1\nGITHUB_TOKEN=op://Work/GitHub/token\nLINEAR_API_KEY=lin_1\n",
+    )
+    .unwrap();
+    view.update_in(cx, |view, window, cx| {
+        view.read_env_file(file.clone(), window, cx)
+    });
+    view.read_with(cx, |view, cx| {
+        assert_eq!(view.page, Page::Kits);
+        let (kit, rows) = view.import_rows(cx);
+        assert_eq!(kit, "shop");
+        assert_eq!(
+            rows,
+            [
+                (
+                    "ANTHROPIC_API_KEY".to_string(),
+                    true,
+                    "anthropic".to_string(),
+                    String::new()
+                ),
+                (
+                    "GITHUB_TOKEN".to_string(),
+                    true,
+                    "github".to_string(),
+                    "api.github.com".to_string()
+                ),
+                (
+                    "LINEAR_API_KEY".to_string(),
+                    false,
+                    "linear".to_string(),
+                    String::new()
+                ),
+            ]
+        );
+    });
+    let _ = std::fs::remove_dir_all(folder.parent().unwrap());
+}
+
+#[gpui_kit::test]
 fn a_name_typed_isnt_replaced_by_choosing_a_folder(cx: &mut TestAppContext) {
     let (view, cx) = open(cx);
     cx.simulate_keystrokes("cmd-n");

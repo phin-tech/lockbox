@@ -6,6 +6,7 @@ mod agent;
 mod chatgpt;
 pub mod crash;
 mod docker;
+mod dotenv;
 mod files;
 mod herdr;
 mod kits;
@@ -22,6 +23,9 @@ pub use added::{AddError, AddedFolders};
 pub use agent::{Agent, MakeError, Plan, Step, is_sandbox_name, open_command, suggested_name};
 pub use chatgpt::{Account, ChatGptError, Login, Tokens, find_codex};
 pub use docker::{Docker, DockerError};
+pub use dotenv::{
+    EnvLine, Guess, guess as guess_env, parse as parse_env, suggested_name as env_provider_name,
+};
 pub use files::write_atomically;
 pub use herdr::{AgentState, HerdrApp, HerdrCore, HerdrError};
 pub use kits::{Kit, Kits};

@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use crate::chatgpt::Account;
 use crate::docker::{Docker, DockerError};
 use crate::openshell::{
-    AGENT_LABEL, FOLDER_ANNOTATION, OpenShell, OpenShellError, Sandbox, WORKDIR_ANNOTATION,
+    AGENT_LABEL, FOLDER_ANNOTATION, OpenShell, OpenShellError, Sandbox, Service, WORKDIR_ANNOTATION,
 };
 use crate::session::What;
 
@@ -182,6 +182,8 @@ pub struct Plan {
     pub provider: Option<String>,
     /// The ChatGPT account, when the provider is a ChatGPT subscription.
     pub account: Option<Account>,
+    /// Services to attach besides the model's key, each with its hosts opened.
+    pub services: Vec<Service>,
     /// Folders on the Mac to copy in, for it to work on: none, one, or several, such as the repositories of one
     /// piece of work.
     pub folders: Vec<PathBuf>,
@@ -219,6 +221,15 @@ pub enum MakeError {
 }
 
 impl Plan {
+    /// The sandbox's policy: its agent reaching its model, and each service's hosts.
+    pub fn policy(&self) -> String {
+        let mut policy = self.agent.policy();
+        for service in &self.services {
+            policy.push_str(&service.policy());
+        }
+        policy
+    }
+
     /// Where the agent works in the sandbox: always its home, where the folders are side by side, so one added later
     /// is beside the rest rather than outside where the agent started.
     pub fn workdir(&self) -> String {
@@ -277,6 +288,9 @@ impl Plan {
         if let Some(provider) = &self.provider {
             args.extend(["--provider".to_string(), provider.clone()]);
         }
+        for service in &self.services {
+            args.extend(["--provider".to_string(), service.provider.clone()]);
+        }
         args
     }
 
@@ -305,7 +319,7 @@ impl Plan {
             std::process::id(),
             self.name
         ));
-        std::fs::write(&policy, self.agent.policy())
+        std::fs::write(&policy, self.policy())
             .map_err(|error| MakeError::Policy(error.to_string()))?;
         let created = openshell.create(&self.name, &self.create_args(&policy));
         let _ = std::fs::remove_file(&policy);
@@ -493,6 +507,7 @@ mod tests {
             agent: Agent::ClaudeCode,
             provider: Some("claude-sub".to_string()),
             account: None,
+            services: Vec::new(),
             folders: vec![PathBuf::from("/Users/sam/src/Patchbay")],
         }
     }

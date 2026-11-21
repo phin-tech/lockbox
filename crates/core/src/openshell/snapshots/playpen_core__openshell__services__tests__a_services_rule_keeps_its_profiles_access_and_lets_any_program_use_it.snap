@@ -1,0 +1,14 @@
+---
+source: crates/core/src/openshell/services.rs
+assertion_line: 245
+expression: github.policy()
+---
+  playpen-service-github-api-github-com-443:
+    endpoints:
+      - host: api.github.com
+        port: 443
+        protocol: rest
+        access: read-only
+        enforcement: enforce
+    binaries:
+      - path: "/**"

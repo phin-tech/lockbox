@@ -9,7 +9,10 @@ use futures::channel::mpsc;
 use gpui_kit::component::IndexPath;
 use gpui_kit::component::searchable_list::SearchableVec;
 use gpui_kit::component::select::{Select, SelectEvent, SelectItem, SelectState};
-use playpen_core::{Docker, Plan, Provider, Step, suggested_name};
+use std::collections::BTreeSet;
+
+use gpui_kit::component::checkbox::Checkbox;
+use playpen_core::{Docker, Plan, Profile, Provider, Service, Step, suggested_name};
 
 use super::*;
 
@@ -42,6 +45,10 @@ pub struct Making {
     /// Every provider, once OpenShell has listed them, of which the agent can use some.
     listed: Option<Result<Vec<Provider>, String>>,
     provider: Option<String>,
+    /// The provider profiles on the gateway, once listed, which say which providers can be services.
+    profiles: Option<Vec<Profile>>,
+    /// The services chosen, by provider name.
+    services: BTreeSet<String>,
     pub(super) state: MakeState,
     _changed: Subscription,
     _chose: Subscription,
@@ -117,12 +124,18 @@ impl MainView {
             if watching == Watch::Nothing {
                 return;
             }
-            let listed = cx
-                .background_spawn(
-                    async move { openshell.and_then(|openshell| openshell.providers()) },
-                )
+            let (listed, profiles) = cx
+                .background_spawn(async move {
+                    match openshell {
+                        Ok(openshell) => (openshell.providers(), openshell.profiles().ok()),
+                        Err(error) => (Err(error), None),
+                    }
+                })
                 .await;
             let _ = this.update(cx, |this, cx| {
+                if let Some(making) = &mut this.making {
+                    making.profiles = profiles;
+                }
                 this.providers_listed(listed.map_err(|error| error.to_string()), cx);
             });
         });
@@ -134,6 +147,8 @@ impl MainView {
             folders: Vec::new(),
             listed: None,
             provider: None,
+            profiles: None,
+            services: BTreeSet::new(),
             state: MakeState::Choosing,
             _changed: changed,
             _chose: chose,
@@ -186,6 +201,57 @@ impl MainView {
         });
         making.choose_first_provider();
         cx.notify();
+    }
+
+    /// Chooses a service, or leaves it out.
+    fn toggle_service(&mut self, provider: String, chosen: bool, cx: &mut Context<Self>) {
+        if let Some(making) = &mut self.making {
+            if chosen {
+                making.services.insert(provider);
+            } else {
+                making.services.remove(&provider);
+            }
+            cx.notify();
+        }
+    }
+
+    /// The providers that can be services, each to tick, with the hosts it opens and how.
+    fn service_choices(&self, making: &Making, working: bool, cx: &Context<Self>) -> Div {
+        let (Some(Ok(providers)), Some(profiles)) = (&making.listed, &making.profiles) else {
+            return hint(t!("Asking OpenShell…"), cx);
+        };
+        let choices = Service::choices(providers, profiles);
+        if choices.is_empty() {
+            return hint(
+                t!(
+                    "None: a service is a provider for something other than a model, such as GitHub. 1Password's OpenShell integration adds them, as does `openshell provider create`."
+                ),
+                cx,
+            );
+        }
+        v_flex()
+            .gap_2()
+            .children(choices.into_iter().map(|(provider, profile)| {
+                let name = provider.name.clone();
+                let hosts: Vec<String> = profile
+                    .endpoints
+                    .iter()
+                    .map(|endpoint| format!("{} ({})", endpoint.host, endpoint.access))
+                    .collect();
+                Checkbox::new(ElementId::from((ElementId::from("service"), name.clone())))
+                    .label(format!("{name} · {} · {}", profile.name(), hosts.join(", ")))
+                    .checked(making.services.contains(&name))
+                    .disabled(working)
+                    .on_click(cx.listener(move |this, checked: &bool, _, cx| {
+                        this.toggle_service(name.clone(), *checked, cx);
+                    }))
+            }))
+            .child(hint(
+                t!(
+                    "Any program in the sandbox can use a service's key, but only at its hosts, and only as its profile allows."
+                ),
+                cx,
+            ))
     }
 
     /// Closes New Agent…, giving the keys back to the list, since its name field had them.
@@ -278,6 +344,7 @@ impl MainView {
             agent: making.agent,
             provider: making.provider.clone(),
             account,
+            services: making.chosen_services(),
             folders: making.folders.clone(),
         };
         if !playpen_core::is_sandbox_name(&plan.name) {
@@ -427,7 +494,7 @@ impl MainView {
         let state = match &making.state {
             MakeState::Choosing => hint(
                 t!(
-                    "The folders are copied in, leaving out what each .gitignore does, so the agent works on copies, side by side in /sandbox, where it starts. The provider's key never enters the sandbox: OpenShell puts it on the agent's requests to its model, and the agent can reach nothing else."
+                    "The folders are copied in, leaving out what each .gitignore does, so the agent works on copies, side by side in /sandbox, where it starts. Keys never enter the sandbox: OpenShell puts the model's on the agent's requests to its model, and each service's on requests to that service's hosts, and the sandbox reaches nothing else."
                 ),
                 cx,
             ),
@@ -461,6 +528,7 @@ impl MainView {
             )
             .child(section(t!("Folders"), cx).child(folders))
             .child(section(t!("Model key"), cx).child(providers))
+            .child(section(t!("Services"), cx).child(self.service_choices(making, working, cx)))
             .child(state);
         v_flex()
             .size_full()
@@ -471,6 +539,18 @@ impl MainView {
 }
 
 impl Making {
+    /// The services chosen, with the hosts their profiles open.
+    fn chosen_services(&self) -> Vec<Service> {
+        let (Some(Ok(providers)), Some(profiles)) = (&self.listed, &self.profiles) else {
+            return Vec::new();
+        };
+        Service::choices(providers, profiles)
+            .into_iter()
+            .filter(|(provider, _)| self.services.contains(&provider.name))
+            .map(|(provider, profile)| Service::new(provider, profile))
+            .collect()
+    }
+
     /// Names the sandbox after the agent and the folders, unless the person has typed a name of their own.
     fn suggest_name(&mut self, window: &mut Window, cx: &mut App) {
         let typed = self.name.read(cx).value().trim().to_string();

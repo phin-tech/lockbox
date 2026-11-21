@@ -44,6 +44,10 @@ providers-test:
 folders-test:
     cargo test -p playpen-core --test folders -- --ignored
 
+# Attach a throwaway read-only service to sandboxes on the real OpenShell gateway, then detach it
+services-test:
+    cargo test -p playpen-core --test services -- --ignored
+
 # Make a Claude Code sandbox on the real OpenShell gateway and ask Claude Code something in it, with the provider named
 openshell-test provider:
     PLAYPEN_TEST_PROVIDER={{provider}} cargo test -p playpen-core --test openshell -- --ignored

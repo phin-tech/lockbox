@@ -45,6 +45,7 @@ fn folders_go_in_side_by_side_when_its_made_and_while_it_runs() {
         agent: Agent::ClaudeCode,
         provider: None,
         account: None,
+        services: Vec::new(),
         folders: vec![folder(&root, "Alpha"), folder(&root, "Beta")],
     };
     let added = AddedFolders::new(&notes);

@@ -355,7 +355,7 @@ impl MainView {
             )
             .child(hint(
                 t!(
-                    "Each agent runs from an image of its own, made from its version once and kept. A sandbox reaches only the hosts its agent's model needs."
+                    "Each agent runs from an image of its own, made from its version once and kept. A sandbox reaches only its agent's model and the services attached to it."
                 ),
                 cx,
             ));

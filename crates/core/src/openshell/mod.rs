@@ -4,6 +4,10 @@
 //! Playpen asks the command rather than the gateway's gRPC API, since the command already holds the gateway's mTLS
 //! certificates and knows which gateway is active. Every call blocks, so the app makes them off its window's thread.
 
+mod services;
+
+pub use services::{Profile, ProfileEndpoint, Service};
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 

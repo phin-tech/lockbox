@@ -109,6 +109,7 @@ impl MainView {
                     .is_some_and(|name| sandboxes.iter().any(|sandbox| &sandbox.name == name));
                 if !still_there {
                     self.selected = sandboxes.first().map(|sandbox| sandbox.name.clone());
+                    self.look_up_services(cx);
                 }
                 Listing::Listed(sandboxes)
             }
@@ -139,8 +140,12 @@ impl MainView {
     }
 
     pub(super) fn select(&mut self, name: String, cx: &mut Context<Self>) {
+        let changed = self.selected.as_ref() != Some(&name);
         self.selected = Some(name);
         self.making = None;
+        if changed {
+            self.look_up_services(cx);
+        }
         cx.notify();
     }
 
@@ -719,6 +724,7 @@ impl MainView {
         if let Some(workdir) = sandbox.workdir.clone() {
             info.push((t!("Works in").into_owned(), shell::code_chip(workdir, cx)));
         }
+        info.push((t!("Services").into_owned(), self.services_row(sandbox, cx)));
         info.push((
             t!("Made").into_owned(),
             text_value(t!("%{when} UTC", when = sandbox.created.clone()).into_owned()),
@@ -731,7 +737,7 @@ impl MainView {
             .child(info_card(info, cx))
             .child(hint(
                 t!(
-                    "Its agent reaches its model and nothing else. Stopping keeps its files; deleting doesn't."
+                    "Its agent reaches its model, and the services attached to it, and nothing else. Stopping keeps its files; deleting doesn't."
                 ),
                 cx,
             ));
@@ -756,7 +762,7 @@ impl MainView {
             Listing::Listed(_) => (
                 t!("No sandboxes yet"),
                 t!(
-                    "Make one for an agent with New Agent…: it runs in its own sandbox, on a copy of a folder, and reaches its model and nothing else."
+                    "Make one for an agent with New Agent…: it runs in its own sandbox, on copies of folders, and reaches only its model and the services you attach."
                 ),
             ),
         };

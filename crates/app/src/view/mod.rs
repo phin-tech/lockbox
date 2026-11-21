@@ -4,6 +4,7 @@
 mod agents;
 mod making;
 mod sandboxes;
+mod services;
 #[cfg(test)]
 mod tests;
 
@@ -147,6 +148,8 @@ pub struct MainView {
     /// The last thing done that failed, or a note on it, until something else is done.
     failed: Option<String>,
     making: Option<making::Making>,
+    /// What's attached to the chosen sandbox besides its model's key.
+    services: services::Services,
     /// The place shown, chosen in the sidebar.
     page: Page,
     agents: agents::AgentsPage,
@@ -193,6 +196,7 @@ impl MainView {
             herdr_failed: None,
             failed: None,
             making: None,
+            services: services::Services::default(),
             page: Page::Sandboxes,
             agents: agents::AgentsPage::new(),
             providers: None,

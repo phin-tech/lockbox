@@ -386,7 +386,7 @@ impl MainView {
         tracing::info!(sandbox = %name, ?what, ?place, ?keep, "opening a session");
         let opened = cx.background_spawn(async move {
             let place = place.unwrap_or_else(|| settings.show_in.place(&Installed::now()));
-            session::open(openshell.binary(), &sandbox, what, place, keep)
+            session::open(&openshell, &sandbox, what, place, keep)
         });
         let task = cx.spawn_in(window, {
             let name = name.clone();

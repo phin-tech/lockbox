@@ -10,7 +10,8 @@ use crate::kit_setup::{SetupFolder, image_name, link_dotfiles};
 use crate::kits::{Variable, VariableValue};
 use crate::new_service::find_op;
 use crate::openshell::{
-    AGENT_LABEL, FOLDER_ANNOTATION, OpenShell, OpenShellError, Sandbox, Service, WORKDIR_ANNOTATION,
+    AGENT_LABEL, FOLDER_ANNOTATION, GATEWAY_VARIABLE, Gateway, OpenShell, OpenShellError, Sandbox,
+    Service, WORKDIR_ANNOTATION,
 };
 use crate::secrets::Secret;
 use crate::session::What;
@@ -513,8 +514,16 @@ pub fn suggested_name(agent: Agent, folders: &[PathBuf]) -> String {
 
 /// The shell line that runs `what` in the sandbox, in its agent's folder. A sandbox with no agent Playpen knows only
 /// gets a shell, through `sandbox connect`, since its image may have no `bash`.
-pub fn open_command(openshell: &Path, sandbox: &Sandbox, what: What) -> String {
-    let openshell = quote(&openshell.to_string_lossy());
+pub fn open_command(openshell: &Path, gateway: &Gateway, sandbox: &Sandbox, what: What) -> String {
+    let openshell = match gateway.name() {
+        // `env` sets it for any shell, since the line may run in fish, where `NAME=value command` is newer.
+        Some(gateway) => format!(
+            "env {GATEWAY_VARIABLE}={} {}",
+            quote(gateway),
+            quote(&openshell.to_string_lossy())
+        ),
+        None => quote(&openshell.to_string_lossy()),
+    };
     let name = quote(&sandbox.name);
     let Some(agent) = sandbox.agent.as_deref().and_then(Agent::from_id) else {
         return format!("{openshell} sandbox connect {name}");
@@ -550,7 +559,7 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::{Agent, Plan, is_sandbox_name, open_command, suggested_name};
-    use crate::openshell::{Phase, Sandbox};
+    use crate::openshell::{Gateway, Phase, Sandbox};
     use crate::session::What;
 
     fn plan() -> Plan {
@@ -685,17 +694,19 @@ mod tests {
             workdir: Some("/sandbox/Sam's App".to_string()),
         };
         let openshell = Path::new("/opt/homebrew/bin/openshell");
-        insta::assert_snapshot!(open_command(openshell, &sandbox, What::Agent));
+        let active = Gateway::Active;
+        insta::assert_snapshot!(open_command(openshell, &active, &sandbox, What::Agent));
         assert!(
-            open_command(openshell, &sandbox, What::Continue).ends_with("-- claude --continue")
+            open_command(openshell, &active, &sandbox, What::Continue)
+                .ends_with("-- claude --continue")
         );
-        assert!(open_command(openshell, &sandbox, What::Shell).ends_with("-- bash -l"));
+        assert!(open_command(openshell, &active, &sandbox, What::Shell).ends_with("-- bash -l"));
         let theirs = Sandbox {
             agent: None,
             ..sandbox
         };
         assert!(
-            open_command(openshell, &theirs, What::Continue)
+            open_command(openshell, &active, &theirs, What::Continue)
                 .ends_with("sandbox connect 'claude-patchbay'")
         );
     }
@@ -711,8 +722,40 @@ mod tests {
             workdir: Some("/sandbox/Patchbay".to_string()),
         };
         let openshell = Path::new("/opt/homebrew/bin/openshell");
-        insta::assert_snapshot!(open_command(openshell, &sandbox, What::Continue));
-        assert!(open_command(openshell, &sandbox, What::Shell).ends_with("-- bash -l"));
+        let active = Gateway::Active;
+        insta::assert_snapshot!(open_command(openshell, &active, &sandbox, What::Continue));
+        assert!(open_command(openshell, &active, &sandbox, What::Shell).ends_with("-- bash -l"));
+    }
+
+    #[test]
+    fn opening_in_a_named_gateway_sets_it_for_the_line_whatever_shell_runs_it() {
+        let sandbox = Sandbox {
+            name: "claude-patchbay".to_string(),
+            phase: Phase::Ready,
+            created: String::new(),
+            agent: Some("claude-code".to_string()),
+            folders: Vec::new(),
+            workdir: None,
+        };
+        let openshell = Path::new("/opt/homebrew/bin/openshell");
+        let line = open_command(
+            openshell,
+            &Gateway::named("k8s home"),
+            &sandbox,
+            What::Agent,
+        );
+        assert!(line.starts_with(
+            "env OPENSHELL_GATEWAY='k8s home' '/opt/homebrew/bin/openshell' sandbox exec"
+        ));
+        let connect = Sandbox {
+            agent: None,
+            ..sandbox
+        };
+        assert!(
+            open_command(openshell, &Gateway::named("k8s"), &connect, What::Shell).starts_with(
+                "env OPENSHELL_GATEWAY='k8s' '/opt/homebrew/bin/openshell' sandbox connect"
+            )
+        );
     }
 
     #[test]

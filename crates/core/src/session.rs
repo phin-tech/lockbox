@@ -2,14 +2,14 @@
 //! keeps a session when it's installed, so closing the window showing it only detaches; without it, the window is the
 //! session, and closing it ends the session. Either way, the sandbox is left as it was.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 
 use serde::{Deserialize, Serialize};
 
 use crate::agent::{open_command, quote};
 use crate::herdr::{HerdrApp, HerdrCore, HerdrError};
-use crate::openshell::Sandbox;
+use crate::openshell::{OpenShell, Sandbox};
 
 /// Where sessions are shown unless one is opened somewhere else: kept in the settings.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -125,7 +125,7 @@ pub enum Keep {
 /// installed. The Herdr app always has herdr-core keep it, since that's what it shows. A session herdr-core keeps that
 /// is already live is shown again rather than started twice.
 pub fn open(
-    openshell: &Path,
+    openshell: &OpenShell,
     sandbox: &Sandbox,
     what: What,
     place: Place,
@@ -137,7 +137,7 @@ pub fn open(
     } else {
         (Place::Terminal, Opened::InTerminalInstead(place))
     };
-    let command = open_command(openshell, sandbox, what);
+    let command = open_command(openshell.binary(), openshell.gateway(), sandbox, what);
     let core = HerdrCore::find().filter(|_| keep == Keep::InHerdrCore || place == Place::HerdrApp);
     let line = match &core {
         Some(core) => {

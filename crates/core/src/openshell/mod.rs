@@ -228,18 +228,57 @@ fn said(stderr: &[u8]) -> String {
     }
 }
 
+/// What `openshell` reads to choose its gateway, in place of its `--gateway` flag, so that it reaches a command Playpen
+/// puts in a shell line as well as one it runs itself.
+pub const GATEWAY_VARIABLE: &str = "OPENSHELL_GATEWAY";
+
+/// Which of OpenShell's gateways a command goes to: the one `openshell gateway select` made active, or one by name,
+/// as `openshell gateway list` shows it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum Gateway {
+    #[default]
+    Active,
+    Named(String),
+}
+
+impl Gateway {
+    pub fn named(name: impl Into<String>) -> Gateway {
+        Gateway::Named(name.into())
+    }
+
+    /// Its name, or none for the active gateway.
+    pub fn name(&self) -> Option<&str> {
+        match self {
+            Gateway::Active => None,
+            Gateway::Named(name) => Some(name),
+        }
+    }
+}
+
 /// The `openshell` command, found where Homebrew and its installer put it. An app opened from the Finder has no
 /// shell's `PATH`, so it's looked for by its full path first.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpenShell {
     binary: PathBuf,
+    gateway: Gateway,
 }
 
 impl OpenShell {
     pub fn new(binary: impl Into<PathBuf>) -> OpenShell {
         OpenShell {
             binary: binary.into(),
+            gateway: Gateway::Active,
         }
+    }
+
+    /// The same command, sending everything to `gateway`.
+    pub fn on(mut self, gateway: Gateway) -> OpenShell {
+        self.gateway = gateway;
+        self
+    }
+
+    pub fn gateway(&self) -> &Gateway {
+        &self.gateway
     }
 
     /// The installed `openshell`, if there is one.
@@ -295,17 +334,26 @@ impl OpenShell {
         args: &[&str],
         key: Option<(&str, &Key)>,
     ) -> Result<Output, OpenShellError> {
+        self.command(args, key)
+            .stdin(Stdio::null())
+            .output()
+            .map_err(|error| OpenShellError::Run(error.to_string()))
+    }
+
+    /// `openshell` with `args`, set to go to this gateway. A key goes in its environment, never in an argument.
+    fn command(&self, args: &[&str], key: Option<(&str, &Key)>) -> Command {
         let mut command = Command::new(&self.binary);
         if let Some((variable, key)) = key {
             command.env(variable, &key.0);
         }
+        if let Some(name) = self.gateway.name() {
+            command.env(GATEWAY_VARIABLE, name);
+        }
         command
             .args(args)
             // Plain text, since its errors are read back and shown.
-            .env("NO_COLOR", "1")
-            .stdin(Stdio::null())
-            .output()
-            .map_err(|error| OpenShellError::Run(error.to_string()))
+            .env("NO_COLOR", "1");
+        command
     }
 
     pub fn sandboxes(&self) -> Result<Vec<Sandbox>, OpenShellError> {
@@ -828,7 +876,30 @@ impl OpenShell {
 
 #[cfg(test)]
 mod tests {
-    use super::{Phase, parse_provider_page, parse_sandboxes, resource_version, said};
+    use std::ffi::OsStr;
+
+    use super::{
+        GATEWAY_VARIABLE, Gateway, OpenShell, Phase, parse_provider_page, parse_sandboxes,
+        resource_version, said,
+    };
+
+    fn gateway_env(openshell: &OpenShell) -> Option<String> {
+        let command = openshell.command(&["sandbox", "list"], None);
+        command
+            .get_envs()
+            .find(|(name, _)| *name == OsStr::new(GATEWAY_VARIABLE))
+            .and_then(|(_, value)| value.map(|value| value.to_string_lossy().into_owned()))
+    }
+
+    #[test]
+    fn commands_go_to_the_active_gateway_unless_one_is_named() {
+        let openshell = OpenShell::new("/opt/homebrew/bin/openshell");
+        assert_eq!(openshell.gateway(), &Gateway::Active);
+        assert_eq!(gateway_env(&openshell), None);
+        let named = openshell.on(Gateway::named("k8s-home"));
+        assert_eq!(named.gateway().name(), Some("k8s-home"));
+        assert_eq!(gateway_env(&named).as_deref(), Some("k8s-home"));
+    }
 
     /// What OpenShell 0.1.8 listed with one sandbox Playpen made.
     const SANDBOXES: &str = include_str!("sandboxes.json");

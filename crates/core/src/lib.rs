@@ -41,7 +41,8 @@ pub use links::{link_target, path_from_file_url};
 pub use locale::best_locale;
 pub use new_service::{Access, KeySource, NewService, find_op};
 pub use openshell::{
-    Key, OpenShell, OpenShellError, Phase, Profile, ProfileEndpoint, Provider, Sandbox, Service,
+    Gateway, Key, OpenShell, OpenShellError, Phase, Profile, ProfileEndpoint, Provider, Sandbox,
+    Service,
 };
 pub use provider::{Endpoint, Kind, NewProvider, ProviderError};
 pub use secrets::Secret;

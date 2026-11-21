@@ -662,6 +662,7 @@ impl MainView {
                     "Building the %{agent} image. This happens once for each version, and takes a few minutes…",
                     agent = making.agent.name()
                 ),
+                Step::Pushing => t!("Pushing the image to the registry…"),
                 Step::Creating => t!("Making the sandbox…"),
                 Step::Copying => t!("Copying the folders in…"),
                 Step::Preparing => t!("Setting up %{agent}…", agent = making.agent.name()),

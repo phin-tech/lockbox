@@ -10,6 +10,7 @@ mod docker;
 mod dotenv;
 mod files;
 mod herdr;
+mod image;
 mod kit_setup;
 mod kits;
 mod links;
@@ -35,6 +36,7 @@ pub use dotenv::{
 };
 pub use files::write_atomically;
 pub use herdr::{AgentState, HerdrApp, HerdrCore, HerdrError};
+pub use image::{Image, ImageSource, Platform, Provided, Registry};
 pub use kit_setup::SetupFolder;
 pub use kits::{Kit, Kits, Variable, VariableValue};
 pub use links::{link_target, path_from_file_url};

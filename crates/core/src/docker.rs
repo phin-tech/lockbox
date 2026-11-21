@@ -6,6 +6,8 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+use crate::image::Platform;
+
 /// Why Docker couldn't do what was asked.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum DockerError {
@@ -17,6 +19,8 @@ pub enum DockerError {
     Run(String),
     #[error("Couldn't build {0}: {1}")]
     Build(String, String),
+    #[error("Couldn't push {0}: {1}")]
+    Push(String, String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -102,20 +106,29 @@ impl Docker {
         Err(DockerError::Build(tag.to_string(), tail))
     }
 
-    /// Builds `dockerfile` as the image `tag`, with `args` as its build arguments. It needs no files beside it.
+    /// Whether the image `reference` is in its registry. A registry that can't be reached, or won't say, counts as no.
+    pub fn has_remote_image(&self, reference: &str) -> bool {
+        self.command()
+            .args(["manifest", "inspect", reference])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
+    }
+
+    /// Builds `dockerfile` as the image `tag`, with `args` as its build arguments, for `platform` when given and the
+    /// Mac's otherwise. It needs no files beside it.
     pub fn build(
         &self,
         tag: &str,
         dockerfile: &str,
         args: &[(&str, &str)],
+        platform: Option<Platform>,
     ) -> Result<(), DockerError> {
-        let mut command = self.command();
-        command.args(["build", "--quiet", "--tag", tag]);
-        for (name, value) in args {
-            command.args(["--build-arg", &format!("{name}={value}")]);
-        }
-        let mut child = command
-            .arg("-")
+        let mut child = self
+            .command()
+            .args(build_arguments(tag, args, platform))
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
@@ -132,12 +145,93 @@ impl Docker {
         if output.status.success() {
             return Ok(());
         }
-        let said = String::from_utf8_lossy(&output.stderr);
-        let last = said
-            .lines()
-            .rev()
-            .find(|line| !line.trim().is_empty())
-            .unwrap_or("it gave no reason");
-        Err(DockerError::Build(tag.to_string(), last.trim().to_string()))
+        Err(DockerError::Build(
+            tag.to_string(),
+            last_line(&output.stderr),
+        ))
+    }
+
+    /// Pushes the image `reference` to the registry its name says.
+    pub fn push(&self, reference: &str) -> Result<(), DockerError> {
+        let output = self
+            .command()
+            .args(["push", "--quiet", reference])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .output()
+            .map_err(|error| DockerError::Run(error.to_string()))?;
+        if output.status.success() {
+            return Ok(());
+        }
+        Err(DockerError::Push(
+            reference.to_string(),
+            last_line(&output.stderr),
+        ))
+    }
+}
+
+/// What follows `docker` to build `tag` from a Dockerfile on its standard input.
+fn build_arguments(tag: &str, args: &[(&str, &str)], platform: Option<Platform>) -> Vec<String> {
+    let mut all: Vec<String> = ["build", "--quiet", "--tag", tag].map(String::from).into();
+    if let Some(platform) = platform {
+        all.extend(["--platform".to_string(), platform.docker().to_string()]);
+    }
+    for (name, value) in args {
+        all.extend(["--build-arg".to_string(), format!("{name}={value}")]);
+    }
+    all.push("-".to_string());
+    all
+}
+
+/// The last line Docker said, which is where it says why it failed.
+fn last_line(stderr: &[u8]) -> String {
+    String::from_utf8_lossy(stderr)
+        .lines()
+        .rev()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or("it gave no reason")
+        .trim()
+        .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_arguments;
+    use crate::image::Platform;
+
+    #[test]
+    fn a_build_for_this_mac_names_no_platform() {
+        assert_eq!(
+            build_arguments("playpen-codex:1", &[("CODEX_VERSION", "1")], None),
+            [
+                "build",
+                "--quiet",
+                "--tag",
+                "playpen-codex:1",
+                "--build-arg",
+                "CODEX_VERSION=1",
+                "-"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_build_for_a_cluster_names_its_platform_before_the_build_arguments() {
+        let args = build_arguments(
+            "registry.example.com/playpen-codex:1",
+            &[("CODEX_VERSION", "1")],
+            Some(Platform::Amd64),
+        );
+        assert_eq!(
+            args[4..],
+            [
+                "--platform",
+                "linux/amd64",
+                "--build-arg",
+                "CODEX_VERSION=1",
+                "-"
+            ]
+        );
     }
 }

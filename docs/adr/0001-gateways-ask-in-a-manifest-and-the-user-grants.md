@@ -2,33 +2,52 @@
 
 Where a sandbox runs is an OpenShell gateway: the service that keeps sandboxes and runs them on a runtime of its own
 (Docker, Podman, Kubernetes, MicroVM). This Mac's Docker is already one, a local gateway. Playpen used only the active
-one. It will name the gateway in every call, with `-g <gateway>`, and let a person have several: one on this Mac, one in
-a Kubernetes cluster, one on an EC2 machine. Playpen needs no second implementation of sandboxes. What a gateway still
-needs from Playpen is an agent's image, which comes by an image source: built with Docker on this Mac, or pulled from a
-registry.
+one. It names the gateway in every call it makes, and lets a person have several: one on this Mac, one in a Kubernetes
+cluster, one on an EC2 machine. Playpen needs no second implementation of sandboxes. What a gateway still needs from
+Playpen is an agent's image, which comes by an image source (below).
+
+The gateway is named with `OPENSHELL_GATEWAY`, the setting behind `--gateway`, and not with the flag. A variable also
+reaches the shell line Playpen hands to a terminal, set there with `env` so that it works in any shell, fish included.
+With no name a call goes to the active gateway, as before.
 
 Every gateway in `openshell gateway list` is usable as it is. A person who reaches one through a VPN, a jump host or a
 tunnel of their own registers it with `openshell gateway add`, and Playpen uses it. It never starts, stops or configures
 a network, and has no Capability for that. A gateway that doesn't answer shows as unreachable, with a retry, and the
-others carry on; each gets its own short timeout. Its image source can be left to the person (Playpen names the image it
-needs, builds and pushes nothing, and says so if the gateway can't find it). Playpen's `Place` already names where a
-terminal shows a session, so that word isn't used here. A gateway can also come from a **Gateway extension**: a folder holding a Manifest
-(`gateway.toml`) and JavaScript, run in the same kind of QuickJS sandbox as Microfiche's Extensions. It lists its
-`gateways()`, makes one reachable with `ensure(gateway)`, names the image for an agent with `image(agent)`, and may
-`release(gateway)`. It returns plain data, and Playpen shows its progress the way it shows making a sandbox.
+others carry on; each gets its own short timeout. Playpen's `Place` already names where a terminal shows a session, so
+that word isn't used for this.
+
+A gateway can also come from a **Gateway extension**: a folder holding a Manifest (`gateway.toml`) and JavaScript, run in
+the same kind of QuickJS sandbox as Microfiche's Extensions. It lists its `gateways()`, makes one reachable with
+`ensure(gateway)`, names the image for an agent with `image(agent)`, and may `release(gateway)`. It returns plain data,
+and Playpen shows its progress the way it shows making a sandbox.
+
+## Image sources
+
+An agent's image has to be somewhere the gateway can start it. Playpen asks an **image source** for it, which makes it
+ready and says the reference to give `--from`:
+
+- **Local Docker,** today's: built with Docker on this Mac when it isn't there, and named as it is now. It suits a gateway
+  that shares this Mac's Docker.
+- **A registry:** the image is built and pushed under a prefix the person gives, and named by it
+  (`registry.example.com/team/playpen-codex:0.171.0`), or already there from CI. It suits a cluster, which can't pull
+  from this Mac. A pushed image is checked for before it is built again.
+- **Left to the person,** for a gateway Playpen can't push to: Playpen names the image it needs, builds and pushes
+  nothing. OpenShell's own error says when the gateway can't find it.
+- **Built by the Cloud** from the Dockerfile Playpen holds, which only Lambda MicroVMs does (it takes a zip uploaded to S3
+  and not a pushed image). That one is parked with it.
+
+An image is for one **platform**, and a gateway's may not be this Mac's: Apple Silicon builds `linux/arm64`, and a cluster
+is often `linux/amd64`. The platform is part of the image source, and what depends on it follows it. Codex's policy names
+its program by a path that differs by platform, so a policy is written for the platform its image is built for.
 
 ## Organised by Cloud
 
-A Gateway extension is for one **Cloud** and offers several **kinds** of Gateway on it: `aws` offers `ec2`, `eks` and
-`lambda-microvm`, and `gcp` offers `gce` and `gke`. The built-in ones are `local`, for this Mac, and `gateway`, for what's
-already in `openshell gateway list`. The Manifest lists the kinds, and `gateways()` returns the gateways of each. A Cloud
-is also the unit its Capabilities are named by (`aws.ec2.start`), its Grant is given for (one profile and region), and
-Settings ▸ Gateways and New Agent…'s picker are grouped by. A kind that can't be used yet, because OpenShell has no
-driver for it, is listed as not available and doesn't stop the Cloud's others.
-
-An image reaches a Gateway one of three ways: built with Docker on this Mac, pulled from a registry, or built by the
-Cloud from the Dockerfile Playpen already holds (Lambda MicroVMs builds one uploaded to S3 as a zip, and doesn't take a
-pushed image). Which a kind uses is part of its description.
+A Gateway extension is for one **Cloud** and offers several **kinds** of Gateway on it: `aws` offers `ec2` and `eks`, and
+`gcp` offers `gce` and `gke`. This Mac, and every gateway registered by hand, belong to no Cloud and need no extension.
+The Manifest lists the kinds, and `gateways()` returns the gateways of each. A Cloud is also the unit its Capabilities
+are named by (`aws.ec2.start`), its Grant is given for (one profile and region), and Settings ▸ Gateways and New
+Agent…'s picker are grouped by. A kind that can't be used yet, because OpenShell has no driver for it, is listed as not
+available and doesn't stop the Cloud's others. Which image source a kind uses is part of its description.
 
 ## Kubernetes first
 
@@ -73,8 +92,8 @@ the folder's path and the extension's name, and it records a hash of the Manifes
 asks again, and shows what's new. The default is none.
 
 The host checks every call against the Grant, performs it with a clean environment holding only the variables granted,
-and holds every credential, so a key never reaches JavaScript. Model keys stay in OpenShell's Providers and never go
-near a Gateway.
+and holds every credential, so a key never reaches JavaScript. An extension never sees a model key either. Those are
+OpenShell's Providers, which a gateway keeps (see Consequences).
 
 The Grant is shown in plain words: "start EC2 instances in us-east-1, and add gateways named `ec2-*`". Settings gains a
 Gateways section, built on Typecase's extensions settings, with Trust and Revoke for the person; code and docs say Grant.
@@ -124,9 +143,17 @@ A remote Gateway is a different host. `host.openshell.internal` there is the gat
 a policy or MCP config that reaches a service on the Mac doesn't carry over, and a folder copied in comes from the Mac
 by upload, as it does now.
 
-`Docker` moves behind an image source, so making a sandbox asks the Gateway for an image and no longer calls `docker`
-itself. Every `openshell` call gains a Gateway. A sandbox records which Gateway it is in, so Open, Stop and Delete go to
-its own gateway.
+**Providers belong to a gateway.** OpenShell keeps a Provider, with its key and profile, in the gateway that holds it, so
+a second gateway starts with none: a sandbox in a cluster uses a Provider that is in the cluster's gateway, stored by its
+credential driver (a database, Kubernetes Secrets or Vault). Adding, rekeying and deleting a Provider, and signing in to
+ChatGPT for Codex, then act on one gateway, and Settings has to say which. A person adds the key again for each gateway.
+Playpen doesn't copy a key from one to another.
+
+**What exists and what is next.** A Gateway type names where an `openshell` call goes, and opening a session carries it
+(done). Making a sandbox asks an image source for the image and no longer calls `docker` itself (done): this Mac's
+Docker, a registry, or an image the person provides, with the platform the image is for. Nothing chooses a source but
+the local one yet. Next, a sandbox records which gateway it is in, so Open, Stop and Delete go to its own, with a picker
+and a list across gateways, and the choice of image source goes with each gateway.
 
 New dependency `rquickjs`, unless the runtime is shared with Microfiche or Typecase first, needs its licence in
 `deny.toml` (`just lint`). That is still to be checked.

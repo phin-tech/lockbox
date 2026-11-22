@@ -3,6 +3,7 @@
 
 mod added;
 mod agent;
+mod bring_back;
 mod chatgpt;
 pub mod crash;
 mod docker;
@@ -22,6 +23,9 @@ mod state;
 
 pub use added::{AddError, AddedFolders};
 pub use agent::{Agent, MakeError, Plan, Step, is_sandbox_name, open_command, suggested_name};
+pub use bring_back::{
+    BringBackError, Brought, Repo, branch as bring_back_branch, bring_back, seed,
+};
 pub use chatgpt::{Account, ChatGptError, Login, Tokens, find_codex};
 pub use docker::{Docker, DockerError};
 pub use dotenv::{

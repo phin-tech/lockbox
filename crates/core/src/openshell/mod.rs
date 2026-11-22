@@ -41,6 +41,9 @@ pub enum OpenShellError {
     Failed(String, String),
     #[error("OpenShell answered in a way Playpen doesn't understand: {0}")]
     Unreadable(String),
+    /// A script run in a sandbox ended with this status, which it gives to say something other than failure.
+    #[error("The command in the sandbox ended with status {0}")]
+    Exit(i32),
 }
 
 /// One sandbox, as OpenShell lists it.
@@ -639,6 +642,57 @@ impl OpenShell {
             Some((VARIABLE, &tokens.refresh)),
         )
         .map(drop)
+    }
+
+    /// Runs the shell `script` in the sandbox `name` with `args`, without a terminal or the login profile, whose
+    /// output could mix with the script's, and gives the bytes it printed exactly. A status of 3 to 9 is the script's
+    /// own answer, given back as [`OpenShellError::Exit`]; anything else that isn't 0 is a failure.
+    pub fn exec_bytes(
+        &self,
+        name: &str,
+        doing: &str,
+        script: &str,
+        args: &[&str],
+    ) -> Result<Vec<u8>, OpenShellError> {
+        use std::io::Write as _;
+
+        let mut all = vec![
+            "sandbox",
+            "exec",
+            "--name",
+            name,
+            "--no-tty",
+            "--no-login-shell",
+            "--",
+            "sh",
+            "-s",
+            "--",
+        ];
+        all.extend_from_slice(args);
+        let mut child = Command::new(&self.binary)
+            .args(&all)
+            .env("NO_COLOR", "1")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|error| OpenShellError::Run(error.to_string()))?;
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin
+                .write_all(script.as_bytes())
+                .map_err(|error| OpenShellError::Failed(doing.to_string(), error.to_string()))?;
+        }
+        let output = child
+            .wait_with_output()
+            .map_err(|error| OpenShellError::Run(error.to_string()))?;
+        match output.status.code() {
+            Some(0) => Ok(output.stdout),
+            Some(code @ 3..=9) => Err(OpenShellError::Exit(code)),
+            _ => Err(OpenShellError::Failed(
+                doing.to_string(),
+                said(&output.stderr),
+            )),
+        }
     }
 
     /// Runs `command` in the sandbox `name`, in its home, with `input` on its standard input, and gives what it

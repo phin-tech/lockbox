@@ -638,7 +638,7 @@ impl MainView {
         let state = match &making.state {
             MakeState::Choosing => hint(
                 t!(
-                    "The folders are copied in, leaving out what each .gitignore does, so the agent works on copies, side by side in /sandbox, where it starts. Keys never enter the sandbox: OpenShell puts the model's on the agent's requests to its model, and each service's on requests to that service's hosts, and the sandbox reaches nothing else."
+                    "The folders are copied in, side by side in /sandbox, where the agent starts, leaving out what each .gitignore does. A git repository goes in with its current branch's history, uncommitted edits too, and Bring Back returns the agent's work as a branch, playpen/<sandbox>. Keys never enter the sandbox: OpenShell puts the model's on the agent's requests to its model, and each service's on requests to that service's hosts, and the sandbox reaches nothing else."
                 ),
                 cx,
             ),

@@ -48,6 +48,10 @@ folders-test:
 services-test:
     cargo test -p playpen-core --test services -- --ignored
 
+# Copy a repository with uncommitted edits into a sandbox, change it there, and bring the work back as a branch
+bring-back-test:
+    cargo test -p playpen-core --test bring_back -- --ignored
+
 # Make a Claude Code sandbox on the real OpenShell gateway and ask Claude Code something in it, with the provider named
 openshell-test provider:
     PLAYPEN_TEST_PROVIDER={{provider}} cargo test -p playpen-core --test openshell -- --ignored

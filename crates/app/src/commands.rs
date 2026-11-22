@@ -28,6 +28,7 @@ pub const COMMANDS: &[&str] = &[
     "go.providers",
     "go.sandboxes",
     "sandbox.add-folders",
+    "sandbox.bring-back",
     "sandbox.continue",
     "sandbox.delete",
     "sandbox.new",

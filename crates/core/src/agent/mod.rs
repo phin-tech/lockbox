@@ -3,6 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::bring_back::Repo;
 use crate::chatgpt::Account;
 use crate::docker::{Docker, DockerError};
 use crate::kits::{Variable, VariableValue};
@@ -213,6 +214,8 @@ pub enum MakeError {
     Docker(#[from] DockerError),
     #[error(transparent)]
     OpenShell(#[from] OpenShellError),
+    #[error(transparent)]
+    BringBack(#[from] crate::bring_back::BringBackError),
     #[error("Couldn't write the sandbox's policy: {0}")]
     Policy(String),
     #[error(
@@ -355,10 +358,19 @@ impl Plan {
         if !self.folders.is_empty() {
             step(Step::Copying);
         }
+        // A repository goes in with its history, so its work can come back as a branch; any other folder as files.
         for folder in &self.folders {
-            if let Err(error) = openshell.upload(&self.name, folder, SANDBOX_HOME) {
+            let copied = match Repo::of(folder) {
+                Some(repo) => {
+                    crate::bring_back::seed(openshell, &self.name, &repo).map_err(MakeError::from)
+                }
+                None => openshell
+                    .upload(&self.name, folder, SANDBOX_HOME)
+                    .map_err(MakeError::from),
+            };
+            if let Err(error) = copied {
                 let _ = openshell.delete(&self.name);
-                return Err(error.into());
+                return Err(error);
             }
         }
         if let Some(setup) = self.setup() {

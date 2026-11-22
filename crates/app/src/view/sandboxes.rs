@@ -228,6 +228,13 @@ impl MainView {
         };
         self.failed = None;
         tracing::info!(sandbox = %name, ?act, "acting on a sandbox");
+        // Its folders, to forget what each repository gave it once it's gone; its branches stay, as the work.
+        let folders: Vec<String> = self
+            .listed_sandboxes()
+            .iter()
+            .find(|sandbox| sandbox.name == name)
+            .map(|sandbox| sandbox.folders.clone())
+            .unwrap_or_default();
         let doing = name.clone();
         let done = cx.background_spawn(async move {
             match act {
@@ -246,10 +253,11 @@ impl MainView {
                     match done {
                         Ok(()) => {
                             tracing::info!(sandbox = %name, ?act, "done");
-                            if act == Act::Delete
-                                && let Some(added) = &this.added
-                            {
-                                added.forget(&name);
+                            if act == Act::Delete {
+                                if let Some(added) = &this.added {
+                                    added.forget(&name);
+                                }
+                                Self::forget_seeds(name.clone(), folders.clone(), cx);
                             }
                         }
                         Err(error) => {
@@ -681,6 +689,7 @@ impl MainView {
                         cx.listener(|this, _, window, cx| this.run("sandbox.stop", window, cx)),
                     )
             })
+            .child(self.bring_back_button(sandbox, cx))
             .child(
                 Button::new("add-folders")
                     .small()
@@ -725,6 +734,10 @@ impl MainView {
             info.push((t!("Works in").into_owned(), shell::code_chip(workdir, cx)));
         }
         info.push((t!("Services").into_owned(), self.services_row(sandbox, cx)));
+        info.push((
+            t!("Brings back to").into_owned(),
+            self.bring_back_row(sandbox, cx),
+        ));
         info.push((
             t!("Made").into_owned(),
             text_value(t!("%{when} UTC", when = sandbox.created.clone()).into_owned()),

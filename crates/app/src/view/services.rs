@@ -29,6 +29,7 @@ impl MainView {
         if self.watch == Watch::Nothing {
             return;
         }
+        self.look_up_repos(cx);
         let Some(name) = self.selected.clone() else {
             return;
         };

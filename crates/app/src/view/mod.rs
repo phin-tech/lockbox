@@ -2,6 +2,7 @@
 //! bar, with the cards over the window (the palette and Keys).
 
 mod agents;
+mod bring_back;
 mod kits;
 mod making;
 mod sandboxes;
@@ -153,6 +154,8 @@ pub struct MainView {
     /// The last thing done that failed, or a note on it, until something else is done.
     failed: Option<String>,
     making: Option<making::Making>,
+    /// Bringing the chosen sandbox's work back to the Mac.
+    bring_back: bring_back::BringBack,
     /// What's attached to the chosen sandbox besides its model's key.
     services: services::Services,
     /// The place shown, chosen in the sidebar.
@@ -205,6 +208,7 @@ impl MainView {
             failed: None,
             making: None,
             services: services::Services::default(),
+            bring_back: bring_back::BringBack::default(),
             page: Page::Sandboxes,
             agents: agents::AgentsPage::new(),
             kits: kits::KitsPage::new(watch),
@@ -234,6 +238,7 @@ impl MainView {
             "sandbox.continue" => self.open_session(None, What::Continue, window, cx),
             "sandbox.shell" => self.open_session(None, What::Shell, window, cx),
             "sandbox.add-folders" => self.choose_folders_to_add(window, cx),
+            "sandbox.bring-back" => self.bring_back_selected(cx),
             "sandbox.start" => self.act_on_selected(sandboxes::Act::Start, window, cx),
             "sandbox.restart" => self.act_on_selected(sandboxes::Act::Restart, window, cx),
             "sandbox.stop" => self.act_on_selected(sandboxes::Act::Stop, window, cx),

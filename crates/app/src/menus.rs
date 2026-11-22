@@ -100,6 +100,7 @@ pub fn menus() -> Vec<Menu> {
                 run(t!("Open Shell"), "sandbox.shell"),
                 MenuItem::separator(),
                 run(t!("Add Folders…"), "sandbox.add-folders"),
+                run(t!("Bring Back"), "sandbox.bring-back"),
                 MenuItem::separator(),
                 run(t!("Open in Herdr App"), "sandbox.open-herdr"),
                 run(t!("Open in Ghostty"), "sandbox.open-ghostty"),

@@ -27,6 +27,8 @@ pub enum AddError {
     Taken(String),
     #[error(transparent)]
     OpenShell(#[from] OpenShellError),
+    #[error("{0}")]
+    Seed(String),
     #[error("Couldn't note the folders added to “{0}”: {1}")]
     Note(String, String),
 }
@@ -98,7 +100,11 @@ impl AddedFolders {
             return Err(AddError::Taken(taken));
         }
         for folder in folders {
-            openshell.upload(&sandbox.name, folder, INTO)?;
+            match crate::bring_back::Repo::of(folder) {
+                Some(repo) => crate::bring_back::seed(openshell, &sandbox.name, &repo)
+                    .map_err(|error| AddError::Seed(error.to_string()))?,
+                None => openshell.upload(&sandbox.name, folder, INTO)?,
+            }
         }
         let mut added = self.of(sandbox);
         added.extend(folders.iter().map(|folder| folder.display().to_string()));

@@ -23,8 +23,14 @@ pub use microvm::{
     MICROVM_GATEWAY, MicroVm, MicroVmError, MicroVmPlaces, MicroVmSize, Missing, SetUpStep,
     install_e2fsprogs, why_not_started,
 };
+mod activity;
+pub use activity::{Activity, Reached};
+mod ports;
+pub use ports::{Forward, Forwards, ListedForward};
 mod register;
+mod requests;
 pub use register::{Forgotten, NewGateway, NewGatewayError, Oidc, Reach};
+pub use requests::{NetworkRequest, RequestStatus};
 
 /// The label Playpen puts on a sandbox it made, naming its [`crate::Agent`].
 pub const AGENT_LABEL: &str = "playpen.agent";

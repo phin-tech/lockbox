@@ -36,6 +36,7 @@ impl MainView {
     /// Lists the sandboxes now, and then every few seconds while the window's open.
     pub(super) fn watch_sandboxes(window: &mut Window, cx: &mut Context<Self>) -> Task<()> {
         cx.spawn_in(window, async move |this, cx| {
+            let mut round = 0usize;
             loop {
                 let Ok(openshell) = this.update(cx, |this, _| this.base_openshell()) else {
                     break;
@@ -107,6 +108,36 @@ impl MainView {
                 {
                     break;
                 }
+                // Every few rounds, each Ready sandbox's network requests, so the list can say which are waiting.
+                if round.is_multiple_of(super::requests::ASK_EVERY) {
+                    let Ok((openshell, ready)) = this.update(cx, |this, _| {
+                        (this.base_openshell(), this.ready_sandboxes())
+                    }) else {
+                        break;
+                    };
+                    let asks: Vec<_> = ready
+                        .into_iter()
+                        .map(|key| {
+                            let openshell = openshell.clone();
+                            cx.background_spawn(async move {
+                                let asked = openshell.and_then(|openshell| {
+                                    openshell
+                                        .on(gateway_named(&key.gateway))
+                                        .network_requests(&key.name)
+                                });
+                                (key, asked)
+                            })
+                        })
+                        .collect();
+                    let asked = futures::future::join_all(asks).await;
+                    if this
+                        .update(cx, |this, cx| this.requests_listed(asked, cx))
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+                round = round.wrapping_add(1);
                 cx.background_executor().timer(LIST_EVERY).await;
             }
         })
@@ -363,11 +394,31 @@ impl MainView {
         // What's attached to the chosen sandbox is looked up again when another is chosen.
         if self.selected != chosen {
             self.look_up_services(cx);
+            self.look_up_requests(cx);
+            self.look_up_activity(cx);
+            self.check_forwards(cx);
         }
         cx.notify();
     }
 
     /// The sandboxes of the gateway in focus, when they're known.
+    /// The Ready sandboxes of every gateway being listed.
+    pub(super) fn ready_sandboxes(&self) -> Vec<SandboxKey> {
+        self.polled()
+            .into_iter()
+            .flat_map(|gateway| {
+                self.sandboxes_of(&gateway)
+                    .iter()
+                    .filter(|sandbox| sandbox.phase.is_ready())
+                    .map(|sandbox| SandboxKey {
+                        gateway: gateway.clone(),
+                        name: sandbox.name.clone(),
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
     pub(super) fn listed_sandboxes(&self) -> &[Sandbox] {
         self.sandboxes_of(&self.gateway_key())
     }
@@ -450,6 +501,9 @@ impl MainView {
         self.microvm = None;
         if changed {
             self.look_up_services(cx);
+            self.look_up_requests(cx);
+            self.look_up_activity(cx);
+            self.check_forwards(cx);
         }
         cx.notify();
     }
@@ -1083,6 +1137,10 @@ impl MainView {
                     })),
             );
         let blocked = state == Some(AgentState::Blocked) && sandbox.phase.is_ready();
+        // Requests waiting say so in place of what the agent's doing, since they're what it waits on.
+        let waiting = self
+            .waiting_words(&key)
+            .filter(|_| sandbox.phase.is_ready());
         let hover = theme.list_hover;
         h_flex()
             .id(id("sandbox"))
@@ -1116,7 +1174,7 @@ impl MainView {
                         div()
                             .truncate()
                             .text_xs()
-                            .text_color(if blocked {
+                            .text_color(if blocked || waiting.is_some() {
                                 theme.warning
                             } else {
                                 theme.muted_foreground
@@ -1125,7 +1183,9 @@ impl MainView {
                                 t!(
                                     "%{agent} · %{state}",
                                     agent = agent_name(agent),
-                                    state = state_words(&sandbox.phase, state)
+                                    state = waiting
+                                        .clone()
+                                        .unwrap_or_else(|| state_words(&sandbox.phase, state))
                                 )
                                 .into_owned(),
                             ),
@@ -1260,6 +1320,7 @@ impl MainView {
             info.push((t!("Works in").into_owned(), shell::code_chip(workdir, cx)));
         }
         info.push((t!("Services").into_owned(), self.services_row(sandbox, cx)));
+        info.push((t!("Ports").into_owned(), self.ports_row(sandbox, key, cx)));
         info.push((
             t!("Brings back to").into_owned(),
             self.bring_back_row(sandbox, cx),
@@ -1273,7 +1334,9 @@ impl MainView {
             .p_5()
             .child(hero)
             .child(actions)
+            .when_some(self.requests_card(key, cx), |body, card| body.child(card))
             .child(info_card(info, cx))
+            .child(self.activity_card(key, cx))
             .child(hint(
                 t!(
                     "Its agent reaches its model, and the services attached to it, and nothing else. Stopping keeps its files; deleting doesn't."

@@ -1062,3 +1062,61 @@ fn set_up_microvm_gateway_shows_its_form_in_place_of_the_others_and_chooses_each
     });
     view.read_with(cx, |view, _| assert!(view.microvm.is_none()));
 }
+
+#[gpui_kit::test]
+fn a_sandbox_with_network_requests_waiting_says_so_and_decided_ones_dont_count(
+    cx: &mut TestAppContext,
+) {
+    let (view, cx) = open(cx);
+    listed(&view, vec![sandbox("alpha", Phase::Ready)], cx);
+    view.update(cx, |view, _| {
+        let key = view.selected.clone().expect("alpha is chosen");
+        let mut requests = super::requests::stand_in_requests();
+        view.give_requests(key.clone(), requests.clone());
+        assert_eq!(
+            view.waiting_words(&key).as_deref(),
+            Some("2 requests waiting")
+        );
+        requests.retain(|request| !request.is_pending());
+        view.give_requests(key.clone(), requests);
+        assert_eq!(view.waiting_words(&key), None);
+    });
+}
+
+#[gpui_kit::test]
+fn recent_activity_shows_the_newest_first_and_can_show_only_what_was_stopped(
+    cx: &mut TestAppContext,
+) {
+    let (view, cx) = open(cx);
+    listed(&view, vec![sandbox("alpha", Phase::Ready)], cx);
+    view.update(cx, |view, cx| {
+        view.give_activity(super::activity::stand_in_activity());
+        let all = view.activity_shown();
+        assert_eq!(all.len(), 4);
+        assert!(all[0].1 > all[3].1, "newest first");
+        view.show_only_blocked(true, cx);
+        let blocked = view.activity_shown();
+        assert_eq!(blocked.len(), 2);
+        assert!(blocked.iter().all(|(allowed, _)| !allowed));
+    });
+}
+
+#[gpui_kit::test]
+fn a_forwarded_port_shows_only_on_its_own_sandbox_and_gateway(cx: &mut TestAppContext) {
+    let (view, cx) = open(cx);
+    listed(&view, vec![sandbox("alpha", Phase::Ready)], cx);
+    view.update(cx, |view, _| {
+        let key = view.selected.clone().expect("alpha is chosen");
+        view.give_forward(playpen_core::Forward {
+            gateway: "elsewhere".to_string(),
+            sandbox: "alpha".to_string(),
+            port: 8080,
+        });
+        assert!(
+            view.forwards_of(&key).is_empty(),
+            "alpha on another gateway"
+        );
+        view.ports_give_stand_ins(&key);
+        assert_eq!(view.forwards_of(&key), [3000, 5173]);
+    });
+}

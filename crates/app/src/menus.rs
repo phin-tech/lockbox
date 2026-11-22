@@ -113,6 +113,12 @@ pub fn menus() -> Vec<Menu> {
                 run(t!("Open Shell"), "sandbox.shell"),
                 MenuItem::separator(),
                 run(t!("Add Folders…"), "sandbox.add-folders"),
+                run(
+                    t!("Approve All Network Requests"),
+                    "sandbox.approve-requests",
+                ),
+                run(t!("Refresh Activity"), "sandbox.activity"),
+                run(t!("Forward a Port…"), "sandbox.forward"),
                 run(t!("Bring Back"), "sandbox.bring-back"),
                 MenuItem::separator(),
                 run(t!("Open in Herdr App"), "sandbox.open-herdr"),

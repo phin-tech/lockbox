@@ -1,0 +1,51 @@
+---
+source: crates/core/src/openshell/activity.rs
+expression: parse_activity(LOGGED)
+---
+[
+    Activity {
+        at_ms: 1795375089504,
+        allowed: false,
+        reached: Connection {
+            program: "/usr/local/bin/node",
+            host: "example.com",
+            port: "443",
+        },
+        because: Some(
+            "transparent_tcp_policy_denied",
+        ),
+    },
+    Activity {
+        at_ms: 1795375089524,
+        allowed: false,
+        reached: Connection {
+            program: "/usr/lib/git-core/git-remote-http",
+            host: "github.com",
+            port: "443",
+        },
+        because: Some(
+            "transparent_tcp_policy_denied",
+        ),
+    },
+    Activity {
+        at_ms: 1795375224350,
+        allowed: true,
+        reached: Connection {
+            program: "/usr/local/bin/node",
+            host: "example.com",
+            port: "443",
+        },
+        because: Some(
+            "allow_example_com_443",
+        ),
+    },
+    Activity {
+        at_ms: 1795375224464,
+        allowed: true,
+        reached: Request {
+            method: "GET",
+            url: "https://example.com/search",
+        },
+        because: None,
+    },
+]

@@ -52,6 +52,10 @@ services-test:
 bring-back-test:
     cargo test -p playpen-core --test bring_back -- --ignored
 
+# Make a sandbox, have it reach a host its policy doesn't allow, and approve the request that makes
+requests-test:
+    cargo test -p playpen-core --test requests -- --ignored
+
 # Set up the MicroVM gateway, make a Claude Code sandbox on it, and remove it again; not over one already set up
 microvm-test:
     cargo test -p playpen-core --test microvm -- --ignored

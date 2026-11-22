@@ -1,6 +1,7 @@
 //! The window's content: the sandboxes on OpenShell's gateway, or New Agent…'s form in their place, under the title
 //! bar, with the cards over the window (the palette and Keys).
 
+mod activity;
 mod agents;
 mod bring_back;
 mod gateways;
@@ -8,6 +9,8 @@ mod images;
 mod kits;
 mod making;
 mod microvm;
+mod ports;
+mod requests;
 mod sandboxes;
 mod services;
 #[cfg(test)]
@@ -171,6 +174,12 @@ pub struct MainView {
     bring_back: bring_back::BringBack,
     /// What's attached to the chosen sandbox besides its model's key.
     services: services::Services,
+    /// Each sandbox's network requests, waiting and decided.
+    requests: requests::Requests,
+    /// The chosen sandbox's recent network activity.
+    activity: activity::ActivityLog,
+    /// The ports forwarded to sandboxes.
+    ports: ports::Ports,
     /// The place shown, chosen in the sidebar.
     page: Page,
     agents: agents::AgentsPage,
@@ -200,6 +209,17 @@ impl MainView {
         if cfg!(feature = "screenshot") && std::env::var_os("PLAYPEN_SHOT_SANDBOXES").is_some() {
             let mut view = Self::watching(Watch::Nothing, window, cx);
             view.listed(Ok(sandboxes::stand_ins()), cx);
+            // The first, Ready, has network requests waiting.
+            let key = SandboxKey {
+                gateway: view.gateway_key(),
+                name: "claude-patchbay".to_string(),
+            };
+            view.requests
+                .by_sandbox
+                .insert(key.clone(), requests::stand_in_requests());
+            view.ports_give_stand_ins(&key);
+            view.selected = Some(key);
+            view.give_stand_in_activity();
             return view;
         }
         Self::watching(Watch::OpenShell, window, cx)
@@ -213,6 +233,7 @@ impl MainView {
         let focus = cx.focus_handle();
         focus.focus(window, cx);
         let watching = (watch == Watch::OpenShell).then(|| Self::watch_sandboxes(window, cx));
+        let ports = ports::Ports::new(watch, window, cx);
         Self {
             focus,
             openshell: OpenShell::find(),
@@ -232,6 +253,9 @@ impl MainView {
             failed: None,
             making: None,
             services: services::Services::default(),
+            requests: requests::Requests::default(),
+            activity: activity::ActivityLog::default(),
+            ports,
             bring_back: bring_back::BringBack::default(),
             page: Page::Sandboxes,
             agents: agents::AgentsPage::new(),
@@ -267,6 +291,9 @@ impl MainView {
             "sandbox.shell" => self.open_session(None, What::Shell, window, cx),
             "sandbox.add-folders" => self.choose_folders_to_add(window, cx),
             "sandbox.bring-back" => self.bring_back_selected(cx),
+            "sandbox.approve-requests" => self.approve_all_requests(cx),
+            "sandbox.activity" => self.look_up_activity(cx),
+            "sandbox.forward" => self.focus_port_field(window, cx),
             "sandbox.start" => self.act_on_selected(sandboxes::Act::Start, window, cx),
             "sandbox.restart" => self.act_on_selected(sandboxes::Act::Restart, window, cx),
             "sandbox.stop" => self.act_on_selected(sandboxes::Act::Stop, window, cx),

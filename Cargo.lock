@@ -1579,7 +1579,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users 0.5.3",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -1616,7 +1616,7 @@ version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ab8ecd87370524b461f8557c119c405552c396ed91fc0a8eec68679eab26f94a"
 dependencies = [
- "libloading 0.8.9",
+ "libloading 0.7.4",
 ]
 
 [[package]]
@@ -1804,7 +1804,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e35d6e78f4cebb90e51d543db8fe41528851d6deeef6ef21ebd4bfdc1e784776"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2520,7 +2520,7 @@ dependencies = [
 [[package]]
 name = "gpui-base"
 version = "0.9.1"
-source = "git+https://git.phin.tech/sam/typecase.git?tag=v0.29.0#d47facf941542c38a24ac953c92103bdc0dbe04f"
+source = "git+https://git.phin.tech/sam/typecase.git?tag=v0.30.0#96a07195efd296d4f19e5faac343ec9faf9fb1e0"
 dependencies = [
  "aho-corasick",
  "anyhow",
@@ -5036,7 +5036,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -6309,7 +6309,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -6837,7 +6837,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -7746,7 +7746,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -8239,8 +8239,8 @@ dependencies = [
 
 [[package]]
 name = "typecase"
-version = "0.29.0"
-source = "git+https://git.phin.tech/sam/typecase.git?tag=v0.29.0#d47facf941542c38a24ac953c92103bdc0dbe04f"
+version = "0.30.0"
+source = "git+https://git.phin.tech/sam/typecase.git?tag=v0.30.0#96a07195efd296d4f19e5faac343ec9faf9fb1e0"
 dependencies = [
  "futures",
  "gpui-kit",
@@ -8252,8 +8252,8 @@ dependencies = [
 
 [[package]]
 name = "typecase-agent"
-version = "0.29.0"
-source = "git+https://git.phin.tech/sam/typecase.git?tag=v0.29.0#d47facf941542c38a24ac953c92103bdc0dbe04f"
+version = "0.30.0"
+source = "git+https://git.phin.tech/sam/typecase.git?tag=v0.30.0#96a07195efd296d4f19e5faac343ec9faf9fb1e0"
 dependencies = [
  "agent-client-protocol-schema",
  "serde",
@@ -8262,18 +8262,18 @@ dependencies = [
 
 [[package]]
 name = "typecase-dates"
-version = "0.29.0"
-source = "git+https://git.phin.tech/sam/typecase.git?tag=v0.29.0#d47facf941542c38a24ac953c92103bdc0dbe04f"
+version = "0.30.0"
+source = "git+https://git.phin.tech/sam/typecase.git?tag=v0.30.0#96a07195efd296d4f19e5faac343ec9faf9fb1e0"
 
 [[package]]
 name = "typecase-leader"
-version = "0.29.0"
-source = "git+https://git.phin.tech/sam/typecase.git?tag=v0.29.0#d47facf941542c38a24ac953c92103bdc0dbe04f"
+version = "0.30.0"
+source = "git+https://git.phin.tech/sam/typecase.git?tag=v0.30.0#96a07195efd296d4f19e5faac343ec9faf9fb1e0"
 
 [[package]]
 name = "typecase-query"
-version = "0.29.0"
-source = "git+https://git.phin.tech/sam/typecase.git?tag=v0.29.0#d47facf941542c38a24ac953c92103bdc0dbe04f"
+version = "0.30.0"
+source = "git+https://git.phin.tech/sam/typecase.git?tag=v0.30.0#96a07195efd296d4f19e5faac343ec9faf9fb1e0"
 dependencies = [
  "typecase-dates",
 ]
@@ -9011,7 +9011,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -9645,7 +9645,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d6f32a0ff4a9f6f01231eb2059cc85479330739333e0e58cadf03b6af2cca10"
 dependencies = [
  "cfg-if",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

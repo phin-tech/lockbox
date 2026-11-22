@@ -50,9 +50,10 @@ pub use links::{link_target, path_from_file_url};
 pub use locale::best_locale;
 pub use new_service::{Access, KeySource, NewService, find_op};
 pub use openshell::{
-    Forgotten, GATEWAY_VARIABLE, Gateway, GatewayInfo, Key, MICROVM_GATEWAY, MicroVm, MicroVmError,
-    MicroVmPlaces, MicroVmSize, Missing, NewGateway, NewGatewayError, Oidc, OpenShell,
-    OpenShellError, Phase, Profile, ProfileEndpoint, Provider, Reach, Sandbox, Service, SetUpStep,
+    Activity, Forgotten, Forward, Forwards, GATEWAY_VARIABLE, Gateway, GatewayInfo, Key,
+    ListedForward, MICROVM_GATEWAY, MicroVm, MicroVmError, MicroVmPlaces, MicroVmSize, Missing,
+    NetworkRequest, NewGateway, NewGatewayError, Oidc, OpenShell, OpenShellError, Phase, Profile,
+    ProfileEndpoint, Provider, Reach, Reached, RequestStatus, Sandbox, Service, SetUpStep,
     install_e2fsprogs, why_not_started,
 };
 pub use provider::{Endpoint, Kind, NewProvider, ProviderError};

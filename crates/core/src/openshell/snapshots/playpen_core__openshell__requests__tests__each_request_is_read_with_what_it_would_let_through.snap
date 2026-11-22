@@ -1,0 +1,36 @@
+---
+source: crates/core/src/openshell/requests.rs
+expression: requests
+---
+[
+    NetworkRequest {
+        id: "8d2b3223-c829-4891-b3b7-91fa5c259b89",
+        status: Pending,
+        rule: "allow_github_com_443",
+        programs: [
+            "/usr/lib/git-core/git-remote-http",
+        ],
+        endpoints: [
+            "github.com:443 [L4]",
+        ],
+        confidence: Some(
+            65,
+        ),
+        rationale: "Allow git-remote-http to connect to github.com:443 (HTTPS).",
+    },
+    NetworkRequest {
+        id: "60773847-b0e1-4ead-8793-f568be7f8155",
+        status: Approved,
+        rule: "allow_example_com_443",
+        programs: [
+            "/usr/local/bin/node",
+        ],
+        endpoints: [
+            "example.com:443 [L4]",
+        ],
+        confidence: Some(
+            65,
+        ),
+        rationale: "Allow node to connect to example.com:443 (HTTPS).",
+    },
+]

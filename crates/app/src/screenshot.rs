@@ -14,6 +14,30 @@ fn redraw(cx: &mut AsyncApp) {
     });
 }
 
+/// Scrolls whatever is at window coordinates by `dy` points, down when positive, as a mouse wheel would.
+fn scroll(window: &mut Window, cx: &mut App, x: f32, y: f32, dy: f32) {
+    let position = point(px(x), px(y));
+    window.dispatch_event(
+        PlatformInput::MouseMove(MouseMoveEvent {
+            position,
+            pressed_button: None,
+            modifiers: Modifiers::default(),
+        }),
+        cx,
+    );
+    let _ = window.draw(cx);
+    window.dispatch_event(
+        PlatformInput::Scroll(ScrollEvent {
+            position,
+            delta: ScrollDelta::Pixels(point(px(0.), px(-dy))),
+            modifiers: Modifiers::default(),
+            touch_phase: TouchPhase::Moved,
+            source: ScrollSource::Pointer,
+        }),
+        cx,
+    );
+}
+
 /// Clicks at window coordinates, holding `modifiers`, by way of the same input path as a real mouse.
 fn click(window: &mut Window, cx: &mut App, x: f32, y: f32, modifiers: Modifiers) {
     let position = point(px(x), px(y));
@@ -51,7 +75,8 @@ fn click(window: &mut Window, cx: &mut App, x: f32, y: f32, modifiers: Modifiers
 /// `cmd-,`) to `PLAYPEN_SHOT` and quits, so the UI can be driven
 /// and checked without a screen or screen recording permission. Steps are separated by spaces: a key such as `j` or
 /// `enter`, `click:X,Y` in window points (half the frame's pixels, which are 2x), with modifiers like `cmd-click:X,Y`,
-/// or `wait` for half a second.
+/// `scroll:X,Y,DY` to scroll what's there by DY points, down when positive, as Typecase's driver does, or `wait` for
+/// half a second.
 pub fn capture(cx: &mut App) {
     let path = std::env::var("PLAYPEN_SHOT").expect("PLAYPEN_SHOT is not set");
     cx.spawn(async move |cx| {
@@ -73,6 +98,19 @@ pub fn capture(cx: &mut App) {
             cx.update(|cx| {
                 cx.windows()[0]
                     .update(cx, |_, window, cx| {
+                        if let Some(place) = step.strip_prefix("scroll:") {
+                            let numbers: Vec<f32> = place
+                                .split(',')
+                                .map(|number| number.parse().expect("scroll:X,Y,DY"))
+                                .collect();
+                            let [x, y, dy] = numbers[..] else {
+                                panic!("scroll:X,Y,DY");
+                            };
+                            scroll(window, cx, x, y, dy);
+                            window.refresh();
+                            let _ = window.draw(cx);
+                            return;
+                        }
                         match step.split_once("click:") {
                             Some((held, place)) => {
                                 let (x, y) = place.split_once(',').expect("click:X,Y");

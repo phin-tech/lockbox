@@ -16,7 +16,7 @@ use serde::Deserialize;
 use crate::chatgpt::Tokens;
 use crate::new_service::{KeySource, NewService, with_key};
 use crate::provider::{CHATGPT_CLIENT_ID, Kind, NewProvider};
-use crate::secrets::{Secret, wrap};
+use crate::secrets::{Secret, Wrapped, wrap};
 
 mod register;
 pub use register::{Forgotten, NewGateway, NewGatewayError, Oidc, Reach};
@@ -422,6 +422,20 @@ impl OpenShell {
         command
     }
 
+    /// A command that runs `openshell` inside `wrapped`, as `op run` or a shell reading the Keychain, still on this
+    /// gateway: the wrapper passes its environment on to `openshell`.
+    fn wrapped_command(&self, wrapped: &Wrapped) -> Command {
+        let mut command = Command::new(&wrapped.program);
+        command
+            .args(&wrapped.args)
+            .envs(wrapped.env.iter().map(|(name, value)| (name, value)));
+        if let Some(name) = self.gateway.name() {
+            command.env(GATEWAY_VARIABLE, name);
+        }
+        command.env("NO_COLOR", "1").stdin(Stdio::null());
+        command
+    }
+
     /// The gateways OpenShell has registered, whichever this command is set to. It's asked with none named, since
     /// OpenShell marks the one that's named as the active one, and the order would change with the gateway shown.
     pub fn gateways(&self) -> Result<Vec<GatewayInfo>, OpenShellError> {
@@ -699,13 +713,8 @@ impl OpenShell {
         let wrapped = with_key(source, variable, op, &self.binary, &args)
             .map_err(|error| OpenShellError::Failed(adding.to_string(), error.to_string()))?;
         let imported = self.import_profile(name, id, profile)?;
-        let mut command = Command::new(&wrapped.program);
-        command
-            .args(&wrapped.args)
-            .envs(wrapped.env.iter().map(|(name, value)| (name, value)))
-            .env("NO_COLOR", "1")
-            .stdin(Stdio::null());
-        let created = command
+        let created = self
+            .wrapped_command(&wrapped)
             .output()
             .map_err(|error| OpenShellError::Run(error.to_string()))
             .and_then(|output| {
@@ -984,11 +993,8 @@ impl OpenShell {
         command.extend(args.iter().cloned());
         let wrapped = wrap(command, secrets, None, op)
             .map_err(|error| OpenShellError::Failed(doing.clone(), error.to_string()))?;
-        let output = Command::new(&wrapped.program)
-            .args(&wrapped.args)
-            .envs(wrapped.env.iter().map(|(name, value)| (name, value)))
-            .env("NO_COLOR", "1")
-            .stdin(Stdio::null())
+        let output = self
+            .wrapped_command(&wrapped)
             .output()
             .map_err(|error| OpenShellError::Run(error.to_string()))?;
         if output.status.success() {
@@ -1074,6 +1080,28 @@ mod tests {
         let named = openshell.on(Gateway::named("k8s-home"));
         assert_eq!(named.gateway().name(), Some("k8s-home"));
         assert_eq!(gateway_env(&named).as_deref(), Some("k8s-home"));
+    }
+
+    #[test]
+    fn a_command_wrapped_to_fetch_a_key_still_goes_to_the_gateway_named() {
+        let wrapped = crate::secrets::Wrapped {
+            program: "/opt/homebrew/bin/op".into(),
+            args: vec!["run".to_string(), "--".to_string()],
+            env: vec![("KEY".to_string(), "op://vault/item/field".to_string())],
+        };
+        let env = |openshell: &OpenShell| {
+            openshell
+                .wrapped_command(&wrapped)
+                .get_envs()
+                .find(|(name, _)| *name == OsStr::new(GATEWAY_VARIABLE))
+                .and_then(|(_, value)| value.map(|value| value.to_string_lossy().into_owned()))
+        };
+        let openshell = OpenShell::new("/opt/homebrew/bin/openshell");
+        assert_eq!(env(&openshell), None);
+        assert_eq!(
+            env(&openshell.on(Gateway::named("kind"))).as_deref(),
+            Some("kind")
+        );
     }
 
     #[test]

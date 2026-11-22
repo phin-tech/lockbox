@@ -78,6 +78,30 @@ impl Docker {
         Ok(status.success())
     }
 
+    /// Builds the folder `context`, whose `Dockerfile` copies files from beside it, as the image `tag`.
+    pub fn build_folder(&self, tag: &str, context: &Path) -> Result<(), DockerError> {
+        let output = self
+            .command()
+            .args(["build", "--quiet", "--tag", tag])
+            .arg(context)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .output()
+            .map_err(|error| DockerError::Run(error.to_string()))?;
+        if output.status.success() {
+            return Ok(());
+        }
+        // The last few lines, since a setup script's own error comes just before Docker's.
+        let said = String::from_utf8_lossy(&output.stderr);
+        let lines: Vec<&str> = said
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .collect();
+        let tail = lines[lines.len().saturating_sub(4)..].join("\n");
+        Err(DockerError::Build(tag.to_string(), tail))
+    }
+
     /// Builds `dockerfile` as the image `tag`, with `args` as its build arguments. It needs no files beside it.
     pub fn build(
         &self,

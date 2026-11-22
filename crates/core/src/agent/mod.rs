@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use crate::bring_back::Repo;
 use crate::chatgpt::Account;
 use crate::docker::{Docker, DockerError};
+use crate::kit_setup::{SetupFolder, image_name, link_dotfiles};
 use crate::kits::{Variable, VariableValue};
 use crate::new_service::find_op;
 use crate::openshell::{
@@ -190,6 +191,8 @@ pub struct Plan {
     pub services: Vec<Service>,
     /// Variables to set in it: values, and secrets fetched from 1Password or the Keychain as it's made.
     pub variables: Vec<Variable>,
+    /// Its kits' setup folders: each `install.sh` run over its image, and the dotfiles linked into its home.
+    pub setups: Vec<SetupFolder>,
     /// Folders on the Mac to copy in, for it to work on: none, one, or several, such as the repositories of one
     /// piece of work.
     pub folders: Vec<PathBuf>,
@@ -229,6 +232,11 @@ pub enum MakeError {
 }
 
 impl Plan {
+    /// The image it's made from: its agent's, with its kits' `install.sh`s run over it when they have any.
+    pub fn image(&self) -> String {
+        image_name(self.agent, &self.setups)
+    }
+
     /// The sandbox's policy: its agent reaching its model, and each service's hosts.
     pub fn policy(&self) -> String {
         let mut policy = self.agent.policy();
@@ -262,7 +270,7 @@ impl Plan {
             "--name",
             &self.name,
             "--from",
-            &self.agent.image(),
+            &self.image(),
             "--policy",
             &policy.to_string_lossy(),
             "--detach",
@@ -327,10 +335,9 @@ impl Plan {
         if let Some(name) = self.shared_folder_name() {
             return Err(MakeError::SameFolderName(name));
         }
-        let image = self.agent.image();
-        if !docker.has_image(&image)? {
+        if !docker.has_image(&self.image())? {
             step(Step::Building);
-            self.agent.build_image(docker)?;
+            crate::kit_setup::build(self.agent, &self.setups, docker)?;
         }
         step(Step::Creating);
         let policy = std::env::temp_dir().join(format!(
@@ -371,6 +378,13 @@ impl Plan {
             if let Err(error) = copied {
                 let _ = openshell.delete(&self.name);
                 return Err(error);
+            }
+        }
+        if !self.setups.is_empty() {
+            step(Step::Preparing);
+            if let Err(error) = link_dotfiles(openshell, &self.name, &self.setups) {
+                let _ = openshell.delete(&self.name);
+                return Err(error.into());
             }
         }
         if let Some(setup) = self.setup() {
@@ -547,6 +561,7 @@ mod tests {
             account: None,
             services: Vec::new(),
             variables: Vec::new(),
+            setups: Vec::new(),
             folders: vec![PathBuf::from("/Users/sam/src/Patchbay")],
         }
     }

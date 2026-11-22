@@ -1,0 +1,8 @@
+---
+source: crates/core/src/kit_setup.rs
+expression: "dockerfile(Agent::ClaudeCode, &[&work])"
+---
+# Written by Playpen: kits' install.sh, run over playpen-claude-code:2.1.329.
+FROM playpen-claude-code:2.1.329
+COPY kit-0 /opt/playpen/kits/work
+RUN cd /opt/playpen/kits/work && sh ./install.sh

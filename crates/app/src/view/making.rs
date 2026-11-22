@@ -13,7 +13,8 @@ use std::collections::BTreeSet;
 
 use gpui_kit::component::checkbox::Checkbox;
 use playpen_core::{
-    Docker, Kit, Plan, Profile, Provider, Service, Step, Variable, VariableValue, suggested_name,
+    Docker, Kit, Plan, Profile, Provider, Service, SetupFolder, Step, Variable, VariableValue,
+    suggested_name,
 };
 
 use super::*;
@@ -56,6 +57,8 @@ pub struct Making {
     kits: Vec<String>,
     /// The chosen kits' variables, a later kit's winning where two set one, with the names that were set twice.
     variables: Vec<Variable>,
+    /// The chosen kits' setup folders, in the order the kits were chosen.
+    setups: Vec<SetupFolder>,
     overridden: Vec<String>,
     pub(super) state: MakeState,
     _changed: Subscription,
@@ -159,6 +162,7 @@ impl MainView {
             services: BTreeSet::new(),
             kits: Vec::new(),
             variables: Vec::new(),
+            setups: Vec::new(),
             overridden: Vec::new(),
             state: MakeState::Choosing,
             _changed: changed,
@@ -241,6 +245,7 @@ impl MainView {
             .filter_map(|name| self.kits.kits.find(name).cloned())
             .collect();
         if kits.is_empty() {
+            making.setups.clear();
             making.variables.clear();
             making.overridden.clear();
             return;
@@ -261,6 +266,15 @@ impl MainView {
         }
         making.variables = variables;
         making.overridden = overridden;
+        making.setups = kits
+            .iter()
+            .filter_map(|kit| {
+                Some(SetupFolder {
+                    kit: kit.name.clone(),
+                    folder: kit.setup_folder.clone()?.into(),
+                })
+            })
+            .collect();
         if let Some(Ok(usable)) = making.usable() {
             let usable: Vec<String> = usable
                 .iter()
@@ -482,6 +496,7 @@ impl MainView {
             provider: making.provider.clone(),
             account,
             services: making.chosen_services(),
+            setups: making.setups.clone(),
             // Those that can't be set are shown with why, and left out.
             variables: making
                 .variables

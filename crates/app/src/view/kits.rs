@@ -86,6 +86,7 @@ fn stand_ins() -> Kits {
         kits: vec![
             Kit {
                 name: "work".to_string(),
+                setup_folder: None,
                 model_key: Some("claude-work".to_string()),
                 services: vec!["github-work".to_string(), "linear".to_string()],
                 variables: vec![
@@ -101,6 +102,7 @@ fn stand_ins() -> Kits {
             },
             Kit {
                 name: "personal".to_string(),
+                setup_folder: None,
                 model_key: Some("claude-sub".to_string()),
                 services: vec!["github".to_string()],
                 variables: Vec::new(),
@@ -329,10 +331,89 @@ impl MainView {
             ))
     }
 
+    /// Asks for the chosen kit's setup folder.
+    fn choose_setup_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let chosen = cx.prompt_for_paths(PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some(t!("Choose").into_owned().into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(paths))) = chosen.await else {
+                return;
+            };
+            let Some(folder) = paths.into_iter().next() else {
+                return;
+            };
+            let _ = this.update(cx, |this, cx| {
+                this.kits
+                    .change(|kit| kit.setup_folder = Some(folder.display().to_string()));
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// The chosen kit's setup folder, what Playpen does with it, and buttons to choose or clear it.
+    fn setup_folder_editor(&self, kit: &Kit, cx: &Context<Self>) -> Div {
+        let theme = cx.theme();
+        let folder = kit.setup_folder.clone();
+        let installs = folder
+            .as_ref()
+            .is_some_and(|folder| std::path::Path::new(folder).join("install.sh").is_file());
+        v_flex()
+            .gap_1p5()
+            .child(
+                h_flex()
+                    .gap_2()
+                    .child(match &folder {
+                        Some(folder) => h_flex()
+                            .min_w_0()
+                            .child(shell::code_chip(folder.clone(), cx)),
+                        None => h_flex().child(hint(t!("None"), cx)),
+                    })
+                    .child(
+                        Button::new("choose-setup-folder")
+                            .xsmall()
+                            .icon(assets::IconName::FolderOpen)
+                            .label(t!("Choose…").into_owned())
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.choose_setup_folder(window, cx);
+                            })),
+                    )
+                    .when(folder.is_some(), |row| {
+                        row.child(
+                            Button::new("clear-setup-folder")
+                                .ghost()
+                                .xsmall()
+                                .icon(assets::IconName::X)
+                                .tooltip(t!("Clear").into_owned())
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.kits.change(|kit| kit.setup_folder = None);
+                                    cx.notify();
+                                })),
+                        )
+                    }),
+            )
+            .when(folder.is_some(), |list| {
+                list.child(div().text_xs().text_color(theme.muted_foreground).child(if installs {
+                    t!("Its install.sh runs as root over the image, on this Mac with the internet, once until the folder changes.").into_owned()
+                } else {
+                    t!("It has no install.sh, so it only gives its dotfiles.").into_owned()
+                }))
+            })
+            .child(hint(
+                t!("Like a dotfiles repository: an optional install.sh puts in tools however it likes, and the folder's dotfiles are linked into each new sandbox's home, apart from ones that usually hold secrets, such as .netrc and .npmrc."),
+                cx,
+            ))
+    }
+
     pub(super) fn new_kit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let name = self.kits.kits.unused_name("kit");
         self.kits.kits.kits.push(Kit {
             name: name.clone(),
+            setup_folder: None,
             ..Kit::default()
         });
         self.kits.save();
@@ -666,6 +747,7 @@ impl MainView {
                 ],
                 cx,
             ))
+            .child(section(t!("Setup folder"), cx).child(self.setup_folder_editor(kit, cx)))
             .child(section(t!("Variables"), cx).child(self.variables_editor(cx)))
             .when_some(self.kits.failed.clone(), |body, failed| {
                 body.child(div().text_sm().text_color(theme.danger).child(failed))
@@ -976,6 +1058,7 @@ impl MainView {
                     Ok(imported) => {
                         this.kits.kits.kits.push(Kit {
                             name: kit_name.clone(),
+                            setup_folder: None,
                             model_key: imported.model_key,
                             services: imported.services,
                             variables: imported.variables,

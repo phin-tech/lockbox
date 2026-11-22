@@ -83,6 +83,7 @@ fn work_comes_back_as_a_branch_without_the_persons_own_edits_and_touching_nothin
         account: None,
         services: Vec::new(),
         variables: Vec::new(),
+        setups: Vec::new(),
         folders: vec![repo.clone()],
     };
     let tried = (|| {

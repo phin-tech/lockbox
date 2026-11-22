@@ -78,6 +78,7 @@ fn claude_code_answers_from_a_sandbox_playpen_made() {
         account: None,
         services: Vec::new(),
         variables: Vec::new(),
+        setups: Vec::new(),
         folders: vec![folder],
     };
     let steps = std::sync::Mutex::new(Vec::new());
@@ -132,6 +133,7 @@ fn codex_answers_on_a_chatgpt_subscription_from_a_sandbox_playpen_made() {
         account: Some(account),
         services: Vec::new(),
         variables: Vec::new(),
+        setups: Vec::new(),
         folders: vec![folder],
     };
     let made = plan.make(&openshell, &docker, |_| {});

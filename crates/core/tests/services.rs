@@ -72,6 +72,7 @@ fn plan(name: String, services: Vec<Service>) -> Plan {
         account: None,
         services,
         variables: Vec::new(),
+        setups: Vec::new(),
         folders: Vec::new(),
     }
 }

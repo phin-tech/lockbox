@@ -18,6 +18,10 @@ pub struct Kit {
     /// The services, by provider name.
     #[serde(default)]
     pub services: Vec<String>,
+    /// A folder on the Mac, like a dotfiles repository: its `install.sh` is run over the image, and its dotfiles are
+    /// linked into the sandbox's home.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub setup_folder: Option<String>,
     /// Plain variables to set in a sandbox made with it.
     #[serde(default, rename = "variable", skip_serializing_if = "Vec::is_empty")]
     pub variables: Vec<Variable>,
@@ -149,6 +153,7 @@ mod tests {
         let kits = Kits {
             kits: vec![Kit {
                 name: "work".to_string(),
+                setup_folder: None,
                 model_key: Some("claude-work".to_string()),
                 services: vec!["github-work".to_string(), "linear".to_string()],
                 variables: vec![
@@ -177,6 +182,7 @@ mod tests {
         let mut kits = Kits {
             kits: vec![Kit {
                 name: "work".to_string(),
+                setup_folder: None,
                 model_key: Some("claude-work".to_string()),
                 services: vec!["github".to_string()],
                 variables: Vec::new(),

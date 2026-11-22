@@ -193,6 +193,7 @@ fn kits_fill_new_agent_with_all_their_services_the_later_ones_variables_and_the_
     view.update(cx, |view, _| {
         view.kits.kits.kits.push(playpen_core::Kit {
             name: "work".to_string(),
+            setup_folder: None,
             model_key: Some("claude-work".to_string()),
             services: vec!["github-work".to_string()],
             variables: vec![playpen_core::Variable {
@@ -202,6 +203,7 @@ fn kits_fill_new_agent_with_all_their_services_the_later_ones_variables_and_the_
         });
         view.kits.kits.kits.push(playpen_core::Kit {
             name: "local".to_string(),
+            setup_folder: None,
             model_key: Some("claude-sub".to_string()),
             services: vec!["sentry".to_string()],
             variables: vec![playpen_core::Variable {

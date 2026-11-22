@@ -79,6 +79,23 @@ profile:
         --launch -- "$(scripts/bundle-macos.sh profiling)"
     open "${CARGO_TARGET_DIR:-target}/profile.trace"
 
+# OrbStack's own Kubernetes can't run OpenShell's sandboxes (no `supplementalGroupsPolicy`); kind's containerd can
+# Start a kind cluster in OrbStack's Docker for trying a Kubernetes gateway; does nothing if it's already up
+kind-up name="openshell":
+    command -v kind >/dev/null || { echo "kind isn't installed: brew install kind"; exit 1; }
+    docker --context orbstack info >/dev/null 2>&1 || { echo "OrbStack's Docker isn't running: open -a OrbStack"; exit 1; }
+    if kind get clusters | grep -qx "{{name}}"; then echo "kind-{{name}} is already up"; \
+        else DOCKER_CONTEXT=orbstack kind create cluster --name "{{name}}" --wait 120s; fi
+    kubectl --context "kind-{{name}}" get nodes
+
+# Delete the kind cluster `kind-up` made
+kind-down name="openshell":
+    DOCKER_CONTEXT=orbstack kind delete cluster --name "{{name}}"
+
+# Put an image from this Mac's Docker into the kind cluster, which can't pull from it: `just kind-load playpen-claude`
+kind-load image name="openshell":
+    DOCKER_CONTEXT=orbstack kind load docker-image "{{image}}" --name "{{name}}"
+
 # Rebuild packaging/AppIcon.icns from packaging/logo.png
 icon:
     uv run --quiet --with pillow packaging/make_icon.py

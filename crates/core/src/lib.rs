@@ -15,6 +15,7 @@ mod locale;
 mod new_service;
 mod openshell;
 mod provider;
+mod secrets;
 pub mod session;
 mod settings;
 mod state;
@@ -24,11 +25,12 @@ pub use agent::{Agent, MakeError, Plan, Step, is_sandbox_name, open_command, sug
 pub use chatgpt::{Account, ChatGptError, Login, Tokens, find_codex};
 pub use docker::{Docker, DockerError};
 pub use dotenv::{
-    EnvLine, Guess, guess as guess_env, parse as parse_env, suggested_name as env_provider_name,
+    EnvLine, Guess, guess as guess_env, looks_secret, parse as parse_env,
+    suggested_name as env_provider_name,
 };
 pub use files::write_atomically;
 pub use herdr::{AgentState, HerdrApp, HerdrCore, HerdrError};
-pub use kits::{Kit, Kits};
+pub use kits::{Kit, Kits, Variable, VariableValue};
 pub use links::{link_target, path_from_file_url};
 pub use locale::best_locale;
 pub use new_service::{Access, KeySource, NewService, find_op};
@@ -36,6 +38,7 @@ pub use openshell::{
     Key, OpenShell, OpenShellError, Phase, Profile, ProfileEndpoint, Provider, Sandbox, Service,
 };
 pub use provider::{Endpoint, Kind, NewProvider, ProviderError};
+pub use secrets::Secret;
 pub use session::{Installed, Keep, Opened, Place, SessionError, ShowIn, What};
 pub use settings::{Appearance, Settings, TEXT_SCALES, step_text_scale};
 pub use state::{Frame, Screen, State};

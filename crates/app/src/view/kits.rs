@@ -7,7 +7,8 @@ use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::radio::Radio;
 use playpen_core::{
     Access, EnvLine, Guess, Key, KeySource, Kind, Kit, Kits, NewProvider, NewService, OpenShell,
-    Service, env_provider_name, find_op, guess_env, parse_env,
+    Service, Variable, VariableValue, env_provider_name, find_op, guess_env, looks_secret,
+    parse_env,
 };
 
 use super::sandboxes::{info_card, text_value};
@@ -22,6 +23,9 @@ pub(super) struct KitsPage {
     /// The chosen kit's name, as it's typed.
     name: Option<Entity<InputState>>,
     failed: Option<String>,
+    /// The chosen kit's variables, as they're typed, each name and value field with where the value comes from.
+    variables: Vec<VariableRow>,
+    _variables: Vec<Subscription>,
     /// A kit being made from a `.env` file, shown in place of the chosen kit.
     pub(super) import: Option<EnvImport>,
     _renamed: Option<Subscription>,
@@ -48,6 +52,8 @@ impl KitsPage {
             name: None,
             failed,
             import: None,
+            variables: Vec::new(),
+            _variables: Vec::new(),
             _renamed: None,
         }
     }
@@ -82,11 +88,22 @@ fn stand_ins() -> Kits {
                 name: "work".to_string(),
                 model_key: Some("claude-work".to_string()),
                 services: vec!["github-work".to_string(), "linear".to_string()],
+                variables: vec![
+                    Variable {
+                        name: "NODE_ENV".to_string(),
+                        value: VariableValue::Value("development".to_string()),
+                    },
+                    Variable {
+                        name: "DATABASE_URL".to_string(),
+                        value: VariableValue::Reference("op://Work/Postgres/url".to_string()),
+                    },
+                ],
             },
             Kit {
                 name: "personal".to_string(),
                 model_key: Some("claude-sub".to_string()),
                 services: vec!["github".to_string()],
+                variables: Vec::new(),
             },
         ],
     }
@@ -141,7 +158,175 @@ impl MainView {
                 }),
             );
         self.kits.name = Some(field);
+        let variables = self
+            .kits
+            .chosen()
+            .map(|kit| kit.variables.clone())
+            .unwrap_or_default();
+        self.kits.variables.clear();
+        self.kits._variables.clear();
+        for variable in variables {
+            self.add_variable_row(variable, window, cx);
+        }
         cx.notify();
+    }
+
+    /// A row for `variable` in the chosen kit's Variables, saved again whenever it's typed in.
+    fn add_variable_row(
+        &mut self,
+        variable: Variable,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (from, value) = match variable.value {
+            VariableValue::Value(value) => (From::Value, value),
+            VariableValue::Reference(reference) => (From::OnePassword, reference),
+            VariableValue::Keychain(service) => (From::Keychain, service),
+        };
+        let field =
+            |text: String, placeholder: &str, window: &mut Window, cx: &mut Context<Self>| {
+                let placeholder = placeholder.to_string();
+                cx.new(|cx| {
+                    let mut state = InputState::new(window, cx).placeholder(placeholder);
+                    state.set_value(text, window, cx);
+                    state
+                })
+            };
+        let name = field(variable.name, "NAME", window, cx);
+        let value = field(value, "", window, cx);
+        for input in [&name, &value] {
+            let subscription =
+                cx.subscribe_in(input, window, |this, _, event: &InputEvent, _, cx| {
+                    if matches!(event, InputEvent::Change) {
+                        this.save_variables(cx);
+                    }
+                });
+            self.kits._variables.push(subscription);
+        }
+        self.kits.variables.push(VariableRow { name, value, from });
+    }
+
+    /// Writes the chosen kit's variables from their rows, and saves.
+    fn save_variables(&mut self, cx: &mut Context<Self>) {
+        let variables: Vec<Variable> = self
+            .kits
+            .variables
+            .iter()
+            .map(|row| {
+                let text = row.value.read(cx).value().to_string();
+                Variable {
+                    name: row.name.read(cx).value().trim().to_string(),
+                    value: match row.from {
+                        From::Value => VariableValue::Value(text),
+                        From::OnePassword => VariableValue::Reference(text.trim().to_string()),
+                        From::Keychain => VariableValue::Keychain(text.trim().to_string()),
+                    },
+                }
+            })
+            .collect();
+        self.kits.change(|kit| kit.variables = variables);
+        cx.notify();
+    }
+
+    fn new_variable(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.add_variable_row(
+            Variable {
+                name: String::new(),
+                value: VariableValue::Value(String::new()),
+            },
+            window,
+            cx,
+        );
+        if let Some(row) = self.kits.variables.last() {
+            row.name.read(cx).focus_handle(cx).focus(window, cx);
+        }
+        self.save_variables(cx);
+    }
+
+    /// The chosen kit's Variables: a row each, its name, where its value comes from and the value or where to find
+    /// it, with what's wrong with it under it.
+    fn variables_editor(&self, cx: &Context<Self>) -> Div {
+        let theme = cx.theme();
+        let has_op = find_op().is_some();
+        let rows = self.kits.variables.iter().enumerate().map(|(at, row)| {
+            let source = |from: From, label: std::borrow::Cow<str>| {
+                // An index into the rows, which are only added to or removed from as a whole.
+                Radio::new(ElementId::from((ElementId::from(SharedString::from(format!("variable-from-{at}"))), label.to_string())))
+                    .label(label.into_owned())
+                    .checked(row.from == from)
+                    .disabled(from == From::OnePassword && !has_op)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if let Some(row) = this.kits.variables.get_mut(at) {
+                            row.from = from;
+                        }
+                        this.save_variables(cx);
+                    }))
+            };
+            let variable = self.kits.chosen().and_then(|kit| kit.variables.get(at));
+            let problem = variable.and_then(|variable| {
+                if variable.name.is_empty() {
+                    return None;
+                }
+                match variable.check() {
+                    Err(problem) => Some((theme.danger, problem)),
+                    Ok(()) if matches!(variable.value, VariableValue::Value(_)) && variable.looks_secret() => Some((
+                        theme.warning,
+                        t!("This looks like a secret, which the sandbox would hold as it is. Keep it in 1Password or the Keychain, or add it as a service so the sandbox only sees a stand-in.").into_owned(),
+                    )),
+                    Ok(()) => None,
+                }
+            });
+            v_flex()
+                .gap_1p5()
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .child(div().w(rems(11.)).child(small_field(&row.name)))
+                        .child(div().flex_1().min_w_0().child(small_field(&row.value)))
+                        .child(
+                            Button::new(("remove-variable", at))
+                                .ghost()
+                                .xsmall()
+                                .icon(assets::IconName::X)
+                                .tooltip(t!("Remove").into_owned())
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    if at < this.kits.variables.len() {
+                                        this.kits.variables.remove(at);
+                                        // Each row has two subscriptions, its name's and its value's.
+                                        this.kits._variables.drain(at * 2..(at * 2 + 2).min(this.kits._variables.len()));
+                                    }
+                                    this.save_variables(cx);
+                                })),
+                        ),
+                )
+                .child(
+                    h_flex()
+                        .gap_4()
+                        .child(source(From::Value, t!("Value")))
+                        .child(source(From::OnePassword, t!("1Password reference")))
+                        .child(source(From::Keychain, t!("Keychain item"))),
+                )
+                .when_some(problem, |row, (colour, problem)| {
+                    row.child(div().text_xs().text_color(colour).child(problem))
+                })
+        });
+        v_flex()
+            .gap_3()
+            .w_full()
+            .children(rows)
+            .child(
+                h_flex().child(
+                    Button::new("new-variable")
+                        .xsmall()
+                        .icon(assets::IconName::Plus)
+                        .label(t!("Add Variable").into_owned())
+                        .on_click(cx.listener(|this, _, window, cx| this.new_variable(window, cx))),
+                ),
+            )
+            .child(hint(
+                t!("Set in sandboxes made with the kit, not ones already running. 1Password and Keychain values are fetched as it's made, and Playpen never reads them."),
+                cx,
+            ))
     }
 
     pub(super) fn new_kit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -481,6 +666,7 @@ impl MainView {
                 ],
                 cx,
             ))
+            .child(section(t!("Variables"), cx).child(self.variables_editor(cx)))
             .when_some(self.kits.failed.clone(), |body, failed| {
                 body.child(div().text_sm().text_color(theme.danger).child(failed))
             })
@@ -516,6 +702,21 @@ fn kit_tile(colour: Hsla, size: Rems, cx: &App) -> Div {
         .child(Icon::new(assets::IconName::Package).size(size * 0.55))
 }
 
+/// A variable being edited: its name and value fields, and where the value comes from.
+struct VariableRow {
+    name: Entity<InputState>,
+    value: Entity<InputState>,
+    from: From,
+}
+
+/// Where a variable's value comes from, as the editor offers it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum From {
+    Value,
+    OnePassword,
+    Keychain,
+}
+
 /// A kit being made from a `.env` file: each variable, what Playpen takes it for, and whether it goes in.
 pub(super) struct EnvImport {
     from: PathBuf,
@@ -532,12 +733,15 @@ struct ImportRow {
     name: Entity<InputState>,
     host: Entity<InputState>,
     writes: bool,
+    /// Whether it's set in the sandbox as it is, rather than added as a key: for what isn't a secret.
+    as_variable: bool,
 }
 
 /// What became of each variable, by provider name, and what went wrong with any.
 struct Imported {
     model_key: Option<String>,
     services: Vec<String>,
+    variables: Vec<Variable>,
     failures: Vec<String>,
 }
 
@@ -623,8 +827,11 @@ impl MainView {
                     Guess::Service(host) => host.to_string(),
                     Guess::Model(_) | Guess::Unknown => String::new(),
                 };
+                // What Playpen doesn't know and doesn't look like a secret is a plain variable, such as NODE_ENV.
+                let as_variable = guess == Guess::Unknown && !looks_secret(&line.variable);
                 ImportRow {
-                    include: guess != Guess::Unknown,
+                    include: guess != Guess::Unknown || as_variable,
+                    as_variable,
                     name: field(env_provider_name(&line.variable), window, cx),
                     host: field(host, window, cx),
                     writes: false,
@@ -668,9 +875,27 @@ impl MainView {
             cx.notify();
             return;
         }
-        // Each ticked line as what to add: its name, and a model kind or a host.
+        // The ticked lines kept as they are, which go only in the kit.
+        let variables: Vec<Variable> = import
+            .rows
+            .iter()
+            .filter(|row| row.include && row.as_variable)
+            .map(|row| Variable {
+                name: row.line.variable.clone(),
+                value: if row.line.is_reference() {
+                    VariableValue::Reference(row.line.value.clone())
+                } else {
+                    VariableValue::Value(row.line.value.clone())
+                },
+            })
+            .collect();
+        // Each other ticked line as what to add: its name, and a model kind or a host.
         let mut wanted = Vec::new();
-        for row in import.rows.iter().filter(|row| row.include) {
+        for row in import
+            .rows
+            .iter()
+            .filter(|row| row.include && !row.as_variable)
+        {
             let name = row.name.read(cx).value().trim().to_string();
             let host = row.host.read(cx).value().trim().to_string();
             let source = if row.line.is_reference() {
@@ -706,6 +931,7 @@ impl MainView {
             let mut imported = Imported {
                 model_key: None,
                 services: Vec::new(),
+                variables,
                 failures: Vec::new(),
             };
             for (variable, guess, name, host, access, source) in wanted {
@@ -752,6 +978,7 @@ impl MainView {
                             name: kit_name.clone(),
                             model_key: imported.model_key,
                             services: imported.services,
+                            variables: imported.variables,
                         });
                         this.kits.save();
                         this.kits.import = None;
@@ -820,6 +1047,7 @@ impl MainView {
         let rows = import.rows.iter().enumerate().map(|(at, row)| {
             let what = match &row.guess {
                 Guess::Model(kind) => t!("%{kind} model key", kind = kind.name()).into_owned(),
+                _ if row.as_variable => t!("Variable, set as it is").into_owned(),
                 Guess::Service(_) => t!("Service").into_owned(),
                 Guess::Unknown => t!("Service, if you say where it goes").into_owned(),
             };
@@ -872,6 +1100,15 @@ impl MainView {
                                     .child(div().w(rems(11.)).child(small_field(&row.name))),
                             )
                             .when(!matches!(row.guess, Guess::Model(_)), |line| {
+                                line.child(
+                                    Checkbox::new(("import-variable", at))
+                                        .label(t!("Set as a variable").into_owned())
+                                        .checked(row.as_variable)
+                                        .disabled(import.saving)
+                                        .on_click(toggle(|row, checked| row.as_variable = checked)),
+                                )
+                            })
+                            .when(!matches!(row.guess, Guess::Model(_)) && !row.as_variable, |line| {
                                 line.child(
                                     v_flex()
                                         .gap_1()

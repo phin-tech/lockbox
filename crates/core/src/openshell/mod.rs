@@ -16,6 +16,7 @@ use serde::Deserialize;
 use crate::chatgpt::Tokens;
 use crate::new_service::{KeySource, NewService, with_key};
 use crate::provider::{CHATGPT_CLIENT_ID, Kind, NewProvider};
+use crate::secrets::{Secret, wrap};
 
 /// The label Playpen puts on a sandbox it made, naming its [`crate::Agent`].
 pub const AGENT_LABEL: &str = "playpen.agent";
@@ -121,7 +122,7 @@ enum Imported {
 }
 
 /// A provider's key, kept out of anything printed or logged.
-pub struct Key(String);
+pub struct Key(pub(crate) String);
 
 impl Key {
     pub fn new(key: &str) -> Key {
@@ -502,20 +503,15 @@ impl OpenShell {
             "--credential",
             variable,
         ];
-        let (program, all, set) = with_key(source, op, &self.binary, &args)
+        let wrapped = with_key(source, variable, op, &self.binary, &args)
             .map_err(|error| OpenShellError::Failed(adding.to_string(), error.to_string()))?;
         let imported = self.import_profile(name, id, profile)?;
-        let mut command = Command::new(&program);
-        command.args(&all).env("NO_COLOR", "1").stdin(Stdio::null());
-        match (source, set) {
-            (KeySource::Key(key), _) => {
-                command.env(variable, &key.0);
-            }
-            (_, Some(reference)) => {
-                command.env(variable, reference);
-            }
-            (_, None) => {}
-        }
+        let mut command = Command::new(&wrapped.program);
+        command
+            .args(&wrapped.args)
+            .envs(wrapped.env.iter().map(|(name, value)| (name, value)))
+            .env("NO_COLOR", "1")
+            .stdin(Stdio::null());
         let created = command
             .output()
             .map_err(|error| OpenShellError::Run(error.to_string()))
@@ -721,6 +717,41 @@ impl OpenShell {
     pub fn delete(&self, name: &str) -> Result<(), OpenShellError> {
         self.run(&format!("delete “{name}”"), &["sandbox", "delete", name])
             .map(drop)
+    }
+
+    /// Makes a sandbox with `args` after `sandbox create`, with `secrets` fetched into `openshell`'s environment for
+    /// its `--env-from`s, from 1Password or the Keychain, never through Playpen.
+    pub fn create_with_secrets(
+        &self,
+        name: &str,
+        args: &[String],
+        secrets: &[(String, Secret)],
+        op: Option<&Path>,
+    ) -> Result<(), OpenShellError> {
+        if secrets.is_empty() {
+            return self.create(name, args);
+        }
+        let doing = format!("make “{name}”");
+        let mut command = vec![
+            self.binary.to_string_lossy().into_owned(),
+            "sandbox".to_string(),
+            "create".to_string(),
+        ];
+        command.extend(args.iter().cloned());
+        let wrapped = wrap(command, secrets, None, op)
+            .map_err(|error| OpenShellError::Failed(doing.clone(), error.to_string()))?;
+        let output = Command::new(&wrapped.program)
+            .args(&wrapped.args)
+            .envs(wrapped.env.iter().map(|(name, value)| (name, value)))
+            .env("NO_COLOR", "1")
+            .stdin(Stdio::null())
+            .output()
+            .map_err(|error| OpenShellError::Run(error.to_string()))?;
+        if output.status.success() {
+            Ok(())
+        } else {
+            Err(OpenShellError::Failed(doing, said(&output.stderr)))
+        }
     }
 
     /// Makes a sandbox with `args` after `sandbox create`, as [`crate::Plan::create_args`] gives them.

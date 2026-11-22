@@ -74,6 +74,8 @@ pub enum ProviderError {
     Reference(String),
     #[error("Give the 1Password Environment's ID, from Manage environment ▸ Copy environment ID.")]
     Environment,
+    #[error("Give the Keychain item's name, as Keychain Access shows it under Where.")]
+    Keychain,
 }
 
 impl Kind {

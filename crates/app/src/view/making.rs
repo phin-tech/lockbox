@@ -12,7 +12,9 @@ use gpui_kit::component::select::{Select, SelectEvent, SelectItem, SelectState};
 use std::collections::BTreeSet;
 
 use gpui_kit::component::checkbox::Checkbox;
-use playpen_core::{Docker, Plan, Profile, Provider, Service, Step, suggested_name};
+use playpen_core::{
+    Docker, Kit, Plan, Profile, Provider, Service, Step, Variable, VariableValue, suggested_name,
+};
 
 use super::*;
 
@@ -49,8 +51,12 @@ pub struct Making {
     profiles: Option<Vec<Profile>>,
     /// The services chosen, by provider name.
     services: BTreeSet<String>,
-    /// The kit last used, whose model key is chosen once the providers are listed, if the agent can use it.
-    kit: Option<String>,
+    /// The kits chosen, in the order they were, which give the sandbox their services and variables, and the first's
+    /// model key the agent can use.
+    kits: Vec<String>,
+    /// The chosen kits' variables, a later kit's winning where two set one, with the names that were set twice.
+    variables: Vec<Variable>,
+    overridden: Vec<String>,
     pub(super) state: MakeState,
     _changed: Subscription,
     _chose: Subscription,
@@ -151,7 +157,9 @@ impl MainView {
             provider: None,
             profiles: None,
             services: BTreeSet::new(),
-            kit: None,
+            kits: Vec::new(),
+            variables: Vec::new(),
+            overridden: Vec::new(),
             state: MakeState::Choosing,
             _changed: changed,
             _chose: chose,
@@ -180,10 +188,7 @@ impl MainView {
         };
         making.listed = Some(listed);
         making.choose_first_provider();
-        let kit = making.kit.clone();
-        if let Some(kit) = kit {
-            self.use_kit(&kit, cx);
-        }
+        self.apply_kits(cx);
         cx.notify();
     }
 
@@ -210,23 +215,110 @@ impl MainView {
         cx.notify();
     }
 
-    /// Fills New Agent from the kit `name`: its services, and its model key if the agent can use it.
+    /// Chooses the kit `name` for the new sandbox, or leaves it out if it's chosen already.
     pub(super) fn use_kit(&mut self, name: &str, cx: &mut Context<Self>) {
-        let Some(kit) = self.kits.kits.find(name).cloned() else {
-            return;
-        };
         let Some(making) = &mut self.making else {
             return;
         };
-        making.kit = Some(kit.name.clone());
-        making.services = kit.services.iter().cloned().collect();
-        if let Some(model_key) = &kit.model_key
-            && let Some(Ok(usable)) = making.usable()
-            && usable.iter().any(|provider| &provider.name == model_key)
-        {
-            making.provider = Some(model_key.clone());
+        if let Some(at) = making.kits.iter().position(|chosen| chosen == name) {
+            making.kits.remove(at);
+        } else if self.kits.kits.find(name).is_some() {
+            making.kits.push(name.to_string());
         }
+        self.apply_kits(cx);
         cx.notify();
+    }
+
+    /// Fills New Agent from the chosen kits: all their services, their variables, and the first model key among
+    /// them that the agent can use.
+    fn apply_kits(&mut self, _cx: &mut Context<Self>) {
+        let Some(making) = &mut self.making else {
+            return;
+        };
+        let kits: Vec<Kit> = making
+            .kits
+            .iter()
+            .filter_map(|name| self.kits.kits.find(name).cloned())
+            .collect();
+        if kits.is_empty() {
+            making.variables.clear();
+            making.overridden.clear();
+            return;
+        }
+        making.services = kits
+            .iter()
+            .flat_map(|kit| kit.services.iter().cloned())
+            .collect();
+        let mut variables: Vec<Variable> = Vec::new();
+        let mut overridden = Vec::new();
+        for variable in kits.iter().flat_map(|kit| kit.variables.iter()) {
+            if let Some(at) = variables.iter().position(|set| set.name == variable.name) {
+                overridden.push(variable.name.clone());
+                variables[at] = variable.clone();
+            } else {
+                variables.push(variable.clone());
+            }
+        }
+        making.variables = variables;
+        making.overridden = overridden;
+        if let Some(Ok(usable)) = making.usable() {
+            let usable: Vec<String> = usable
+                .iter()
+                .map(|provider| provider.name.clone())
+                .collect();
+            if let Some(model_key) = kits
+                .iter()
+                .filter_map(|kit| kit.model_key.clone())
+                .find(|model_key| usable.contains(model_key))
+            {
+                making.provider = Some(model_key);
+            }
+        }
+    }
+
+    /// The variables the chosen kits set, each with where its value comes from.
+    fn kit_variables(&self, making: &Making, cx: &Context<Self>) -> Div {
+        let theme = cx.theme();
+        v_flex()
+            .gap_1()
+            .children(making.variables.iter().map(|variable| {
+                let from = match &variable.value {
+                    VariableValue::Value(value) => format!("= {value}"),
+                    VariableValue::Reference(reference) => {
+                        t!("from 1Password, %{reference}", reference = reference).into_owned()
+                    }
+                    VariableValue::Keychain(service) => {
+                        t!("from the Keychain item “%{service}”", service = service).into_owned()
+                    }
+                };
+                h_flex()
+                    .gap_2()
+                    .child(
+                        h_flex()
+                            .flex_none()
+                            .child(shell::code_chip(variable.name.clone(), cx)),
+                    )
+                    .child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .text_sm()
+                            .text_color(theme.muted_foreground)
+                            .child(from),
+                    )
+                    .when_some(variable.check().err(), |row, problem| {
+                        row.child(div().text_xs().text_color(theme.danger).child(problem))
+                    })
+            }))
+            .when(!making.overridden.is_empty(), |list| {
+                list.child(hint(
+                    t!(
+                        "Set by more than one kit, so the later one's is used: %{names}",
+                        names = making.overridden.join(", ")
+                    ),
+                    cx,
+                ))
+            })
     }
 
     /// The kits as chips, the one last used marked, which fill the form when chosen.
@@ -236,7 +328,7 @@ impl MainView {
             .gap_2()
             .children(self.kits.kits.kits.iter().map(|kit| {
                 let name = kit.name.clone();
-                shell::chip(making.kit.as_ref() == Some(&kit.name), cx)
+                shell::chip(making.kits.contains(&kit.name), cx)
                     .id(ElementId::from((
                         ElementId::from("use-kit"),
                         kit.name.clone(),
@@ -390,6 +482,13 @@ impl MainView {
             provider: making.provider.clone(),
             account,
             services: making.chosen_services(),
+            // Those that can't be set are shown with why, and left out.
+            variables: making
+                .variables
+                .iter()
+                .filter(|variable| variable.check().is_ok())
+                .cloned()
+                .collect(),
             folders: making.folders.clone(),
         };
         if !playpen_core::is_sandbox_name(&plan.name) {
@@ -573,7 +672,10 @@ impl MainView {
             )
             .child(section(t!("Folders"), cx).child(folders))
             .when(!self.kits.kits.kits.is_empty(), |body| {
-                body.child(section(t!("Kit"), cx).child(self.kit_choices(making, working, cx)))
+                body.child(section(t!("Kits"), cx).child(self.kit_choices(making, working, cx)))
+            })
+            .when(!making.variables.is_empty(), |body| {
+                body.child(section(t!("Variables"), cx).child(self.kit_variables(making, cx)))
             })
             .child(section(t!("Model key"), cx).child(providers))
             .child(section(t!("Services"), cx).child(self.service_choices(making, working, cx)))
@@ -654,6 +756,18 @@ impl Making {
 
 #[cfg(test)]
 impl Making {
+    #[cfg(test)]
+    pub(super) fn variable_values(&self) -> Vec<String> {
+        self.variables
+            .iter()
+            .map(|variable| match &variable.value {
+                VariableValue::Value(value) => format!("{}={value}", variable.name),
+                VariableValue::Reference(reference) => format!("{}={reference}", variable.name),
+                VariableValue::Keychain(service) => format!("{}=keychain:{service}", variable.name),
+            })
+            .collect()
+    }
+
     #[cfg(test)]
     pub(super) fn ticked_services(&self) -> Vec<&str> {
         self.services.iter().map(String::as_str).collect()

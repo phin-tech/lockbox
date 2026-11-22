@@ -9,3 +9,11 @@ services = [
     "github-work",
     "linear",
 ]
+
+[[kit.variable]]
+name = "NODE_ENV"
+value = "development"
+
+[[kit.variable]]
+name = "DATABASE_URL"
+reference = "op://Work/Postgres/url"

@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 
 use crate::openshell::Key;
 use crate::provider::{Endpoint, ProviderError};
+use crate::secrets::{Secret, Wrapped, wrap};
 
 /// The profile id every service's profile starts with; each service has its own, naming its host.
 pub const SERVICE_PREFIX: &str = "playpen-service-";
@@ -35,6 +36,8 @@ pub enum KeySource {
     Reference(String),
     /// A 1Password Environment, by its id, holding a secret named as the service's variable.
     Environment(String),
+    /// A Keychain item, by its service name, which `security` reads.
+    Keychain(String),
 }
 
 /// A service to add: its name, the host its key goes to, the variable its key is in, and what it allows.
@@ -47,7 +50,7 @@ pub struct NewService {
 }
 
 /// Whether `name` can name an environment variable: capitals, digits and underscores, not starting with a digit.
-fn is_variable(name: &str) -> bool {
+pub(crate) fn is_variable(name: &str) -> bool {
     !name.is_empty()
         && !name.starts_with(|c: char| c.is_ascii_digit())
         && name
@@ -128,46 +131,40 @@ pub fn find_op() -> Option<PathBuf> {
         .find(|place| place.is_file())
 }
 
-/// The command line that runs `openshell` with the key from `source` in `variable`: as it is for a pasted key, or
-/// under `op run`, which puts a 1Password secret there itself. Gives the program, its arguments, and the variable to
-/// set with its value, if Playpen sets one.
+/// The command that runs `openshell` with `args` and the key from `source` in `variable`: set by Playpen when it's
+/// pasted, or fetched from 1Password or the Keychain around it, so Playpen never reads it.
 pub(crate) fn with_key(
     source: &KeySource,
+    variable: &str,
     op: Option<&Path>,
     openshell: &Path,
     args: &[&str],
-) -> Result<(PathBuf, Vec<String>, Option<String>), ProviderError> {
-    let openshell_args = args.iter().map(|arg| (*arg).to_string());
+) -> Result<Wrapped, ProviderError> {
+    let mut command = vec![openshell.to_string_lossy().into_owned()];
+    command.extend(args.iter().map(|arg| (*arg).to_string()));
+    let secret = |secret: Secret| vec![(variable.to_string(), secret)];
     match source {
         KeySource::Key(key) => {
             if key.is_empty() {
                 return Err(ProviderError::NoKey);
             }
-            Ok((openshell.to_path_buf(), openshell_args.collect(), None))
+            let mut wrapped = wrap(command, &[], None, op)?;
+            wrapped.env.push((variable.to_string(), key.0.clone()));
+            Ok(wrapped)
         }
-        KeySource::Reference(reference) | KeySource::Environment(reference) => {
-            let op = op.ok_or(ProviderError::NoOp)?;
-            let mut all = vec!["run".to_string()];
-            let set = match source {
-                KeySource::Reference(_) => {
-                    if !reference.trim().starts_with("op://") {
-                        return Err(ProviderError::Reference(reference.clone()));
-                    }
-                    Some(reference.trim().to_string())
-                }
-                _ => {
-                    if reference.trim().is_empty() {
-                        return Err(ProviderError::Environment);
-                    }
-                    all.extend(["--environment".to_string(), reference.trim().to_string()]);
-                    None
-                }
-            };
-            all.push("--".to_string());
-            all.push(openshell.to_string_lossy().into_owned());
-            all.extend(openshell_args);
-            Ok((op.to_path_buf(), all, set))
-        }
+        KeySource::Reference(reference) => wrap(
+            command,
+            &secret(Secret::Reference(reference.clone())),
+            None,
+            op,
+        ),
+        KeySource::Keychain(service) => wrap(
+            command,
+            &secret(Secret::Keychain(service.clone())),
+            None,
+            op,
+        ),
+        KeySource::Environment(environment) => wrap(command, &[], Some(environment), op),
     }
 }
 
@@ -204,32 +201,48 @@ mod tests {
         let op = Path::new("/opt/homebrew/bin/op");
         let openshell = Path::new("/opt/homebrew/bin/openshell");
         let args = ["provider", "create", "--credential", "GITHUB_TOKEN"];
-        let (program, all, set) = with_key(
+        let wrapped = with_key(
             &KeySource::Reference("op://Private/GitHub/token".to_string()),
+            "GITHUB_TOKEN",
             Some(op),
             openshell,
             &args,
         )
         .unwrap();
-        assert_eq!(program, op);
-        assert_eq!(all[..2], ["run", "--"]);
+        assert_eq!(wrapped.program, op);
+        assert_eq!(wrapped.args[..2], ["run", "--"]);
         assert_eq!(
-            set.as_deref(),
-            Some("op://Private/GitHub/token"),
+            wrapped.env,
+            [(
+                "GITHUB_TOKEN".to_string(),
+                "op://Private/GitHub/token".to_string()
+            )],
             "op swaps the reference for the secret"
         );
-        let (_, all, set) = with_key(
+        let wrapped = with_key(
             &KeySource::Environment("env-123".to_string()),
+            "GITHUB_TOKEN",
             Some(op),
             openshell,
             &args,
         )
         .unwrap();
-        assert_eq!(all[..4], ["run", "--environment", "env-123", "--"]);
-        assert_eq!(set, None);
+        assert_eq!(wrapped.args[..4], ["run", "--environment", "env-123", "--"]);
+        assert!(wrapped.env.is_empty());
+        let wrapped = with_key(
+            &KeySource::Keychain("github".to_string()),
+            "GITHUB_TOKEN",
+            None,
+            openshell,
+            &args,
+        )
+        .unwrap();
+        assert_eq!(wrapped.program, Path::new("/bin/sh"));
+        assert!(wrapped.env.is_empty(), "the shell reads it, not Playpen");
         assert!(matches!(
             with_key(
                 &KeySource::Reference("op://x".to_string()),
+                "X",
                 None,
                 openshell,
                 &args

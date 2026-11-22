@@ -18,6 +18,71 @@ pub struct Kit {
     /// The services, by provider name.
     #[serde(default)]
     pub services: Vec<String>,
+    /// Plain variables to set in a sandbox made with it.
+    #[serde(default, rename = "variable", skip_serializing_if = "Vec::is_empty")]
+    pub variables: Vec<Variable>,
+}
+
+/// A variable a kit sets in a new sandbox: a value, or a 1Password secret reference that `op` reads when the sandbox
+/// is made. Either way the sandbox has the value itself, unlike a service's key.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Variable {
+    pub name: String,
+    #[serde(flatten)]
+    pub value: VariableValue,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum VariableValue {
+    Value(String),
+    /// `op://vault/item/field`.
+    Reference(String),
+    /// A Keychain item's service name.
+    Keychain(String),
+}
+
+impl Variable {
+    /// Where its secret is, when it's fetched rather than written down.
+    pub fn secret(&self) -> Option<crate::secrets::Secret> {
+        match &self.value {
+            VariableValue::Value(_) => None,
+            VariableValue::Reference(reference) => {
+                Some(crate::secrets::Secret::Reference(reference.clone()))
+            }
+            VariableValue::Keychain(service) => {
+                Some(crate::secrets::Secret::Keychain(service.clone()))
+            }
+        }
+    }
+
+    /// Whether it can be set as it is: a name a variable can have and, for a reference, one `op` can read.
+    pub fn check(&self) -> Result<(), String> {
+        if !crate::new_service::is_variable(&self.name) {
+            return Err(format!(
+                "“{}” can't name a variable: use capitals, digits and underscores.",
+                self.name
+            ));
+        }
+        match &self.value {
+            VariableValue::Reference(reference) if !reference.starts_with("op://") => Err(format!(
+                "{}'s 1Password reference should start op://.",
+                self.name
+            )),
+            VariableValue::Keychain(service) if service.trim().is_empty() => {
+                Err(format!("{}'s Keychain item needs its name.", self.name))
+            }
+            VariableValue::Value(value) if value.contains('\n') => {
+                Err(format!("{}'s value can't hold a new line.", self.name))
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// Whether it looks like it holds a secret, which would be better as a service, whose key the sandbox never sees.
+    pub fn looks_secret(&self) -> bool {
+        crate::dotenv::looks_secret(&self.name)
+    }
 }
 
 /// Every kit, in the order they were made.
@@ -86,6 +151,18 @@ mod tests {
                 name: "work".to_string(),
                 model_key: Some("claude-work".to_string()),
                 services: vec!["github-work".to_string(), "linear".to_string()],
+                variables: vec![
+                    super::Variable {
+                        name: "NODE_ENV".to_string(),
+                        value: super::VariableValue::Value("development".to_string()),
+                    },
+                    super::Variable {
+                        name: "DATABASE_URL".to_string(),
+                        value: super::VariableValue::Reference(
+                            "op://Work/Postgres/url".to_string(),
+                        ),
+                    },
+                ],
             }],
         };
         kits.save(&path).unwrap();
@@ -102,6 +179,7 @@ mod tests {
                 name: "work".to_string(),
                 model_key: Some("claude-work".to_string()),
                 services: vec!["github".to_string()],
+                variables: Vec::new(),
             }],
         };
         kits.forget_provider("claude-work");

@@ -5,9 +5,12 @@ use std::path::{Path, PathBuf};
 
 use crate::chatgpt::Account;
 use crate::docker::{Docker, DockerError};
+use crate::kits::{Variable, VariableValue};
+use crate::new_service::find_op;
 use crate::openshell::{
     AGENT_LABEL, FOLDER_ANNOTATION, OpenShell, OpenShellError, Sandbox, Service, WORKDIR_ANNOTATION,
 };
+use crate::secrets::Secret;
 use crate::session::What;
 
 /// The Claude Code release the image is built with. Raising it builds a new image the next time one is needed.
@@ -184,6 +187,8 @@ pub struct Plan {
     pub account: Option<Account>,
     /// Services to attach besides the model's key, each with its hosts opened.
     pub services: Vec<Service>,
+    /// Variables to set in it: values, and secrets fetched from 1Password or the Keychain as it's made.
+    pub variables: Vec<Variable>,
     /// Folders on the Mac to copy in, for it to work on: none, one, or several, such as the repositories of one
     /// piece of work.
     pub folders: Vec<PathBuf>,
@@ -291,6 +296,17 @@ impl Plan {
         for service in &self.services {
             args.extend(["--provider".to_string(), service.provider.clone()]);
         }
+        // A secret is taken from `openshell`'s own environment, where it's fetched to, so it's never an argument.
+        for variable in &self.variables {
+            match &variable.value {
+                VariableValue::Value(value) => {
+                    args.extend(["--env".to_string(), format!("{}={value}", variable.name)]);
+                }
+                VariableValue::Reference(_) | VariableValue::Keychain(_) => {
+                    args.extend(["--env-from".to_string(), variable.name.clone()]);
+                }
+            }
+        }
         args
     }
 
@@ -321,7 +337,17 @@ impl Plan {
         ));
         std::fs::write(&policy, self.policy())
             .map_err(|error| MakeError::Policy(error.to_string()))?;
-        let created = openshell.create(&self.name, &self.create_args(&policy));
+        let secrets: Vec<(String, Secret)> = self
+            .variables
+            .iter()
+            .filter_map(|variable| Some((variable.name.clone(), variable.secret()?)))
+            .collect();
+        let created = openshell.create_with_secrets(
+            &self.name,
+            &self.create_args(&policy),
+            &secrets,
+            find_op().as_deref(),
+        );
         let _ = std::fs::remove_file(&policy);
         created?;
         // A sandbox without its folders or its settings isn't what was asked for, and would keep the name from being
@@ -508,6 +534,7 @@ mod tests {
             provider: Some("claude-sub".to_string()),
             account: None,
             services: Vec::new(),
+            variables: Vec::new(),
             folders: vec![PathBuf::from("/Users/sam/src/Patchbay")],
         }
     }

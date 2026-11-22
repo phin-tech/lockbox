@@ -186,19 +186,35 @@ fn choosing_codex_renames_the_sandbox_and_chooses_a_chatgpt_provider(cx: &mut Te
 }
 
 #[gpui_kit::test]
-fn a_kit_fills_new_agent_with_its_services_and_its_model_key_once_listed(cx: &mut TestAppContext) {
+fn kits_fill_new_agent_with_all_their_services_the_later_ones_variables_and_the_first_ones_model_key(
+    cx: &mut TestAppContext,
+) {
     let (view, cx) = open(cx);
     view.update(cx, |view, _| {
         view.kits.kits.kits.push(playpen_core::Kit {
             name: "work".to_string(),
             model_key: Some("claude-work".to_string()),
             services: vec!["github-work".to_string()],
+            variables: vec![playpen_core::Variable {
+                name: "NODE_ENV".to_string(),
+                value: playpen_core::VariableValue::Value("production".to_string()),
+            }],
+        });
+        view.kits.kits.kits.push(playpen_core::Kit {
+            name: "local".to_string(),
+            model_key: Some("claude-sub".to_string()),
+            services: vec!["sentry".to_string()],
+            variables: vec![playpen_core::Variable {
+                name: "NODE_ENV".to_string(),
+                value: playpen_core::VariableValue::Value("development".to_string()),
+            }],
         });
     });
     cx.simulate_keystrokes("cmd-n");
     cx.run_until_parked();
     view.update(cx, |view, cx| {
         view.use_kit("work", cx);
+        view.use_kit("local", cx);
         view.providers_listed(
             Ok(vec![
                 Provider {
@@ -220,7 +236,16 @@ fn a_kit_fills_new_agent_with_its_services_and_its_model_key_once_listed(cx: &mu
             Some("claude-work"),
             "the kit's, not the first"
         );
-        assert_eq!(making.ticked_services(), ["github-work"]);
+        assert_eq!(
+            making.ticked_services(),
+            ["github-work", "sentry"],
+            "every kit's"
+        );
+        assert_eq!(
+            making.variable_values(),
+            ["NODE_ENV=development"],
+            "the later kit's"
+        );
     });
 }
 

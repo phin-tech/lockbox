@@ -67,6 +67,7 @@ struct ServiceForm {
     key: Entity<InputState>,
     reference: Entity<InputState>,
     environment: Entity<InputState>,
+    keychain: Entity<InputState>,
     saving: bool,
 }
 
@@ -76,6 +77,7 @@ enum From {
     Pasted,
     Reference,
     Environment,
+    Keychain,
 }
 
 /// A kind of provider, as the Kind menu lists it.
@@ -174,6 +176,7 @@ impl Providers {
             key: cx.new(|cx| InputState::new(window, cx).masked(true)),
             reference: field("op://Private/GitHub/token", window, cx),
             environment: field("Environment ID", window, cx),
+            keychain: field("Keychain item", window, cx),
             saving: false,
         });
         cx.notify();
@@ -206,6 +209,7 @@ impl Providers {
             From::Environment => {
                 KeySource::Environment(form.environment.read(cx).value().to_string())
             }
+            From::Keychain => KeySource::Keychain(form.keychain.read(cx).value().to_string()),
         };
         form.saving = true;
         self.failed = None;
@@ -254,7 +258,9 @@ impl Providers {
             Radio::new(id)
                 .label(label.into_owned())
                 .checked(form.from == from)
-                .disabled(form.saving || (from != From::Pasted && !has_op))
+                .disabled(
+                    form.saving || (matches!(from, From::Reference | From::Environment) && !has_op),
+                )
                 .on_click(cx.listener(move |this, _, _, cx| {
                     if let Some(form) = &mut this.service {
                         form.from = from;
@@ -268,6 +274,12 @@ impl Providers {
                 &form.reference,
                 t!(
                     "In 1Password, a field's menu has Copy Secret Reference. `op` reads it and hands it to OpenShell."
+                ),
+            ),
+            From::Keychain => (
+                &form.keychain,
+                t!(
+                    "The item's name, as Keychain Access shows it under Where. macOS asks once whether `security` may read it."
                 ),
             ),
             From::Environment => (
@@ -322,6 +334,7 @@ impl Providers {
                             .gap_4()
                             .child(from(From::Reference, t!("1Password reference"), "from-reference"))
                             .child(from(From::Environment, t!("1Password Environment"), "from-environment"))
+                            .child(from(From::Keychain, t!("Keychain"), "from-keychain"))
                             .child(from(From::Pasted, t!("Paste"), "from-pasted")),
                     )
                     .child(div().w(rems(20.)).child(small_field(key_field)))

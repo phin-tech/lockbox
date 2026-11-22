@@ -71,6 +71,7 @@ fn plan(name: String, services: Vec<Service>) -> Plan {
         provider: None,
         account: None,
         services,
+        variables: Vec::new(),
         folders: Vec::new(),
     }
 }
@@ -229,4 +230,58 @@ fn a_model_key_from_a_env_file_is_added_as_a_model_key() {
         found.map(|provider| provider.kind).as_deref(),
         Some("playpen-anthropic")
     );
+}
+
+#[test]
+#[ignore = "needs OpenShell's gateway, Docker and the Keychain"]
+fn a_kits_variables_reach_a_new_sandbox_with_a_keychain_secret_fetched_around_openshell() {
+    use playpen_core::{Variable, VariableValue};
+
+    let openshell = OpenShell::find().unwrap();
+    let docker = Docker::find().unwrap();
+    let pid = std::process::id();
+    let item = format!("playpen-test-{pid}");
+    // Made by `security`, so `security` may read it back without asking.
+    Command::new("/usr/bin/security")
+        .args([
+            "add-generic-password",
+            "-s",
+            &item,
+            "-a",
+            "playpen",
+            "-w",
+            "kc-secret-456",
+        ])
+        .output()
+        .unwrap();
+    let plan = Plan {
+        variables: vec![
+            Variable {
+                name: "NODE_ENV".to_string(),
+                value: VariableValue::Value("development".to_string()),
+            },
+            Variable {
+                name: "FROM_KEYCHAIN".to_string(),
+                value: VariableValue::Keychain(item.clone()),
+            },
+        ],
+        ..plan(format!("pp-vars-{pid}"), Vec::new())
+    };
+    let tried = plan
+        .make(&openshell, &docker, |_| {})
+        .map_err(|error| error.to_string())
+        .and_then(|()| {
+            once_ready(&openshell, &plan.name)?;
+            Ok(exec(
+                &openshell,
+                &plan.name,
+                &["sh", "-c", "echo $NODE_ENV $FROM_KEYCHAIN"],
+            ))
+        });
+    let _ = openshell.delete(&plan.name);
+    Command::new("/usr/bin/security")
+        .args(["delete-generic-password", "-s", &item])
+        .output()
+        .unwrap();
+    assert_eq!(tried.unwrap(), "development kc-secret-456");
 }

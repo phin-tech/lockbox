@@ -96,6 +96,22 @@ pub fn guess(variable: &str) -> Guess {
     }
 }
 
+/// Whether a variable's name says it holds a secret.
+pub fn looks_secret(variable: &str) -> bool {
+    [
+        "TOKEN",
+        "KEY",
+        "SECRET",
+        "PASSWORD",
+        "PASSWD",
+        "AUTH",
+        "CREDENTIAL",
+        "PRIVATE",
+    ]
+    .iter()
+    .any(|word| variable.to_ascii_uppercase().contains(word))
+}
+
 /// A provider name made from a variable's: `github` for `GITHUB_TOKEN`, `stripe` for `STRIPE_SECRET_KEY`.
 pub fn suggested_name(variable: &str) -> String {
     let mut name = variable.to_ascii_lowercase();

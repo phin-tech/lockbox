@@ -2,9 +2,12 @@
 //! call to OpenShell runs off the window's thread. A key goes from its field to OpenShell and nowhere else: it isn't
 //! kept, logged or shown again.
 
-use gpui_kit::component::input::{Input, InputState};
+use std::path::PathBuf;
+
+use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::searchable_list::SearchableVec;
 use gpui_kit::component::select::{Select, SelectEvent, SelectItem, SelectState};
+use gpui_kit::component::tag::Tag;
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Sizable as _, StyledExt as _,
     button::{Button, ButtonVariants as _},
@@ -19,14 +22,16 @@ use std::time::{Duration, Instant};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::radio::Radio;
 use playpen_core::{
-    Access, Account, ChatGptError, DeviceCode, Gateway, Key, KeySource, Kind, Login, NewProvider,
-    NewService, OpenShell, Provider, ProviderError, TokenSignIn, find_claude, find_codex, find_op,
+    Access, Account, ChatGptError, DeviceCode, Endpoint, Gateway, Key, KeySource, Kind, Login,
+    NewProvider, NewService, OpenShell, Provider, ProviderError, ServiceAuth, ServiceCatalog,
+    ServiceCategory, TokenSignIn, find_claude, find_codex, find_op,
 };
 use playpen_core::{
     KeepKeysIn, KeyHome, KeyHomeError, KeyHomes, keychain_service, save_in_1password,
     save_in_keychain,
 };
 use rust_i18n::t;
+use typecase::shell;
 
 /// The gateway the main window shows, which a provider is for: OpenShell keeps each in the gateway that holds it, so
 /// Settings acts on the one whose sandboxes are in front of the person.
@@ -102,18 +107,35 @@ struct ClaudeSignIn {
     _waiting: Task<()>,
 }
 
-/// Adding a service: a key for something other than a model, sent to the one host given.
+/// Adding a service: pick from the bundled curated services JSON (or a shared JSON catalog) or fill in a custom
+/// host and variable.
 struct ServiceForm {
+    catalog: ServiceCatalog,
+    catalog_errors: Vec<String>,
+    search: Entity<InputState>,
+    category: Option<ServiceCategory>,
+    /// The preset currently applied, if any.
+    chosen_preset: Option<String>,
     name: Entity<InputState>,
     address: Entity<InputState>,
+    extra_endpoints: Vec<Endpoint>,
     variable: Entity<InputState>,
+    auth_header: bool,
+    header: Entity<InputState>,
     access: Access,
     from: From,
     key: Entity<InputState>,
     reference: Entity<InputState>,
     environment: Entity<InputState>,
     keychain: Entity<InputState>,
+    /// Optional Keychain account name paired with `keychain` (such as Patchbay's `gateway/token`).
+    keychain_account: Option<String>,
+    /// Where to create a key for the chosen preset.
+    help: Option<String>,
+    /// Extra guidance for the chosen preset (e.g. Patchbay, GCP, AWS Bedrock, Datadog).
+    preset_note: Option<String>,
     saving: bool,
+    _subscriptions: Vec<Subscription>,
 }
 
 /// Where a service's key comes from, as the form offers it.
@@ -257,20 +279,50 @@ impl Providers {
         }));
     }
 
-    /// Opens the form for a new service.
+    /// Opens the form for a new service, with the bundled common services catalog ready to pick from.
     pub(crate) fn start_adding_service(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let field = |placeholder: &str, window: &mut Window, cx: &mut Context<Self>| {
             let placeholder = placeholder.to_string();
             cx.new(|cx| InputState::new(window, cx).placeholder(placeholder))
         };
-        let name = field("github", window, cx);
-        name.read(cx).focus_handle(cx).focus(window, cx);
+        let dir = crate::settings::file("settings.toml")
+            .and_then(|path| path.parent().map(PathBuf::from));
+        let (catalog, catalog_errors) = ServiceCatalog::load(dir.as_deref());
+        let search = field(
+            "Search Patchbay, GitHub, Cloudflare, Statsig, GCP…",
+            window,
+            cx,
+        );
+        let keychain = field("Keychain item", window, cx);
+        let subscriptions = vec![
+            cx.subscribe(&search, |_, _, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) {
+                    cx.notify();
+                }
+            }),
+            cx.subscribe(&keychain, |this, _, event: &InputEvent, _| {
+                if matches!(event, InputEvent::Change)
+                    && let Some(form) = &mut this.service
+                {
+                    form.keychain_account = None;
+                }
+            }),
+        ];
+        search.read(cx).focus_handle(cx).focus(window, cx);
         self.form = None;
         self.failed = None;
         self.service = Some(ServiceForm {
-            name,
+            catalog,
+            catalog_errors,
+            search,
+            category: None,
+            chosen_preset: None,
+            name: field("github", window, cx),
             address: field("api.github.com", window, cx),
+            extra_endpoints: Vec::new(),
             variable: field("GITHUB_TOKEN", window, cx),
+            auth_header: false,
+            header: field("STATSIG-API-KEY", window, cx),
             access: Access::ReadOnly,
             from: if find_op().is_some() {
                 From::Reference
@@ -280,13 +332,139 @@ impl Providers {
             key: cx.new(|cx| InputState::new(window, cx).masked(true)),
             reference: field("op://Private/GitHub/token", window, cx),
             environment: field("Environment ID", window, cx),
-            keychain: field("Keychain item", window, cx),
+            keychain,
+            keychain_account: None,
+            help: None,
+            preset_note: None,
             saving: false,
+            _subscriptions: subscriptions,
         });
         cx.notify();
     }
 
-    /// Adds the service, off the window's thread. A 1Password key goes from `op` to OpenShell, never through here.
+    /// Applies a service preset from the catalog into the form fields, leaving everything editable.
+    fn apply_service_preset(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(form) = &mut self.service else {
+            return;
+        };
+        let Some(preset) = form.catalog.find(id).cloned() else {
+            return;
+        };
+        let host = preset.resolved_host();
+        let auth = preset.service_auth();
+        let extra = preset.extra_endpoints();
+        form.chosen_preset = Some(preset.id.clone());
+        form.name.update(cx, |field, cx| {
+            field.set_value(preset.id.clone(), window, cx)
+        });
+        form.address
+            .update(cx, |field, cx| field.set_value(host, window, cx));
+        form.extra_endpoints = extra;
+        form.variable.update(cx, |field, cx| {
+            field.set_value(preset.variable.clone(), window, cx)
+        });
+        match auth {
+            ServiceAuth::Bearer => {
+                form.auth_header = false;
+                form.header
+                    .update(cx, |field, cx| field.set_value("", window, cx));
+            }
+            ServiceAuth::Header(header) => {
+                form.auth_header = true;
+                form.header
+                    .update(cx, |field, cx| field.set_value(header, window, cx));
+            }
+        }
+        form.access = preset.access.into();
+        form.help = preset.help.clone();
+        form.preset_note = preset.note.clone();
+        if let Some(service) = &preset.keychain_service {
+            form.from = From::Keychain;
+            form.keychain
+                .update(cx, |field, cx| field.set_value(service.clone(), window, cx));
+            // Set after `set_value` so the change subscription doesn't clear the preset's account.
+            form.keychain_account = preset.keychain_account.clone();
+        } else {
+            form.keychain_account = None;
+            let focus_field = match form.from {
+                From::Pasted => &form.key,
+                From::Reference => &form.reference,
+                From::Environment => &form.environment,
+                From::Keychain => &form.keychain,
+            };
+            focus_field.read(cx).focus_handle(cx).focus(window, cx);
+        }
+        self.failed = None;
+        cx.notify();
+    }
+
+    /// Loads a shared service catalog JSON file into Playpen's Application Support `services/` folder.
+    fn import_service_catalog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(dir) = crate::settings::file("settings.toml")
+            .and_then(|path| path.parent().map(PathBuf::from))
+        else {
+            return;
+        };
+        let chosen = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some(t!("Load Services JSON").into_owned().into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(paths))) = chosen.await else {
+                return;
+            };
+            let Some(path) = paths.into_iter().next() else {
+                return;
+            };
+            let imported = ServiceCatalog::import_file(&dir, &path);
+            let _ = this.update(cx, |this, cx| {
+                match imported {
+                    Ok(_) => {
+                        this.failed = None;
+                        if let Some(form) = &mut this.service {
+                            let (catalog, errors) = ServiceCatalog::load(Some(&dir));
+                            form.catalog = catalog;
+                            form.catalog_errors = errors;
+                        }
+                    }
+                    Err(error) => this.failed = Some(error.to_string()),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Exports the current service catalog as a shareable pretty-printed JSON file.
+    fn export_service_catalog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let json = match &self.service {
+            Some(form) => form.catalog.export_json(&[]),
+            None => ServiceCatalog::builtin().export_json(&[]),
+        };
+        let folder = std::env::var_os("HOME").map_or_else(
+            || PathBuf::from("/"),
+            |home| PathBuf::from(home).join("Desktop"),
+        );
+        let chosen = cx.prompt_for_new_path(&folder, Some("playpen-services.json"));
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(path))) = chosen.await else {
+                return;
+            };
+            let written = playpen_core::write_atomically(&path, json.as_bytes());
+            if let Err(error) = written {
+                let _ = this.update(cx, |this, cx| {
+                    this.failed = Some(error.to_string());
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
+    }
+
+    /// Adds the service, off the window's thread. A 1Password or Keychain secret goes straight to OpenShell, never
+    /// through here.
     fn save_service(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(form) = &mut self.service else {
             return;
@@ -294,13 +472,26 @@ impl Providers {
         if form.saving {
             return;
         }
+        let auth = if form.auth_header {
+            let header = form.header.read(cx).value().trim().to_string();
+            if header.is_empty() {
+                self.failed = Some(t!("Give the header name for this service's key.").into_owned());
+                cx.notify();
+                return;
+            }
+            ServiceAuth::Header(header)
+        } else {
+            ServiceAuth::Bearer
+        };
         let new = match NewService::new(
             &form.name.read(cx).value(),
             &form.address.read(cx).value(),
             &form.variable.read(cx).value(),
             form.access,
         ) {
-            Ok(new) => new,
+            Ok(new) => new
+                .with_auth(auth)
+                .with_extra_endpoints(form.extra_endpoints.clone()),
             Err(error) => {
                 self.failed = Some(error.to_string());
                 cx.notify();
@@ -313,7 +504,16 @@ impl Providers {
             From::Environment => {
                 KeySource::Environment(form.environment.read(cx).value().to_string())
             }
-            From::Keychain => KeySource::Keychain(form.keychain.read(cx).value().to_string()),
+            From::Keychain => {
+                let service = form.keychain.read(cx).value().to_string();
+                match &form.keychain_account {
+                    Some(account) => KeySource::KeychainAccount {
+                        service,
+                        account: account.clone(),
+                    },
+                    None => KeySource::Keychain(service),
+                }
+            }
         };
         form.saving = true;
         self.failed = None;
@@ -349,7 +549,37 @@ impl Providers {
     }
 
     fn service_form(&self, form: &ServiceForm, cx: &Context<Self>) -> Div {
+        let theme = cx.theme();
         let has_op = find_op().is_some();
+        let query = form.search.read(cx).value().trim().to_string();
+        let presets = form.catalog.filter(&query, form.category);
+        let category_chip =
+            |id: &'static str, label: String, active: bool, category: Option<ServiceCategory>| {
+                let button = Button::new(id).xsmall().label(label).disabled(form.saving);
+                let button = if active {
+                    button.outline()
+                } else {
+                    button.ghost()
+                };
+                button.on_click(cx.listener(move |this, _, _, cx| {
+                    if let Some(form) = &mut this.service {
+                        form.category = category;
+                        cx.notify();
+                    }
+                }))
+            };
+        let auth_choice = |custom: bool, label: std::borrow::Cow<str>, id: &'static str| {
+            Radio::new(id)
+                .label(label.into_owned())
+                .checked(form.auth_header == custom)
+                .disabled(form.saving)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if let Some(form) = &mut this.service {
+                        form.auth_header = custom;
+                        cx.notify();
+                    }
+                }))
+        };
         let access = |access: Access, label: std::borrow::Cow<str>, id: &'static str| {
             Radio::new(id)
                 .label(label.into_owned())
@@ -386,9 +616,15 @@ impl Providers {
             ),
             From::Keychain => (
                 &form.keychain,
-                t!(
-                    "The item's name, as Keychain Access shows it under Where. macOS asks once whether `security` may read it."
-                ),
+                match &form.keychain_account {
+                    Some(account) => t!(
+                        "Reads the Keychain item for account “%{account}”. macOS asks once whether `security` may read it.",
+                        account = account
+                    ),
+                    None => t!(
+                        "The item's name, as Keychain Access shows it under Where. macOS asks once whether `security` may read it."
+                    ),
+                },
             ),
             From::Environment => (
                 &form.environment,
@@ -397,20 +633,211 @@ impl Providers {
                 ),
             ),
         };
+        let preset_list = v_flex()
+            .gap_2()
+            .when(!form.catalog_errors.is_empty(), |box_| {
+                box_.children(form.catalog_errors.iter().map(|error| {
+                    div()
+                        .text_sm()
+                        .text_color(theme.warning)
+                        .child(error.clone())
+                }))
+            })
+            .child(small_field(&form.search))
+            .child(
+                h_flex()
+                    .gap_1()
+                    .flex_wrap()
+                    .child(category_chip(
+                        "svc-cat-all",
+                        t!("All").into_owned(),
+                        form.category.is_none(),
+                        None,
+                    ))
+                    .children(ServiceCategory::ALL.into_iter().map(|category| {
+                        let id = match category {
+                            ServiceCategory::Gateway => "svc-cat-gateway",
+                            ServiceCategory::Cloud => "svc-cat-cloud",
+                            ServiceCategory::Code => "svc-cat-code",
+                            ServiceCategory::Observability => "svc-cat-observability",
+                            ServiceCategory::Databases => "svc-cat-databases",
+                            ServiceCategory::Productivity => "svc-cat-productivity",
+                            ServiceCategory::Packages => "svc-cat-packages",
+                        };
+                        category_chip(
+                            id,
+                            t!(category.label()).into_owned(),
+                            form.category == Some(category),
+                            Some(category),
+                        )
+                    })),
+            )
+            .child(
+                div()
+                    .id("service-presets")
+                    .max_h(rems(13.))
+                    .overflow_y_scroll()
+                    .rounded(theme.radius)
+                    .border_1()
+                    .border_color(theme.border)
+                    .p_1p5()
+                    .child(
+                        v_flex()
+                            .gap_1()
+                            .when(presets.is_empty(), |list| {
+                                list.child(div().p_2().child(note(
+                                    t!("No bundled services match. Fill in the fields below for any custom host."),
+                                    cx,
+                                )))
+                            })
+                            .children(presets.into_iter().map(|preset| {
+                                let id = preset.id.clone();
+                                let selected =
+                                    form.chosen_preset.as_deref() == Some(preset.id.as_str());
+                                let hover = theme.list_hover;
+                                let host_label = if preset.extra_hosts.is_empty() {
+                                    preset.resolved_host()
+                                } else {
+                                    t!(
+                                        "%{host} +%{more} more",
+                                        host = preset.resolved_host(),
+                                        more = preset.extra_hosts.len()
+                                    )
+                                    .into_owned()
+                                };
+                                h_flex()
+                                    .id(SharedString::from(format!("preset-{id}")))
+                                    .items_center()
+                                    .justify_between()
+                                    .gap_2()
+                                    .px_2()
+                                    .py_1p5()
+                                    .rounded(theme.radius)
+                                    .cursor_pointer()
+                                    .when(selected, |row| row.bg(theme.list_active))
+                                    .when(!selected, |row| row.hover(move |row| row.bg(hover)))
+                                    .on_click(cx.listener({
+                                        let id = id.clone();
+                                        move |this, _, window, cx| {
+                                            this.apply_service_preset(&id, window, cx);
+                                        }
+                                    }))
+                                    .child(
+                                        v_flex()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .child(
+                                                h_flex()
+                                                    .gap_1p5()
+                                                    .items_center()
+                                                    .flex_wrap()
+                                                    .child(
+                                                        div()
+                                                            .font_medium()
+                                                            .child(preset.name.clone()),
+                                                    )
+                                                    .when_some(
+                                                        preset.source.clone(),
+                                                        |row, source| {
+                                                            row.child(
+                                                                shell::badge(Tag::secondary())
+                                                                    .xsmall()
+                                                                    .child(source),
+                                                            )
+                                                        },
+                                                    ),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_sm()
+                                                    .text_color(theme.muted_foreground)
+                                                    .truncate()
+                                                    .child(preset.summary.clone()),
+                                            ),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_none()
+                                            .child(shell::code_chip(host_label, cx)),
+                                    )
+                            })),
+                    ),
+            );
+
         v_flex()
             .gap_3()
             .p_3()
-            .rounded(cx.theme().radius)
+            .rounded(theme.radius)
             .border_1()
-            .border_color(cx.theme().border)
-            .child(div().font_semibold().child(t!("Add a Service").into_owned()))
-            .child(field(t!("Name"), div().w(rems(16.)).child(small_field(&form.name)), cx))
+            .border_color(theme.border)
+            .child(
+                h_flex()
+                    .justify_between()
+                    .items_center()
+                    .gap_2()
+                    .child(div().font_semibold().child(t!("Add a Service").into_owned()))
+                    .child(
+                        h_flex()
+                            .gap_1()
+                            .child(
+                                Button::new("import-services-json")
+                                    .ghost()
+                                    .xsmall()
+                                    .disabled(form.saving)
+                                    .label(t!("Load JSON…").into_owned())
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.import_service_catalog(window, cx);
+                                    })),
+                            )
+                            .child(
+                                Button::new("export-services-json")
+                                    .ghost()
+                                    .xsmall()
+                                    .disabled(form.saving)
+                                    .label(t!("Export JSON…").into_owned())
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.export_service_catalog(window, cx);
+                                    })),
+                            ),
+                    ),
+            )
+            .child(field(t!("Common services"), preset_list, cx))
+            .when_some(form.preset_note.clone(), |this, text| {
+                this.child(
+                    div()
+                        .p_2()
+                        .rounded(theme.radius)
+                        .bg(theme.group_box)
+                        .child(note(text.into(), cx)),
+                )
+            })
+            .child(field(
+                t!("Name"),
+                div().w(rems(16.)).child(small_field(&form.name)),
+                cx,
+            ))
             .child(field(
                 t!("Host"),
                 v_flex()
                     .gap_1()
                     .child(div().w(rems(20.)).child(small_field(&form.address)))
-                    .child(note(t!("The only host its key is sent to."), cx)),
+                    .when(!form.extra_endpoints.is_empty(), |col| {
+                        col.child(
+                            h_flex().gap_1().flex_wrap().children(
+                                form.extra_endpoints.iter().map(|endpoint| {
+                                    shell::code_chip(endpoint.host.clone(), cx)
+                                }),
+                            ),
+                        )
+                    })
+                    .child(note(
+                        if form.extra_endpoints.is_empty() {
+                            t!("The only host its key is sent to.")
+                        } else {
+                            t!("The only hosts its key is sent to.")
+                        },
+                        cx,
+                    )),
                 cx,
             ))
             .child(field(
@@ -418,8 +845,21 @@ impl Providers {
                 v_flex()
                     .gap_1()
                     .child(div().w(rems(16.)).child(small_field(&form.variable)))
+                    .child(
+                        h_flex()
+                            .gap_4()
+                            .child(auth_choice(false, t!("Bearer token"), "auth-bearer"))
+                            .child(auth_choice(true, t!("Custom header"), "auth-header")),
+                    )
+                    .when(form.auth_header, |col| {
+                        col.child(div().w(rems(16.)).child(small_field(&form.header)))
+                    })
                     .child(note(
-                        t!("Where programs in the sandbox find its stand-in, sent as a bearer token."),
+                        if form.auth_header {
+                            t!("Where programs in the sandbox find its stand-in, sent in the header named above.")
+                        } else {
+                            t!("Where programs in the sandbox find its stand-in, sent as a bearer token.")
+                        },
                         cx,
                     )),
                 cx,
@@ -441,11 +881,29 @@ impl Providers {
                             .flex_wrap()
                             .gap_4()
                             .child(from(From::Reference, t!("1Password reference"), "from-reference"))
-                            .child(from(From::Environment, t!("1Password Environment"), "from-environment"))
+                            .child(from(
+                                From::Environment,
+                                t!("1Password Environment"),
+                                "from-environment",
+                            ))
                             .child(from(From::Keychain, t!("Keychain"), "from-keychain"))
                             .child(from(From::Pasted, t!("Paste"), "from-pasted")),
                     )
-                    .child(div().w(rems(20.)).child(small_field(key_field)))
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .child(div().w(rems(20.)).child(small_field(key_field)))
+                            .when_some(form.help.clone(), |row, url| {
+                                row.child(
+                                    Button::new("service-help")
+                                        .link()
+                                        .xsmall()
+                                        .label(t!("Get a key").into_owned())
+                                        .on_click(move |_, _, cx| cx.open_url(&url)),
+                                )
+                            }),
+                    )
                     .child(note(key_note, cx))
                     .when(!has_op, |this| {
                         this.child(note(

@@ -27,6 +27,16 @@ impl Access {
     }
 }
 
+/// How a service's key is sent on each request.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum ServiceAuth {
+    /// `Authorization: Bearer <key>`.
+    #[default]
+    Bearer,
+    /// The key alone in `header_name` (such as `STATSIG-API-KEY`, `DD-API-KEY`, `X-Figma-Token`).
+    Header(String),
+}
+
 /// Where a service's key comes from.
 #[derive(Debug)]
 pub enum KeySource {
@@ -38,14 +48,19 @@ pub enum KeySource {
     Environment(String),
     /// A Keychain item, by its service name, which `security` reads.
     Keychain(String),
+    /// A Keychain item by both service and account name (such as Patchbay's `Patchbay` / `gateway/token`).
+    KeychainAccount { service: String, account: String },
 }
 
-/// A service to add: its name, the host its key goes to, the variable its key is in, and what it allows.
+/// A service to add: its name, the host(s) its key goes to, the variable its key is in, how it authenticates, and
+/// what it allows.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewService {
     pub name: String,
     pub endpoint: Endpoint,
+    pub extra_endpoints: Vec<Endpoint>,
     pub variable: String,
+    pub auth: ServiceAuth,
     pub access: Access,
 }
 
@@ -76,20 +91,36 @@ impl NewService {
         Ok(NewService {
             name,
             endpoint: Endpoint::from_address(address)?,
+            extra_endpoints: Vec::new(),
             variable,
+            auth: ServiceAuth::Bearer,
             access,
         })
+    }
+
+    pub fn with_auth(mut self, auth: ServiceAuth) -> NewService {
+        self.auth = auth;
+        self
+    }
+
+    pub fn with_extra_endpoints(mut self, endpoints: Vec<Endpoint>) -> NewService {
+        self.extra_endpoints = endpoints;
+        self
     }
 
     pub fn profile_id(&self) -> String {
         format!("{SERVICE_PREFIX}{}", self.name)
     }
 
-    /// Its profile, as YAML: the key in `variable`, as a bearer token, to the one host. OpenShell has no category for
-    /// services, so it's `other`; Playpen knows its own by the id.
+    /// Its profile, as YAML: the key in `variable`, sent to its host(s). OpenShell has no category for services, so
+    /// it's `other`; Playpen knows its own by the id.
     pub fn profile(&self) -> String {
         let Endpoint { host, port } = &self.endpoint;
-        format!(
+        let (auth_style, header_name) = match &self.auth {
+            ServiceAuth::Bearer => ("bearer", "authorization"),
+            ServiceAuth::Header(header) => ("header", header.as_str()),
+        };
+        let mut yaml = format!(
             "# Written by Playpen.\n\
              id: {id}\n\
              display_name: {display}\n\
@@ -100,22 +131,56 @@ impl NewService {
              \x20   description: {key}\n\
              \x20   env_vars: [{variable}]\n\
              \x20   required: true\n\
-             \x20   auth_style: bearer\n\
-             \x20   header_name: authorization\n\
-             endpoints:\n\
-             \x20 - host: {host}\n\
-             \x20   port: {port}\n\
-             \x20   protocol: rest\n\
-             \x20   access: {access}\n\
-             \x20   enforcement: enforce\n",
+             \x20   auth_style: {auth_style}\n\
+             \x20   header_name: {header_name}\n\
+             endpoints:\n",
             id = self.profile_id(),
             display = yaml_string(&format!("{} ({host})", self.name)),
             description = yaml_string(&format!("A service at {host}:{port}, added by Playpen")),
             key = yaml_string(&format!("{} key", self.name)),
             variable = self.variable,
-            access = self.access.word(),
-        )
+        );
+        for endpoint in std::iter::once(&self.endpoint).chain(&self.extra_endpoints) {
+            yaml.push_str(&format!(
+                "\x20 - host: {host}\n\
+                 \x20   port: {port}\n\
+                 \x20   protocol: rest\n\
+                 \x20   access: {access}\n\
+                 \x20   enforcement: enforce\n",
+                host = endpoint.host,
+                port = endpoint.port,
+                access = self.access.word(),
+            ));
+        }
+        yaml
     }
+}
+
+/// Patchbay's running gateway port on this Mac, read from its `gateway.toml`, or its default (`7357`).
+pub fn patchbay_port() -> u16 {
+    let path = std::env::var_os("PATCHBAY_HOME")
+        .map(|root| PathBuf::from(root).join("gateway.toml"))
+        .or_else(|| {
+            std::env::var_os("HOME").map(|home| {
+                PathBuf::from(home)
+                    .join("Library/Application Support/tech.phin.patchbay/gateway.toml")
+            })
+        });
+    let Some(path) = path else {
+        return 7357;
+    };
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return 7357;
+    };
+    let Ok(table) = text.parse::<toml::Table>() else {
+        return 7357;
+    };
+    table
+        .get("port")
+        .and_then(toml::Value::as_integer)
+        .and_then(|port| u16::try_from(port).ok())
+        .filter(|port| *port != 0)
+        .unwrap_or(7357)
 }
 
 /// `text` as a double-quoted YAML string.
@@ -161,6 +226,15 @@ pub(crate) fn with_key(
         KeySource::Keychain(service) => wrap(
             command,
             &secret(Secret::Keychain(service.clone())),
+            None,
+            op,
+        ),
+        KeySource::KeychainAccount { service, account } => wrap(
+            command,
+            &secret(Secret::KeychainAccount {
+                service: service.clone(),
+                account: account.clone(),
+            }),
             None,
             op,
         ),

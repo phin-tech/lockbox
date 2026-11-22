@@ -21,6 +21,7 @@ mod new_service;
 mod openshell;
 mod provider;
 mod secrets;
+pub mod service_catalog;
 pub mod session;
 mod settings;
 mod state;
@@ -48,7 +49,7 @@ pub use kit_setup::SetupFolder;
 pub use kits::{Kit, Kits, Variable, VariableValue};
 pub use links::{link_target, path_from_file_url};
 pub use locale::best_locale;
-pub use new_service::{Access, KeySource, NewService, find_op};
+pub use new_service::{Access, KeySource, NewService, ServiceAuth, find_op, patchbay_port};
 pub use openshell::{
     Activity, Forgotten, Forward, Forwards, GATEWAY_VARIABLE, Gateway, GatewayInfo, Key,
     ListedForward, MICROVM_GATEWAY, MicroVm, MicroVmError, MicroVmPlaces, MicroVmSize, Missing,
@@ -58,6 +59,10 @@ pub use openshell::{
 };
 pub use provider::{Endpoint, Kind, NewProvider, ProviderError};
 pub use secrets::Secret;
+pub use service_catalog::{
+    PresetAccess, PresetAuth, ServiceCatalog, ServiceCatalogError, ServiceCatalogFile,
+    ServiceCategory, ServicePreset,
+};
 pub use session::{Installed, Keep, Opened, Place, SessionError, ShowIn, What};
 pub use settings::{
     Appearance, GatewaySettings, ImageSourceError, ImagesFrom, KeepKeysIn, Settings, TEXT_SCALES,

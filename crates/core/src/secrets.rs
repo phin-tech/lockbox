@@ -13,6 +13,8 @@ pub enum Secret {
     Reference(String),
     /// A Keychain item's service name, as Keychain Access shows it under Where for a password.
     Keychain(String),
+    /// A Keychain item by both service and account name (such as Patchbay's `Patchbay` / `gateway/token`).
+    KeychainAccount { service: String, account: String },
 }
 
 /// A command to run, with what to set in its environment first.
@@ -37,25 +39,43 @@ pub fn wrap(
 ) -> Result<Wrapped, ProviderError> {
     let mut command = command;
     let mut env = Vec::new();
-    let keychain: Vec<(&String, &String)> = secrets
+    let keychain: Vec<(&String, &String, Option<&String>)> = secrets
         .iter()
         .filter_map(|(variable, secret)| match secret {
-            Secret::Keychain(service) => Some((variable, service)),
+            Secret::Keychain(service) => Some((variable, service, None)),
+            Secret::KeychainAccount { service, account } => {
+                Some((variable, service, Some(account)))
+            }
             Secret::Reference(_) => None,
         })
         .collect();
     if !keychain.is_empty() {
-        // Each item's service is an argument, never part of the script, so no name can change what it runs.
+        // Each item's service (and optional account) is an argument, never part of the script, so no name can change
+        // what it runs.
         let mut script = String::new();
-        let mut services = Vec::new();
-        for (variable, service) in keychain {
+        let mut args = Vec::new();
+        for (variable, service, account) in keychain {
             if service.trim().is_empty() {
                 return Err(ProviderError::Keychain);
             }
-            script.push_str(&format!(
-                "{variable}=\"$({SECURITY} find-generic-password -s \"$1\" -w)\" || exit 1; export {variable}; shift; "
-            ));
-            services.push(service.trim().to_string());
+            match account {
+                Some(account) => {
+                    if account.trim().is_empty() {
+                        return Err(ProviderError::Keychain);
+                    }
+                    script.push_str(&format!(
+                        "{variable}=\"$({SECURITY} find-generic-password -s \"$1\" -a \"$2\" -w)\" || exit 1; export {variable}; shift 2; "
+                    ));
+                    args.push(service.trim().to_string());
+                    args.push(account.trim().to_string());
+                }
+                None => {
+                    script.push_str(&format!(
+                        "{variable}=\"$({SECURITY} find-generic-password -s \"$1\" -w)\" || exit 1; export {variable}; shift; "
+                    ));
+                    args.push(service.trim().to_string());
+                }
+            }
         }
         script.push_str("exec \"$@\"");
         let mut shell = vec![
@@ -64,7 +84,7 @@ pub fn wrap(
             script,
             "sh".to_string(),
         ];
-        shell.extend(services);
+        shell.extend(args);
         shell.extend(command);
         command = shell;
     }
@@ -72,7 +92,7 @@ pub fn wrap(
         .iter()
         .filter_map(|(variable, secret)| match secret {
             Secret::Reference(reference) => Some((variable, reference)),
-            Secret::Keychain(_) => None,
+            Secret::Keychain(_) | Secret::KeychainAccount { .. } => None,
         })
         .collect();
     if !references.is_empty() || environment.is_some() {
@@ -163,5 +183,26 @@ mod tests {
             wrap(openshell(), &secrets, None, None),
             Err(ProviderError::NoOp)
         ));
+    }
+
+    #[test]
+    fn a_keychain_item_with_an_account_passes_both_service_and_account_to_security() {
+        let wrapped = wrap(
+            openshell(),
+            &[(
+                "PATCHBAY_TOKEN".to_string(),
+                Secret::KeychainAccount {
+                    service: "Patchbay".to_string(),
+                    account: "gateway/token".to_string(),
+                },
+            )],
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(wrapped.program, Path::new("/bin/sh"));
+        assert!(wrapped.args[1].contains("-s \"$1\" -a \"$2\" -w"));
+        assert_eq!(wrapped.args[3], "Patchbay");
+        assert_eq!(wrapped.args[4], "gateway/token");
     }
 }

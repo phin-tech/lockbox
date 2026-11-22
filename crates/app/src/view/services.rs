@@ -12,7 +12,7 @@ use super::*;
 #[derive(Default)]
 pub(super) struct Services {
     /// The sandbox it's about.
-    sandbox: Option<String>,
+    sandbox: Option<SandboxKey>,
     /// The providers attached to it, by name, or why they couldn't be listed.
     attached: Option<Result<Vec<String>, String>>,
     /// Every provider and profile, to say which can be attached.
@@ -30,20 +30,20 @@ impl MainView {
             return;
         }
         self.look_up_repos(cx);
-        let Some(name) = self.selected.clone() else {
+        let Some(key) = self.selected.clone() else {
             return;
         };
-        if self.services.sandbox.as_ref() != Some(&name) {
+        if self.services.sandbox.as_ref() != Some(&key) {
             self.services.attached = None;
         }
-        self.services.sandbox = Some(name.clone());
-        let Ok(openshell) = self.openshell() else {
+        self.services.sandbox = Some(key.clone());
+        let Ok(openshell) = self.openshell_for(&key.gateway) else {
             return;
         };
         self.services._asking = Some(cx.spawn(async move |this, cx| {
             let (attached, catalog) = cx
                 .background_spawn({
-                    let name = name.clone();
+                    let name = key.name.clone();
                     async move {
                         let attached = openshell
                             .attached(&name)
@@ -61,7 +61,7 @@ impl MainView {
                 .await;
             let _ = this.update(cx, |this, cx| {
                 // Only if it's still the one chosen.
-                if this.services.sandbox.as_ref() == Some(&name) {
+                if this.services.sandbox.as_ref() == Some(&key) {
                     this.services.attached = Some(attached);
                     if catalog.is_some() {
                         this.services.catalog = catalog;
@@ -74,13 +74,14 @@ impl MainView {
 
     /// Attaches `service` to the chosen sandbox, or detaches it, off the window's thread.
     fn change_service(&mut self, service: Service, attach: bool, cx: &mut Context<Self>) {
-        let Some(name) = self.selected.clone() else {
+        let Some(key) = self.selected.clone() else {
             return;
         };
+        let name = key.name.clone();
         if self.services.changing.is_some() {
             return;
         }
-        let Ok(openshell) = self.openshell() else {
+        let Ok(openshell) = self.openshell_for(&key.gateway) else {
             return;
         };
         self.failed = None;
@@ -127,9 +128,13 @@ impl MainView {
             .filter(|service| kit.services.contains(&service.provider))
             .filter(|service| !attached.contains(&service.provider))
             .collect();
-        let (Some(sandbox), Ok(openshell)) = (self.selected.clone(), self.openshell()) else {
+        let Some(key) = self.selected.clone() else {
             return;
         };
+        let Ok(openshell) = self.openshell_for(&key.gateway) else {
+            return;
+        };
+        let sandbox = key.name;
         if missing.is_empty() || self.services.changing.is_some() {
             return;
         }

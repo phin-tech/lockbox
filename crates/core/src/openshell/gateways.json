@@ -1,0 +1,13 @@
+[
+  {
+    "active": true,
+    "auth": "mtls",
+    "endpoint": "https://localhost:17670",
+    "is_remote": false,
+    "name": "openshell",
+    "remote_host": null,
+    "resolved_host": null,
+    "source": "user",
+    "type": "local"
+  }
+]

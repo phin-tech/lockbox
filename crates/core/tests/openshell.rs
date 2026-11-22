@@ -10,9 +10,9 @@ use std::time::{Duration, Instant};
 
 use playpen_core::{Agent, Docker, OpenShell, Phase, Plan, Sandbox};
 
-/// The sandbox `name` once it's in `phase`, waiting up to a minute for it.
+/// The sandbox `name` once it's in `phase`, waiting up to five minutes for it, since a cluster pulls images first.
 fn once_in(openshell: &OpenShell, name: &str, phase: Phase) -> Result<Sandbox, String> {
-    let deadline = Instant::now() + Duration::from_secs(60);
+    let deadline = Instant::now() + Duration::from_secs(300);
     loop {
         let found = openshell
             .sandboxes()
@@ -107,6 +107,107 @@ fn claude_code_answers_from_a_sandbox_playpen_made() {
     assert!(
         again.to_lowercase().contains("periwinkle"),
         "the folder and the key are still there after a restart: {again}"
+    );
+    eprintln!("steps: {:?}", steps.lock().unwrap());
+}
+
+/// What `command` printed, run in the sandbox on `openshell`'s gateway.
+fn run_in(openshell: &OpenShell, name: &str, workdir: &str, command: &[&str]) -> String {
+    let mut line = Command::new(openshell.binary());
+    if let Some(gateway) = openshell.gateway().name() {
+        line.env(playpen_core::GATEWAY_VARIABLE, gateway);
+    }
+    let output = line
+        .args([
+            "sandbox",
+            "exec",
+            "--name",
+            name,
+            "--no-tty",
+            "--workdir",
+            workdir,
+            "--",
+        ])
+        .args(command)
+        .output()
+        .unwrap();
+    format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    )
+}
+
+#[test]
+#[ignore = "needs a second OpenShell gateway, Docker it shares, and no model: PLAYPEN_TEST_GATEWAY"]
+fn a_sandbox_is_made_on_a_named_gateway_and_is_not_on_the_other() {
+    let gateway =
+        std::env::var("PLAYPEN_TEST_GATEWAY").expect("PLAYPEN_TEST_GATEWAY names a gateway");
+    let active = OpenShell::find().unwrap();
+    let openshell = OpenShell::find()
+        .unwrap()
+        .on(playpen_core::Gateway::named(gateway));
+    let docker = Docker::find().unwrap();
+    let folder = std::env::temp_dir()
+        .join(format!("playpen-gateway-test-{}", std::process::id()))
+        .join("Project");
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(folder.join("NOTES.md"), "The password is periwinkle.\n").unwrap();
+    let plan = Plan {
+        // Short, since a Kubernetes gateway takes names of up to 19 characters where a Docker one takes 63.
+        name: format!("pp-gw-{}", std::process::id()),
+        agent: Agent::ClaudeCode,
+        provider: None,
+        account: None,
+        services: Vec::new(),
+        variables: Vec::new(),
+        setups: Vec::new(),
+        folders: vec![folder],
+    };
+    let steps = std::sync::Mutex::new(Vec::new());
+    let made = plan.make(&openshell, &docker, |step| steps.lock().unwrap().push(step));
+    // Everything is tried before anything is checked, so the sandbox is deleted whatever fails.
+    let tried = made.map_err(|error| error.to_string()).and_then(|()| {
+        let sandbox = once_in(&openshell, &plan.name, Phase::Ready)?;
+        let notes = run_in(
+            &openshell,
+            &plan.name,
+            &plan.workdir(),
+            &["cat", "NOTES.md"],
+        );
+        let elsewhere = active
+            .sandboxes()
+            .map_err(|error| error.to_string())?
+            .iter()
+            .any(|other| other.name == plan.name);
+        openshell
+            .stop(&plan.name)
+            .map_err(|error| error.to_string())?;
+        once_in(&openshell, &plan.name, Phase::Stopped)?;
+        openshell
+            .start(&plan.name)
+            .map_err(|error| error.to_string())?;
+        once_in(&openshell, &plan.name, Phase::Ready)?;
+        let again = run_in(
+            &openshell,
+            &plan.name,
+            &plan.workdir(),
+            &["cat", "NOTES.md"],
+        );
+        Ok((sandbox, notes, elsewhere, again))
+    });
+    let _ = openshell.delete(&plan.name);
+
+    let (sandbox, notes, elsewhere, again) = tried.unwrap();
+    assert_eq!(sandbox.workdir.as_deref(), Some("/sandbox/Project"));
+    assert!(
+        notes.contains("periwinkle"),
+        "the folder was copied in: {notes}"
+    );
+    assert!(!elsewhere, "the other gateway doesn't have it");
+    assert!(
+        again.contains("periwinkle"),
+        "the folder is still there after a stop and start: {again}"
     );
     eprintln!("steps: {:?}", steps.lock().unwrap());
 }

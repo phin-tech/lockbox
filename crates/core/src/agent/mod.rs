@@ -6,11 +6,13 @@ use std::path::{Path, PathBuf};
 use crate::bring_back::Repo;
 use crate::chatgpt::Account;
 use crate::docker::{Docker, DockerError};
+use crate::image::{Image, ImageSource, Platform};
 use crate::kit_setup::{SetupFolder, image_name, link_dotfiles};
 use crate::kits::{Variable, VariableValue};
 use crate::new_service::find_op;
 use crate::openshell::{
-    AGENT_LABEL, FOLDER_ANNOTATION, OpenShell, OpenShellError, Sandbox, Service, WORKDIR_ANNOTATION,
+    AGENT_LABEL, FOLDER_ANNOTATION, GATEWAY_VARIABLE, Gateway, OpenShell, OpenShellError, Sandbox,
+    Service, WORKDIR_ANNOTATION,
 };
 use crate::secrets::Secret;
 use crate::session::What;
@@ -21,13 +23,17 @@ const CLAUDE_CODE_VERSION: &str = "2.1.329";
 /// The Codex release its image is built with.
 const CODEX_VERSION: &str = "0.171.0";
 
-/// Codex's real program, which npm installs for the sandbox's architecture: the Mac's, since Docker on a Mac runs
-/// Linux for the Mac's own chip.
-const CODEX_BINARY: &str = if cfg!(target_arch = "aarch64") {
-    "/usr/local/lib/node_modules/@openai/codex/node_modules/@openai/codex-linux-arm64/vendor/aarch64-unknown-linux-musl/bin/codex"
-} else {
-    "/usr/local/lib/node_modules/@openai/codex/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex"
-};
+/// Codex's real program, which npm installs for the image's platform, so the path depends on it.
+fn codex_binary(platform: Platform) -> &'static str {
+    match platform {
+        Platform::Arm64 => {
+            "/usr/local/lib/node_modules/@openai/codex/node_modules/@openai/codex-linux-arm64/vendor/aarch64-unknown-linux-musl/bin/codex"
+        }
+        Platform::Amd64 => {
+            "/usr/local/lib/node_modules/@openai/codex/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex"
+        }
+    }
+}
 
 /// Where a sandbox's own files are, and where the folders are copied to.
 const SANDBOX_HOME: &str = "/sandbox";
@@ -79,7 +85,16 @@ impl Agent {
 
     /// Builds its image, or builds it again over the one there, as making a sandbox does when there's none.
     pub fn build_image(self, docker: &Docker) -> Result<(), DockerError> {
-        docker.build(&self.image(), self.dockerfile(), &self.build_args())
+        docker.build(&self.image(), self.dockerfile(), &self.build_args(), None)
+    }
+
+    /// What an image source needs to have its image ready.
+    pub(crate) fn build(self) -> Image {
+        Image {
+            tag: self.image(),
+            dockerfile: self.dockerfile(),
+            args: self.build_args(),
+        }
     }
 
     fn dockerfile(self) -> &'static str {
@@ -114,12 +129,12 @@ impl Agent {
 
     /// The program that reaches the model, by its real path in the image. OpenShell matches a rule's binaries by
     /// the path a connection really came from, so `/usr/local/bin/claude`, a link to this, matches nothing.
-    fn binary(self) -> &'static str {
+    fn binary(self, platform: Platform) -> &'static str {
         match self {
             Agent::ClaudeCode => {
                 "/usr/local/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe"
             }
-            Agent::Codex => CODEX_BINARY,
+            Agent::Codex => codex_binary(platform),
         }
     }
 
@@ -157,9 +172,10 @@ impl Agent {
         }
     }
 
-    /// The sandbox's policy: the hosts it needs, from its own binary, and nothing else. A provider adds its own
-    /// rules, but one written for another image names another path, so the agent's are written here too.
-    pub fn policy(self) -> String {
+    /// The sandbox's policy: the hosts it needs, from its own binary in an image for `platform`, and nothing else. A
+    /// provider adds its own rules, but one written for another image names another path, so the agent's are written
+    /// here too.
+    pub fn policy(self, platform: Platform) -> String {
         let mut policy = format!(
             "# Written by Playpen. Everything this doesn't allow is denied.\n\
              version: 1\n\
@@ -173,7 +189,10 @@ impl Agent {
                 "      - host: {host}\n        port: 443\n        protocol: rest\n        access: read-write\n        enforcement: enforce\n"
             ));
         }
-        policy.push_str(&format!("    binaries:\n      - path: {}\n", self.binary()));
+        policy.push_str(&format!(
+            "    binaries:\n      - path: {}\n",
+            self.binary(platform)
+        ));
         policy
     }
 }
@@ -203,6 +222,8 @@ pub struct Plan {
 pub enum Step {
     /// Building the agent's image, which happens once for each version.
     Building,
+    /// Pushing it to the registry a gateway pulls from.
+    Pushing,
     Creating,
     /// Copying the folders in.
     Copying,
@@ -229,6 +250,10 @@ pub enum MakeError {
         "Two of the folders are called “{0}”, and each is copied in under its own name. Leave one out, or rename it."
     )]
     SameFolderName(String),
+    #[error(
+        "A kit that installs software is built into an image with this Mac's Docker, which a gateway that pulls from a registry can't use yet. Use a gateway that shares this Mac's Docker, or leave that kit out."
+    )]
+    KitsNeedLocalDocker,
 }
 
 impl Plan {
@@ -237,9 +262,10 @@ impl Plan {
         image_name(self.agent, &self.setups)
     }
 
-    /// The sandbox's policy: its agent reaching its model, and each service's hosts.
-    pub fn policy(&self) -> String {
-        let mut policy = self.agent.policy();
+    /// The sandbox's policy: its agent reaching its model from its program in an image for `platform`, and each
+    /// service's hosts.
+    pub fn policy(&self, platform: Platform) -> String {
+        let mut policy = self.agent.policy(platform);
         for service in &self.services {
             policy.push_str(&service.policy());
         }
@@ -262,15 +288,15 @@ impl Plan {
             .map(|name| name.to_string_lossy().into_owned())
     }
 
-    /// What follows `openshell sandbox create`, with the policy at `policy`. The sandbox starts with no command and
-    /// stays up, so its agent can be opened, closed and opened again; the folder is copied in after, since OpenShell
-    /// can't copy before a command it's given.
-    pub fn create_args(&self, policy: &Path) -> Vec<String> {
+    /// What follows `openshell sandbox create`, with the policy at `policy`, from the image `image` its source gave.
+    /// The sandbox starts with no command and stays up, so its agent can be opened, closed and opened again; the folder
+    /// is copied in after, since OpenShell can't copy before a command it's given.
+    pub fn create_args(&self, policy: &Path, image: &str) -> Vec<String> {
         let mut args: Vec<String> = [
             "--name",
             &self.name,
             "--from",
-            &self.image(),
+            image,
             "--policy",
             &policy.to_string_lossy(),
             "--detach",
@@ -321,12 +347,12 @@ impl Plan {
         args
     }
 
-    /// Makes the sandbox: builds the agent's image if it isn't yet, creates the sandbox and copies the folder in,
+    /// Makes the sandbox: has the agent's image made ready by `images`, creates the sandbox and copies the folder in,
     /// saying each step to `step` as it starts.
     pub fn make(
         &self,
         openshell: &OpenShell,
-        docker: &Docker,
+        images: &dyn ImageSource,
         step: impl Fn(Step),
     ) -> Result<(), MakeError> {
         if !is_sandbox_name(&self.name) {
@@ -335,17 +361,26 @@ impl Plan {
         if let Some(name) = self.shared_folder_name() {
             return Err(MakeError::SameFolderName(name));
         }
-        if !docker.has_image(&self.image())? {
-            step(Step::Building);
-            crate::kit_setup::build(self.agent, &self.setups, docker)?;
-        }
+        let image = if self.setups.iter().any(SetupFolder::installs) {
+            // A kit's `install.sh` is run over the agent's image by Docker, on this Mac, and the image that makes is
+            // the one the sandbox starts from, so only a gateway that shares this Mac's Docker can use it.
+            let docker = images.docker().ok_or(MakeError::KitsNeedLocalDocker)?;
+            let image = self.image();
+            if !docker.has_image(&image)? {
+                step(Step::Building);
+                crate::kit_setup::build(self.agent, &self.setups, docker)?;
+            }
+            image
+        } else {
+            images.ready(&self.agent.build(), &step)?
+        };
         step(Step::Creating);
         let policy = std::env::temp_dir().join(format!(
             "playpen-policy-{}-{}.yaml",
             std::process::id(),
             self.name
         ));
-        std::fs::write(&policy, self.policy())
+        std::fs::write(&policy, self.policy(images.platform()))
             .map_err(|error| MakeError::Policy(error.to_string()))?;
         let secrets: Vec<(String, Secret)> = self
             .variables
@@ -354,7 +389,7 @@ impl Plan {
             .collect();
         let created = openshell.create_with_secrets(
             &self.name,
-            &self.create_args(&policy),
+            &self.create_args(&policy, &image),
             &secrets,
             find_op().as_deref(),
         );
@@ -513,8 +548,16 @@ pub fn suggested_name(agent: Agent, folders: &[PathBuf]) -> String {
 
 /// The shell line that runs `what` in the sandbox, in its agent's folder. A sandbox with no agent Playpen knows only
 /// gets a shell, through `sandbox connect`, since its image may have no `bash`.
-pub fn open_command(openshell: &Path, sandbox: &Sandbox, what: What) -> String {
-    let openshell = quote(&openshell.to_string_lossy());
+pub fn open_command(openshell: &Path, gateway: &Gateway, sandbox: &Sandbox, what: What) -> String {
+    let openshell = match gateway.name() {
+        // `env` sets it for any shell, since the line may run in fish, where `NAME=value command` is newer.
+        Some(gateway) => format!(
+            "env {GATEWAY_VARIABLE}={} {}",
+            quote(gateway),
+            quote(&openshell.to_string_lossy())
+        ),
+        None => quote(&openshell.to_string_lossy()),
+    };
     let name = quote(&sandbox.name);
     let Some(agent) = sandbox.agent.as_deref().and_then(Agent::from_id) else {
         return format!("{openshell} sandbox connect {name}");
@@ -550,7 +593,8 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::{Agent, Plan, is_sandbox_name, open_command, suggested_name};
-    use crate::openshell::{Phase, Sandbox};
+    use crate::image::Platform;
+    use crate::openshell::{Gateway, Phase, Sandbox};
     use crate::session::What;
 
     fn plan() -> Plan {
@@ -568,16 +612,29 @@ mod tests {
 
     #[test]
     fn claude_codes_policy_allows_its_model_from_its_real_binary_and_nothing_else() {
-        insta::assert_snapshot!(Agent::ClaudeCode.policy());
+        insta::assert_snapshot!(Agent::ClaudeCode.policy(Platform::host()));
     }
 
     #[test]
     fn codexs_policy_allows_chatgpt_and_openai_from_its_real_binary() {
-        let policy = Agent::Codex.policy();
+        let policy = Agent::Codex.policy(Platform::host());
         assert!(policy.contains("host: chatgpt.com") && policy.contains("host: api.openai.com"));
         assert!(
             policy.contains("/bin/codex\n"),
             "the binary, not codex.js: {policy}"
+        );
+    }
+
+    #[test]
+    fn codexs_binary_is_the_one_for_the_platform_its_image_is_built_for() {
+        let arm = Agent::Codex.policy(Platform::Arm64);
+        let amd = Agent::Codex.policy(Platform::Amd64);
+        assert!(arm.contains("codex-linux-arm64/vendor/aarch64-unknown-linux-musl/bin/codex"));
+        assert!(amd.contains("codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex"));
+        assert_eq!(
+            Agent::ClaudeCode.policy(Platform::Arm64),
+            Agent::ClaudeCode.policy(Platform::Amd64),
+            "Claude Code's binary is the same on both"
         );
     }
 
@@ -604,8 +661,25 @@ mod tests {
 
     #[test]
     fn a_sandbox_is_made_detached_labelled_and_waiting_for_approval() {
-        let args = plan().create_args(Path::new("/tmp/policy.yaml"));
+        let args = plan().create_args(Path::new("/tmp/policy.yaml"), &Agent::ClaudeCode.image());
         insta::assert_snapshot!(args.join("\n"));
+    }
+
+    #[test]
+    fn a_sandbox_is_started_from_the_image_its_source_named() {
+        let from = |image: &str| {
+            let args = plan().create_args(Path::new("/tmp/policy.yaml"), image);
+            let at = args.iter().position(|arg| arg == "--from").unwrap();
+            args[at + 1].clone()
+        };
+        assert_eq!(
+            from("playpen-claude-code:2.1.329"),
+            "playpen-claude-code:2.1.329"
+        );
+        assert_eq!(
+            from("registry.example.com/team/playpen-claude-code:2.1.329"),
+            "registry.example.com/team/playpen-claude-code:2.1.329"
+        );
     }
 
     #[test]
@@ -628,9 +702,13 @@ mod tests {
             ..plan()
         };
         assert_eq!(several.workdir(), "/sandbox");
-        assert!(several.create_args(Path::new("/tmp/policy.yaml")).contains(
-            &"playpen.folder=/Users/sam/src/Patchbay\n/Users/sam/src/Typecase".to_string()
-        ));
+        assert!(
+            several
+                .create_args(Path::new("/tmp/policy.yaml"), &several.image())
+                .contains(
+                    &"playpen.folder=/Users/sam/src/Patchbay\n/Users/sam/src/Typecase".to_string()
+                )
+        );
         assert_eq!(several.shared_folder_name(), None);
     }
 
@@ -685,17 +763,19 @@ mod tests {
             workdir: Some("/sandbox/Sam's App".to_string()),
         };
         let openshell = Path::new("/opt/homebrew/bin/openshell");
-        insta::assert_snapshot!(open_command(openshell, &sandbox, What::Agent));
+        let active = Gateway::Active;
+        insta::assert_snapshot!(open_command(openshell, &active, &sandbox, What::Agent));
         assert!(
-            open_command(openshell, &sandbox, What::Continue).ends_with("-- claude --continue")
+            open_command(openshell, &active, &sandbox, What::Continue)
+                .ends_with("-- claude --continue")
         );
-        assert!(open_command(openshell, &sandbox, What::Shell).ends_with("-- bash -l"));
+        assert!(open_command(openshell, &active, &sandbox, What::Shell).ends_with("-- bash -l"));
         let theirs = Sandbox {
             agent: None,
             ..sandbox
         };
         assert!(
-            open_command(openshell, &theirs, What::Continue)
+            open_command(openshell, &active, &theirs, What::Continue)
                 .ends_with("sandbox connect 'claude-patchbay'")
         );
     }
@@ -711,8 +791,40 @@ mod tests {
             workdir: Some("/sandbox/Patchbay".to_string()),
         };
         let openshell = Path::new("/opt/homebrew/bin/openshell");
-        insta::assert_snapshot!(open_command(openshell, &sandbox, What::Continue));
-        assert!(open_command(openshell, &sandbox, What::Shell).ends_with("-- bash -l"));
+        let active = Gateway::Active;
+        insta::assert_snapshot!(open_command(openshell, &active, &sandbox, What::Continue));
+        assert!(open_command(openshell, &active, &sandbox, What::Shell).ends_with("-- bash -l"));
+    }
+
+    #[test]
+    fn opening_in_a_named_gateway_sets_it_for_the_line_whatever_shell_runs_it() {
+        let sandbox = Sandbox {
+            name: "claude-patchbay".to_string(),
+            phase: Phase::Ready,
+            created: String::new(),
+            agent: Some("claude-code".to_string()),
+            folders: Vec::new(),
+            workdir: None,
+        };
+        let openshell = Path::new("/opt/homebrew/bin/openshell");
+        let line = open_command(
+            openshell,
+            &Gateway::named("k8s home"),
+            &sandbox,
+            What::Agent,
+        );
+        assert!(line.starts_with(
+            "env OPENSHELL_GATEWAY='k8s home' '/opt/homebrew/bin/openshell' sandbox exec"
+        ));
+        let connect = Sandbox {
+            agent: None,
+            ..sandbox
+        };
+        assert!(
+            open_command(openshell, &Gateway::named("k8s"), &connect, What::Shell).starts_with(
+                "env OPENSHELL_GATEWAY='k8s' '/opt/homebrew/bin/openshell' sandbox connect"
+            )
+        );
     }
 
     #[test]

@@ -34,3 +34,28 @@ _Avoid_: rules, firewall
 
 **Proposal**: a rule OpenShell drafts from a connection a policy denied, waiting for the person to allow or deny it.
 _Avoid_: request, suggestion
+
+**Gateway**: an OpenShell gateway, which keeps sandboxes and runs them on a runtime of its own: Docker on this Mac, or
+Kubernetes in a cluster. Playpen can use several, and a sandbox is on the one that made it. Every `openshell` call names
+one.
+_Avoid_: place, runtime, host, cluster
+
+**Cloud**: what a Gateway extension is for, such as AWS or Google Cloud, offering several kinds of Gateway on it (`ec2`,
+`eks`). Its Capabilities are named by it, and its credentials and Grant belong to it.
+_Avoid_: provider, which is OpenShell's word for a credential
+
+**Gateway extension**: a folder with a Manifest and JavaScript that adds a Gateway, run in a sandbox and reaching only what
+its Manifest asks for and the user has granted.
+_Avoid_: plugin, driver
+
+**Manifest**: `gateway.toml` in a Gateway extension's folder, naming it and listing the Capabilities it asks for. Asking is
+not having: the file can be changed by an agent, so it can only ask.
+_Avoid_: config, permissions file
+
+**Capability**: one thing the host can do for a Gateway extension, typed and named (`gateway.add`). The host does the
+work and holds any credential. Only Playpen adds one, in a release.
+_Avoid_: permission, scope
+
+**Grant**: the user's permission for a Gateway extension to use a Capability, with its limits, kept in `grants.toml`
+beside the Settings, outside the extension's folder. A changed Manifest or code asks again. The default is none.
+_Avoid_: approval, allowlist

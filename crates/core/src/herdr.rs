@@ -10,7 +10,6 @@ use std::process::{Command, Stdio};
 use serde::Deserialize;
 
 use crate::agent::quote;
-use crate::openshell::Sandbox;
 use crate::session::What;
 
 /// The label on a session's terminal naming its sandbox.
@@ -111,15 +110,11 @@ impl HerdrCore {
         Some(HerdrCore { hc })
     }
 
-    /// The session running `what` in the sandbox, by its terminal's address: the one already live, or a new one
-    /// running `command`.
-    pub fn session(
-        &self,
-        sandbox: &Sandbox,
-        what: What,
-        command: &str,
-    ) -> Result<String, HerdrError> {
-        let session = session_id(&sandbox.name, what);
+    /// The session running `what` in the sandbox `label` names, by its terminal's address: the one already live, or a
+    /// new one running `command`. A label is the sandbox's name, with its gateway before it unless that's the one OpenShell
+    /// runs here, so two gateways' sandboxes of one name have sessions of their own.
+    pub fn session(&self, label: &str, what: What, command: &str) -> Result<String, HerdrError> {
+        let session = session_id(label, what);
         let listed =
             self.terminals(&["--label".to_string(), format!("{SESSION_LABEL}={session}")])?;
         if let Some(live) = listed.into_iter().find(|terminal| terminal.state == "live") {
@@ -129,7 +124,7 @@ impl HerdrCore {
         let started = run(
             &self.hc,
             "start a terminal",
-            &run_args(sandbox, what, command, &home.to_string_lossy()),
+            &run_args(label, what, command, &home.to_string_lossy()),
         )?;
         let started: Terminal = serde_json::from_str(&started).map_err(|error| {
             HerdrError::Failed("start a terminal".to_string(), error.to_string())
@@ -248,8 +243,8 @@ fn tab_id(session: &str) -> String {
 /// the Playpen space and a tab of its own, which the Herdr app shows and anything else ignores. It's kept, so a
 /// terminal lost with herdr-core comes back as a shell rather than vanishing, and has no parent, so it outlives
 /// whatever started it. It starts in `home`.
-pub fn run_args(sandbox: &Sandbox, what: What, command: &str, home: &str) -> Vec<String> {
-    let session = session_id(&sandbox.name, what);
+pub fn run_args(label: &str, what: What, command: &str, home: &str) -> Vec<String> {
+    let session = session_id(label, what);
     [
         "run",
         "--bg",
@@ -260,7 +255,7 @@ pub fn run_args(sandbox: &Sandbox, what: What, command: &str, home: &str) -> Vec
         "--cwd",
         home,
         "--label",
-        &format!("{SANDBOX_LABEL}={}", sandbox.name),
+        &format!("{SANDBOX_LABEL}={label}"),
         "--label",
         &format!("{SESSION_LABEL}={session}"),
         "--label",
@@ -300,26 +295,35 @@ fn run(program: &Path, doing: &str, args: &[String]) -> Result<String, HerdrErro
 #[cfg(test)]
 mod tests {
     use super::{AgentState, Listed, run_args, states};
-    use crate::openshell::{Phase, Sandbox};
     use crate::session::What;
 
     #[test]
     fn a_sandboxs_terminal_is_labelled_into_the_playpen_space_and_its_own_tab() {
-        let sandbox = Sandbox {
-            name: "claude-patchbay".to_string(),
-            phase: Phase::Ready,
-            created: String::new(),
-            agent: Some("claude-code".to_string()),
-            folders: Vec::new(),
-            workdir: None,
-        };
         let args = run_args(
-            &sandbox,
+            "claude-patchbay",
             What::Agent,
             "openshell sandbox exec --name claude-patchbay --tty -- claude",
             "/Users/sam",
         );
         insta::assert_snapshot!(args.join("\n"));
+    }
+
+    #[test]
+    fn a_sandbox_on_another_gateway_has_a_session_of_its_own_by_its_label() {
+        let here = run_args("claude-patchbay", What::Agent, "run", "/Users/sam");
+        let there = run_args("k8s-home/claude-patchbay", What::Agent, "run", "/Users/sam");
+        let session = |args: &[String]| {
+            args.iter()
+                .find(|arg| arg.starts_with("playpen.session="))
+                .cloned()
+                .unwrap()
+        };
+        assert_eq!(session(&here), "playpen.session=claude-patchbay.agent");
+        assert_eq!(
+            session(&there),
+            "playpen.session=k8s-home/claude-patchbay.agent"
+        );
+        assert_ne!(session(&here), session(&there));
     }
 
     #[test]

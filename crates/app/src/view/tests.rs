@@ -1,11 +1,16 @@
 // Not a glob: the kit's `test` macro would shadow the `#[test]` it expands to.
-use super::{Listing, MainView, Page, Watch};
+use super::sandboxes::gateway_where;
+use super::{Listing, MainView, Page, SandboxKey, Watch};
 use crate::commands::COMMANDS;
+use crate::providers::ShownGateway;
 use crate::shortcuts::SHORTCUTS;
 use crate::{palette, shortcuts, theme};
 use gpui_kit::base::Root;
 use gpui_kit::{AppContext as _, Context, Entity, TestAppContext, VisualTestContext};
-use playpen_core::{Agent, OpenShellError, Phase, Provider, Sandbox};
+use playpen_core::{
+    Agent, DockerError, Gateway, GatewayInfo, GatewaySettings, ImageSourceError, ImagesFrom,
+    OpenShell, OpenShellError, Phase, Platform, Provider, Sandbox,
+};
 
 /// Opens a window under the Root the app runs in, whose own bindings are part of what keys do. It asks OpenShell for
 /// nothing; each test gives it the sandboxes it needs.
@@ -13,6 +18,7 @@ fn open(cx: &mut TestAppContext) -> (Entity<MainView>, &mut VisualTestContext) {
     cx.update(|cx| {
         gpui_kit::init(cx);
         theme::init(cx);
+        crate::settings::init_in_memory(cx);
         cx.bind_keys(shortcuts::bindings());
     });
     let view = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -42,7 +48,9 @@ fn listed(view: &Entity<MainView>, sandboxes: Vec<Sandbox>, cx: &mut VisualTestC
 }
 
 fn selected(view: &Entity<MainView>, cx: &mut VisualTestContext) -> Option<String> {
-    view.read_with(cx, |view, _| view.selected.clone())
+    view.read_with(cx, |view, _| {
+        view.selected.as_ref().map(|key| key.name.clone())
+    })
 }
 
 #[gpui_kit::test]
@@ -120,9 +128,7 @@ fn openshell_not_answering_is_said_rather_than_an_empty_list(cx: &mut TestAppCon
         view.listed(Err(OpenShellError::NotInstalled), cx);
     });
     view.read_with(cx, |view, _| {
-        assert!(
-            matches!(&view.sandboxes, Listing::Failed(error) if error.contains("brew install"))
-        );
+        assert!(matches!(view.listing(), Listing::Failed(error) if error.contains("brew install")));
     });
 }
 
@@ -453,4 +459,569 @@ fn the_arrows_move_through_the_list_again_once_new_agent_is_cancelled(cx: &mut T
     cx.run_until_parked();
     cx.simulate_keystrokes("down");
     assert_eq!(selected(&view, cx).as_deref(), Some("beta"));
+}
+
+/// Three gateways as OpenShell lists them: the one on this Mac, active, and two registered after it. Made up for these
+/// tests, since only the local gateway's shape has been seen.
+fn gateways() -> Vec<GatewayInfo> {
+    let gateway = |name: &str, active: bool, remote: bool| GatewayInfo {
+        name: name.to_string(),
+        endpoint: format!("https://{name}.example.com"),
+        active,
+        kind: if remote { "remote" } else { "local" }.to_string(),
+        is_remote: remote,
+        auth: "mtls".to_string(),
+    };
+    // As `openshell gateway list` gives them: the active one first, then by name.
+    vec![
+        gateway("openshell", true, false),
+        gateway("ec2", false, true),
+        gateway("k8s-home", false, true),
+    ]
+}
+
+fn shown(view: &Entity<MainView>, cx: &mut VisualTestContext) -> Option<String> {
+    view.read_with(cx, |view, _| view.gateway.name().map(str::to_string))
+}
+
+#[gpui_kit::test]
+fn the_active_gateway_is_shown_first_and_the_keys_go_round_the_others(cx: &mut TestAppContext) {
+    let (view, cx) = open(cx);
+    view.update(cx, |view, _| {
+        view.openshell = Ok(OpenShell::new("/opt/homebrew/bin/openshell"));
+        view.gateways_listed(Ok(gateways()));
+    });
+    assert_eq!(shown(&view, cx).as_deref(), Some("openshell"));
+    listed(&view, vec![sandbox("alpha", Phase::Ready)], cx);
+    cx.simulate_keystrokes("cmd-]");
+    assert_eq!(shown(&view, cx).as_deref(), Some("ec2"));
+    view.read_with(cx, |view, _| {
+        assert!(
+            matches!(view.listing(), Listing::Loading),
+            "the last gateway's sandboxes aren't shown under this one"
+        );
+        assert_eq!(view.selected, None);
+    });
+    cx.simulate_keystrokes("cmd-] cmd-]");
+    assert_eq!(shown(&view, cx).as_deref(), Some("openshell"), "it wraps");
+    cx.simulate_keystrokes("cmd-[");
+    assert_eq!(shown(&view, cx).as_deref(), Some("k8s-home"));
+}
+
+#[gpui_kit::test]
+fn calls_go_to_the_gateway_that_is_shown(cx: &mut TestAppContext) {
+    let (view, cx) = open(cx);
+    view.update(cx, |view, _| {
+        view.openshell = Ok(OpenShell::new("/opt/homebrew/bin/openshell"));
+        view.gateways_listed(Ok(gateways()));
+    });
+    cx.simulate_keystrokes("cmd-[");
+    view.update(cx, |view, _| {
+        let openshell = view.openshell().unwrap();
+        assert_eq!(openshell.gateway(), &Gateway::named("k8s-home"));
+        assert!(!view.current_gateway().is_local());
+    });
+}
+
+#[gpui_kit::test]
+fn with_one_gateway_there_is_nothing_to_go_to(cx: &mut TestAppContext) {
+    let (view, cx) = open(cx);
+    view.update(cx, |view, _| {
+        view.gateways_listed(Ok(gateways().into_iter().filter(|g| g.active).collect()));
+    });
+    cx.simulate_keystrokes("cmd-] cmd-[");
+    assert_eq!(shown(&view, cx).as_deref(), Some("openshell"));
+}
+
+#[gpui_kit::test]
+fn a_gateway_that_goes_is_replaced_by_the_active_one_and_a_failed_listing_changes_nothing(
+    cx: &mut TestAppContext,
+) {
+    let (view, cx) = open(cx);
+    view.update(cx, |view, _| view.gateways_listed(Ok(gateways())));
+    cx.simulate_keystrokes("cmd-]");
+    assert_eq!(shown(&view, cx).as_deref(), Some("ec2"));
+    view.update(cx, |view, _| {
+        view.gateways_listed(Err(OpenShellError::NotInstalled));
+    });
+    assert_eq!(shown(&view, cx).as_deref(), Some("ec2"));
+    view.update(cx, |view, _| {
+        view.gateways_listed(Ok(gateways()
+            .into_iter()
+            .filter(|g| g.name != "ec2")
+            .collect()));
+    });
+    assert_eq!(shown(&view, cx).as_deref(), Some("openshell"));
+}
+
+#[gpui_kit::test]
+fn the_gateway_shown_is_the_one_settings_lists_providers_on(cx: &mut TestAppContext) {
+    let (view, cx) = open(cx);
+    let provided = |cx: &mut VisualTestContext| {
+        cx.read(|cx| {
+            cx.try_global::<ShownGateway>()
+                .and_then(|shown| shown.0.name().map(str::to_string))
+        })
+    };
+    view.update_in(cx, |view, window, cx| {
+        view.gateways_listed(Ok(gateways()));
+        view.show_gateway("k8s-home", window, cx);
+    });
+    assert_eq!(provided(cx).as_deref(), Some("k8s-home"));
+    cx.simulate_keystrokes("cmd-]");
+    assert_eq!(provided(cx).as_deref(), Some("openshell"), "it wraps round");
+}
+
+fn saved(
+    view: &Entity<MainView>,
+    name: &str,
+    cx: &mut VisualTestContext,
+) -> Option<GatewaySettings> {
+    view.read_with(cx, |_, cx| {
+        crate::settings::current(cx).gateways.get(name).cloned()
+    })
+}
+
+fn key(gateway: &str, name: &str) -> SandboxKey {
+    SandboxKey {
+        gateway: gateway.to_string(),
+        name: name.to_string(),
+    }
+}
+
+/// Two gateways open, each with the sandboxes given.
+fn two_open(
+    view: &Entity<MainView>,
+    here: Vec<Sandbox>,
+    there: Vec<Sandbox>,
+    cx: &mut VisualTestContext,
+) {
+    view.update_in(cx, |view, window, cx| {
+        view.gateways_listed(Ok(gateways()));
+        view.listed_for("openshell", Ok(here), cx);
+        view.show_gateway("k8s-home", window, cx);
+        view.listed_for("k8s-home", Ok(there), cx);
+    });
+}
+
+#[gpui_kit::test]
+fn two_gateways_can_each_have_a_sandbox_of_one_name_and_each_is_chosen_on_its_own(
+    cx: &mut TestAppContext,
+) {
+    let (view, cx) = open(cx);
+    two_open(
+        &view,
+        vec![sandbox("claude", Phase::Ready)],
+        vec![sandbox("claude", Phase::Stopped)],
+        cx,
+    );
+    view.update(cx, |view, cx| view.select(key("openshell", "claude"), cx));
+    view.read_with(cx, |view, _| {
+        assert_eq!(view.selected_sandbox().unwrap().phase, Phase::Ready);
+        assert_eq!(
+            view.gateway.name(),
+            Some("openshell"),
+            "choosing it brings its gateway into focus"
+        );
+    });
+    view.update(cx, |view, cx| view.select(key("k8s-home", "claude"), cx));
+    view.read_with(cx, |view, _| {
+        assert_eq!(
+            view.selected_sandbox().unwrap().phase,
+            Phase::Stopped,
+            "the other one, not a sandbox by that name"
+        );
+        assert_eq!(view.gateway.name(), Some("k8s-home"));
+    });
+}
+
+#[gpui_kit::test]
+fn the_arrows_go_down_each_open_gateways_sandboxes_in_the_order_the_sidebar_shows_them(
+    cx: &mut TestAppContext,
+) {
+    let (view, cx) = open(cx);
+    two_open(
+        &view,
+        vec![sandbox("a", Phase::Ready), sandbox("b", Phase::Stopped)],
+        vec![sandbox("c", Phase::Ready)],
+        cx,
+    );
+    view.read_with(cx, |view, _| {
+        let order: Vec<_> = view
+            .visible_sandboxes()
+            .into_iter()
+            .map(|key| format!("{}/{}", key.gateway, key.name))
+            .collect();
+        assert_eq!(order, ["openshell/a", "openshell/b", "k8s-home/c"]);
+    });
+    view.update(cx, |view, cx| view.select(key("openshell", "b"), cx));
+    cx.simulate_keystrokes("down");
+    assert_eq!(selected(&view, cx).as_deref(), Some("c"));
+    view.read_with(cx, |view, _| {
+        assert_eq!(view.gateway.name(), Some("k8s-home"))
+    });
+    cx.simulate_keystrokes("down");
+    assert_eq!(
+        selected(&view, cx).as_deref(),
+        Some("c"),
+        "the last stays chosen"
+    );
+    cx.simulate_keystrokes("up up");
+    assert_eq!(selected(&view, cx).as_deref(), Some("a"));
+}
+
+#[gpui_kit::test]
+fn closing_the_gateway_in_focus_hides_its_sandboxes_from_the_arrows_but_it_is_still_asked(
+    cx: &mut TestAppContext,
+) {
+    let (view, cx) = open(cx);
+    two_open(
+        &view,
+        vec![sandbox("a", Phase::Ready)],
+        vec![sandbox("c", Phase::Ready)],
+        cx,
+    );
+    view.update_in(cx, |view, window, cx| {
+        view.click_gateway("k8s-home", window, cx)
+    });
+    view.read_with(cx, |view, _| {
+        assert_eq!(view.visible_sandboxes(), [key("openshell", "a")]);
+        assert!(
+            view.polled().contains(&"k8s-home".to_string()),
+            "the one in focus is asked whatever it shows"
+        );
+    });
+    view.update_in(cx, |view, window, cx| {
+        view.click_gateway("k8s-home", window, cx)
+    });
+    view.read_with(cx, |view, _| assert_eq!(view.visible_sandboxes().len(), 2));
+}
+
+#[gpui_kit::test]
+fn only_the_open_gateways_and_the_one_in_focus_are_asked(cx: &mut TestAppContext) {
+    let (view, cx) = open(cx);
+    view.update(cx, |view, _| view.gateways_listed(Ok(gateways())));
+    view.read_with(cx, |view, _| {
+        assert_eq!(
+            view.polled(),
+            ["openshell"],
+            "ec2 and k8s-home were never opened"
+        );
+        assert!(view.lists.is_empty());
+    });
+    view.update_in(cx, |view, window, cx| view.show_gateway("ec2", window, cx));
+    view.read_with(cx, |view, _| {
+        assert_eq!(view.polled(), ["ec2", "openshell"])
+    });
+}
+
+#[gpui_kit::test]
+fn a_sandbox_is_known_to_herdr_by_its_name_on_this_macs_gateway_and_by_its_gateway_too_elsewhere(
+    cx: &mut TestAppContext,
+) {
+    let (view, cx) = open(cx);
+    view.update(cx, |view, _| view.gateways_listed(Ok(gateways())));
+    view.read_with(cx, |view, _| {
+        assert_eq!(
+            view.label_of(&key("openshell", "claude")),
+            "claude",
+            "so sessions kept before there were gateways are found"
+        );
+        assert_eq!(view.label_of(&key("k8s-home", "claude")), "k8s-home/claude");
+        assert_eq!(view.label_of(&key("", "claude")), "claude");
+    });
+}
+
+#[gpui_kit::test]
+fn what_was_kept_for_a_gateway_that_goes_goes_with_it(cx: &mut TestAppContext) {
+    let (view, cx) = open(cx);
+    two_open(
+        &view,
+        vec![sandbox("a", Phase::Ready)],
+        vec![sandbox("c", Phase::Ready)],
+        cx,
+    );
+    view.update(cx, |view, cx| view.select(key("k8s-home", "c"), cx));
+    view.update(cx, |view, _| {
+        view.gateways_listed(Ok(gateways()
+            .into_iter()
+            .filter(|g| g.name != "k8s-home")
+            .collect()));
+    });
+    view.read_with(cx, |view, _| {
+        assert!(!view.lists.contains_key("k8s-home"));
+        assert!(!view.expanded.contains("k8s-home"));
+        assert_eq!(
+            view.selected, None,
+            "a sandbox chosen there isn't chosen any more"
+        );
+        assert_eq!(view.gateway.name(), Some("openshell"));
+    });
+}
+
+#[gpui_kit::test]
+fn a_gateway_that_fails_to_answer_keeps_the_others_listings(cx: &mut TestAppContext) {
+    let (view, cx) = open(cx);
+    two_open(
+        &view,
+        vec![sandbox("a", Phase::Ready)],
+        vec![sandbox("c", Phase::Ready)],
+        cx,
+    );
+    view.update(cx, |view, cx| {
+        view.listed_for(
+            "k8s-home",
+            Err(OpenShellError::Run("connection refused".to_string())),
+            cx,
+        );
+    });
+    view.read_with(cx, |view, _| {
+        assert!(matches!(view.listing_of("k8s-home"), Listing::Failed(_)));
+        assert!(matches!(view.listing_of("openshell"), Listing::Listed(_)));
+        assert_eq!(view.visible_sandboxes(), [key("openshell", "a")]);
+    });
+}
+
+#[gpui_kit::test]
+fn a_gateway_not_on_this_mac_needs_a_registry_and_a_platform_before_its_image_source_is_saved(
+    cx: &mut TestAppContext,
+) {
+    let (view, cx) = open(cx);
+    view.update_in(cx, |view, window, cx| {
+        view.gateways_listed(Ok(gateways()));
+        view.show_gateway("k8s-home", window, cx);
+        view.run("gateway.images", window, cx);
+    });
+    view.read_with(cx, |view, _| {
+        let imaging = view.imaging.as_ref().unwrap();
+        assert_eq!(
+            imaging.from(),
+            ImagesFrom::Registry,
+            "a cluster can't share this Mac's Docker"
+        );
+    });
+    // Nothing yet: it says what's missing, and saves nothing.
+    view.update_in(cx, |view, window, cx| view.save_images(window, cx));
+    view.read_with(cx, |view, _| {
+        let said = view.imaging.as_ref().unwrap().failure().unwrap();
+        assert!(said.contains("needs one"), "{said}");
+    });
+    assert_eq!(saved(&view, "k8s-home", cx), None);
+    // A registry, but no platform.
+    view.update_in(cx, |view, window, cx| {
+        view.imaging
+            .as_ref()
+            .unwrap()
+            .type_registry("ghcr.io/phin-tech", window, cx);
+        view.save_images(window, cx);
+    });
+    view.read_with(cx, |view, _| {
+        let said = view.imaging.as_ref().unwrap().failure().unwrap();
+        assert!(said.contains("platform"), "{said}");
+    });
+    assert_eq!(saved(&view, "k8s-home", cx), None);
+    // Both.
+    view.update_in(cx, |view, window, cx| {
+        view.choose_images(ImagesFrom::Registry, Some(Platform::Amd64), cx);
+        view.save_images(window, cx);
+    });
+    view.read_with(cx, |view, _| assert!(view.imaging.is_none()));
+    assert_eq!(
+        saved(&view, "k8s-home", cx),
+        Some(GatewaySettings {
+            images: Some(ImagesFrom::Registry),
+            registry: "ghcr.io/phin-tech".to_string(),
+            platform: Some(Platform::Amd64),
+        })
+    );
+    // And a sandbox can now be made from it.
+    let info = view.read_with(cx, |view, _| view.current_gateway());
+    let settings = view.read_with(cx, |_, cx| crate::settings::current(cx));
+    // The only thing left in the way is Docker itself, which this test says isn't installed.
+    let left = settings
+        .image_source(&info, || Err(DockerError::NotInstalled))
+        .err();
+    assert!(matches!(
+        left,
+        Some(ImageSourceError::Docker(DockerError::NotInstalled))
+    ));
+}
+
+#[gpui_kit::test]
+fn the_gateway_on_this_mac_starts_on_its_docker_and_keeps_no_registry_with_it(
+    cx: &mut TestAppContext,
+) {
+    let (view, cx) = open(cx);
+    view.update_in(cx, |view, window, cx| {
+        view.gateways_listed(Ok(gateways()));
+        view.run("gateway.images", window, cx);
+    });
+    view.read_with(cx, |view, _| {
+        assert_eq!(view.imaging.as_ref().unwrap().from(), ImagesFrom::Docker);
+    });
+    view.update_in(cx, |view, window, cx| {
+        view.imaging
+            .as_ref()
+            .unwrap()
+            .type_registry("ghcr.io/left-over", window, cx);
+        view.save_images(window, cx);
+    });
+    assert_eq!(
+        saved(&view, "openshell", cx),
+        Some(GatewaySettings {
+            images: Some(ImagesFrom::Docker),
+            registry: String::new(),
+            platform: None,
+        })
+    );
+}
+
+#[gpui_kit::test]
+fn showing_another_gateway_closes_the_image_source_form(cx: &mut TestAppContext) {
+    let (view, cx) = open(cx);
+    view.update_in(cx, |view, window, cx| {
+        view.gateways_listed(Ok(gateways()));
+        view.run("gateway.images", window, cx);
+        view.show_gateway("ec2", window, cx);
+    });
+    view.read_with(cx, |view, _| assert!(view.imaging.is_none()));
+    assert_eq!(saved(&view, "openshell", cx), None, "cancelled, not saved");
+}
+
+#[gpui_kit::test]
+fn add_gateway_shows_its_form_in_place_of_the_sandbox_and_cancel_closes_it(
+    cx: &mut TestAppContext,
+) {
+    let (view, cx) = open(cx);
+    view.update(cx, |view, _| view.gateways_listed(Ok(gateways())));
+    listed(&view, vec![sandbox("alpha", Phase::Ready)], cx);
+    view.update_in(cx, |view, window, cx| {
+        view.run("gateway.add", window, cx);
+    });
+    view.read_with(cx, |view, _| {
+        assert!(view.adding.is_some() && view.making.is_none());
+    });
+    // New Agent… takes its place, and the other way round.
+    cx.simulate_keystrokes("cmd-n");
+    view.read_with(cx, |view, _| {
+        assert!(view.adding.is_none() && view.making.is_some());
+    });
+    view.update_in(cx, |view, window, cx| {
+        view.making = None;
+        view.run("gateway.add", window, cx);
+        view.cancel_adding(window, cx);
+    });
+    view.read_with(cx, |view, _| assert!(view.adding.is_none()));
+}
+
+#[gpui_kit::test]
+fn an_address_that_isnt_one_is_said_and_nothing_is_asked_of_openshell(cx: &mut TestAppContext) {
+    let (view, cx) = open(cx);
+    view.update_in(cx, |view, window, cx| {
+        view.run("gateway.add", window, cx);
+        view.adding
+            .as_ref()
+            .unwrap()
+            .type_address("ftp://os.example.com", window, cx);
+        view.add_gateway(window, cx);
+    });
+    view.read_with(cx, |view, _| {
+        let said = view.adding.as_ref().unwrap().failure().unwrap();
+        assert!(said.contains("https://"), "{said}");
+    });
+}
+
+#[gpui_kit::test]
+fn an_oidc_gateway_is_refused_without_an_issuer_that_is_https_and_nothing_is_asked_of_openshell(
+    cx: &mut TestAppContext,
+) {
+    let (view, cx) = open(cx);
+    let failure = |view: &Entity<MainView>, cx: &mut VisualTestContext| {
+        view.read_with(cx, |view, _| {
+            view.adding.as_ref().unwrap().failure().map(str::to_string)
+        })
+    };
+    view.update_in(cx, |view, window, cx| {
+        view.run("gateway.add", window, cx);
+        view.adding
+            .as_ref()
+            .unwrap()
+            .type_address("https://os.example.com", window, cx);
+        view.use_oidc(true, cx);
+        view.add_gateway(window, cx);
+    });
+    assert!(failure(&view, cx).unwrap().contains("OIDC issuer"));
+    view.update_in(cx, |view, window, cx| {
+        view.adding
+            .as_ref()
+            .unwrap()
+            .type_issuer("http://login.example.com", window, cx);
+        view.add_gateway(window, cx);
+    });
+    assert!(failure(&view, cx).unwrap().contains("starts with https://"));
+}
+
+#[gpui_kit::test]
+fn the_gateway_openshell_runs_on_this_mac_is_not_removed_from_here(cx: &mut TestAppContext) {
+    let (view, cx) = open(cx);
+    view.update(cx, |view, _| view.gateways_listed(Ok(gateways())));
+    view.update_in(cx, |view, window, cx| {
+        view.confirm_remove_gateway("openshell".to_string(), window, cx);
+    });
+    view.read_with(cx, |view, _| {
+        let said = view.failed.as_deref().unwrap();
+        assert!(said.contains("runs on this Mac"), "{said}");
+    });
+    // A gateway that isn't registered is nothing to remove.
+    view.update_in(cx, |view, window, cx| {
+        view.failed = None;
+        view.confirm_remove_gateway("nowhere".to_string(), window, cx);
+    });
+    view.read_with(cx, |view, _| assert_eq!(view.failed, None));
+}
+
+#[test]
+fn a_gateway_is_placed_on_this_mac_or_by_the_host_of_its_endpoint() {
+    let mut all = gateways();
+    assert_eq!(gateway_where(&all[0]), "This Mac");
+    all[1].endpoint = "https://os.example.com:8443/grpc".to_string();
+    assert_eq!(gateway_where(&all[1]), "os.example.com:8443");
+    all[2].endpoint = "ssh://sam@10.0.0.5:8080".to_string();
+    assert_eq!(gateway_where(&all[2]), "sam@10.0.0.5:8080");
+    all[2].endpoint = "10.0.0.6".to_string();
+    assert_eq!(gateway_where(&all[2]), "10.0.0.6", "no scheme to take off");
+}
+
+#[gpui_kit::test]
+fn choosing_a_gateway_by_name_shows_it_and_a_name_that_isnt_registered_does_nothing(
+    cx: &mut TestAppContext,
+) {
+    let (view, cx) = open(cx);
+    view.update(cx, |view, _| view.gateways_listed(Ok(gateways())));
+    listed(&view, vec![sandbox("alpha", Phase::Ready)], cx);
+    view.update_in(cx, |view, window, cx| {
+        view.show_gateway("openshell", window, cx);
+    });
+    view.read_with(cx, |view, _| {
+        assert!(
+            matches!(view.listing(), Listing::Listed(_)),
+            "the gateway that's shown already isn't asked again"
+        );
+        assert_eq!(
+            view.selected.as_ref().map(|key| key.name.as_str()),
+            Some("alpha")
+        );
+    });
+    view.update_in(cx, |view, window, cx| {
+        view.show_gateway("nowhere", window, cx);
+    });
+    assert_eq!(shown(&view, cx).as_deref(), Some("openshell"));
+    view.update_in(cx, |view, window, cx| {
+        view.show_gateway("k8s-home", window, cx);
+    });
+    assert_eq!(shown(&view, cx).as_deref(), Some("k8s-home"));
+    view.read_with(cx, |view, _| {
+        assert!(matches!(view.listing(), Listing::Loading));
+        assert_eq!(view.selected, None);
+    });
 }

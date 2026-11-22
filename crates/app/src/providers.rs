@@ -17,13 +17,22 @@ use std::time::{Duration, Instant};
 
 use gpui_kit::component::radio::Radio;
 use playpen_core::{
-    Access, Account, ChatGptError, DeviceCode, Key, KeySource, Kind, Login, NewProvider,
+    Access, Account, ChatGptError, DeviceCode, Gateway, Key, KeySource, Kind, Login, NewProvider,
     NewService, OpenShell, Provider, ProviderError, find_codex, find_op,
 };
 use rust_i18n::t;
 
+/// The gateway the main window shows, which a provider is for: OpenShell keeps each in the gateway that holds it, so
+/// Settings acts on the one whose sandboxes are in front of the person.
+#[derive(Debug, Clone, Default)]
+pub struct ShownGateway(pub Gateway);
+
+impl Global for ShownGateway {}
+
 /// The providers part of Settings.
 pub struct Providers {
+    /// The gateway it lists and acts on, taken from the main window each time it lists.
+    gateway: Gateway,
     listing: Listing,
     form: Option<Form>,
     service: Option<ServiceForm>,
@@ -101,6 +110,7 @@ impl SelectItem for KindChoice {
 impl Providers {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let mut this = Self {
+            gateway: Gateway::Active,
             listing: Listing::Loading,
             form: None,
             service: None,
@@ -113,6 +123,10 @@ impl Providers {
 
     /// Asks OpenShell for its providers again.
     fn refresh(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.gateway = cx
+            .try_global::<ShownGateway>()
+            .map(|shown| shown.0.clone())
+            .unwrap_or_default();
         if cfg!(feature = "screenshot") {
             // Shots show stand-ins rather than anyone's real providers, and `PLAYPEN_SHOT_ADD=litellm` the form.
             let stand_in = |name: &str, kind: &str| Provider {
@@ -136,10 +150,11 @@ impl Providers {
             }
             return;
         }
+        let gateway = self.gateway.clone();
         self._working = Some(cx.spawn_in(window, async move |this, cx| {
             let listed = cx
                 .background_spawn(async move {
-                    OpenShell::find().and_then(|openshell| openshell.providers())
+                    OpenShell::find().and_then(|openshell| openshell.on(gateway).providers())
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
@@ -510,8 +525,9 @@ impl Providers {
         }
         form.saving = true;
         self.failed = None;
+        let gateway = self.gateway.clone();
         let saved = cx.background_spawn(async move {
-            let openshell = OpenShell::find()?;
+            let openshell = OpenShell::find()?.on(gateway);
             match &job {
                 Job::Add(new) => openshell.add_provider(new, &key)?,
                 Job::Replace(provider) => openshell.replace_key(provider, &key)?,
@@ -551,6 +567,7 @@ impl Providers {
         self.failed = None;
         tracing::info!(provider = %job.name(), "signing in to ChatGPT");
         let accounts = crate::settings::file("chatgpt");
+        let gateway = self.gateway.clone();
         self._working = Some(cx.spawn_in(window, async move |this, cx| {
             let (back, code) = cx
                 .background_spawn(async move {
@@ -600,7 +617,7 @@ impl Providers {
                         cx.notify();
                     });
                     cx.background_spawn(async move {
-                        let openshell = OpenShell::find()?;
+                        let openshell = OpenShell::find()?.on(gateway);
                         match &job {
                             Job::Add(new) => openshell.add_signed_in(new, &tokens)?,
                             Job::Replace(provider) => openshell.sign_in_again(provider, &tokens)?,
@@ -655,6 +672,7 @@ impl Providers {
             &[&*delete, &*t!("Cancel")],
             cx,
         );
+        let gateway = self.gateway.clone();
         self._working = Some(cx.spawn_in(window, async move |this, cx| {
             if answer.await != Ok(0) {
                 return;
@@ -663,7 +681,7 @@ impl Providers {
             let accounts = crate::settings::file("chatgpt");
             let deleted = cx
                 .background_spawn(async move {
-                    OpenShell::find()?.delete_provider(&provider)?;
+                    OpenShell::find()?.on(gateway).delete_provider(&provider)?;
                     if provider.playpen_kind() == Some(Kind::ChatGptSubscription)
                         && let Some(accounts) = accounts
                     {
@@ -871,6 +889,12 @@ impl Render for Providers {
         v_flex()
             .p_4()
             .gap_4()
+            .when_some(self.gateway.name().map(str::to_string), |this, gateway| {
+                this.child(note(
+                    t!("These are the providers on the “%{gateway}” gateway.", gateway = gateway),
+                    cx,
+                ))
+            })
             .child(note(
                 t!(
                     "OpenShell holds each key. A sandbox's agent sees only a stand-in, which OpenShell swaps for the key on requests to that service, so one provider serves every sandbox you attach it to."

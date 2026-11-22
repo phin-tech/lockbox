@@ -18,6 +18,9 @@ use crate::new_service::{KeySource, NewService, with_key};
 use crate::provider::{CHATGPT_CLIENT_ID, Kind, NewProvider};
 use crate::secrets::{Secret, wrap};
 
+mod register;
+pub use register::{Forgotten, NewGateway, NewGatewayError, Oidc, Reach};
+
 /// The label Playpen puts on a sandbox it made, naming its [`crate::Agent`].
 pub const AGENT_LABEL: &str = "playpen.agent";
 
@@ -228,18 +231,120 @@ fn said(stderr: &[u8]) -> String {
     }
 }
 
+/// What `openshell` reads to choose its gateway, in place of its `--gateway` flag, so that it reaches a command Playpen
+/// puts in a shell line as well as one it runs itself.
+pub const GATEWAY_VARIABLE: &str = "OPENSHELL_GATEWAY";
+
+/// Which of OpenShell's gateways a command goes to: the one `openshell gateway select` made active, or one by name,
+/// as `openshell gateway list` shows it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum Gateway {
+    #[default]
+    Active,
+    Named(String),
+}
+
+impl Gateway {
+    pub fn named(name: impl Into<String>) -> Gateway {
+        Gateway::Named(name.into())
+    }
+
+    /// Its name, or none for the active gateway.
+    pub fn name(&self) -> Option<&str> {
+        match self {
+            Gateway::Active => None,
+            Gateway::Named(name) => Some(name),
+        }
+    }
+}
+
+/// A gateway OpenShell has registered, as `openshell gateway list` shows it.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct GatewayInfo {
+    pub name: String,
+    #[serde(default)]
+    pub endpoint: String,
+    /// Whether it's the one `openshell gateway select` made active.
+    #[serde(default)]
+    pub active: bool,
+    /// What OpenShell calls it: `local` for one running in Docker on this Mac.
+    #[serde(rename = "type", default)]
+    pub kind: String,
+    #[serde(default)]
+    pub is_remote: bool,
+    /// How a user is authenticated to it: `mtls`, `plaintext`, or a sign-in.
+    #[serde(default)]
+    pub auth: String,
+}
+
+impl GatewayInfo {
+    /// A gateway taken to be on this Mac, for when the gateways couldn't be listed: what every gateway was before
+    /// Playpen had several.
+    pub fn assumed_local(name: impl Into<String>) -> GatewayInfo {
+        GatewayInfo {
+            name: name.into(),
+            endpoint: String::new(),
+            active: true,
+            kind: "local".to_string(),
+            is_remote: false,
+            auth: "mtls".to_string(),
+        }
+    }
+
+    /// Whether it uses certificates that OpenShell made for a gateway it runs in Docker on this Mac. They stay when the
+    /// gateway is forgotten, since the gateway is still running and they're how to reach it again.
+    pub fn has_certificates_of_its_own(&self) -> bool {
+        self.is_local() && self.auth == "mtls"
+    }
+
+    /// The gateway to name in a call to reach it.
+    pub fn gateway(&self) -> Gateway {
+        Gateway::named(&self.name)
+    }
+
+    /// Whether it runs in this Mac's own Docker, so an image built here is one it can start.
+    pub fn is_local(&self) -> bool {
+        self.kind == "local" && !self.is_remote
+    }
+}
+
+/// The gateways in what `openshell gateway list -o json` printed, the active one first and then by name.
+pub fn parse_gateways(json: &str) -> Result<Vec<GatewayInfo>, OpenShellError> {
+    let mut gateways: Vec<GatewayInfo> = serde_json::from_str(json)
+        .map_err(|error| OpenShellError::Unreadable(error.to_string()))?;
+    gateways.sort_by(|one, other| {
+        other
+            .active
+            .cmp(&one.active)
+            .then_with(|| one.name.cmp(&other.name))
+    });
+    Ok(gateways)
+}
+
 /// The `openshell` command, found where Homebrew and its installer put it. An app opened from the Finder has no
 /// shell's `PATH`, so it's looked for by its full path first.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpenShell {
     binary: PathBuf,
+    gateway: Gateway,
 }
 
 impl OpenShell {
     pub fn new(binary: impl Into<PathBuf>) -> OpenShell {
         OpenShell {
             binary: binary.into(),
+            gateway: Gateway::Active,
         }
+    }
+
+    /// The same command, sending everything to `gateway`.
+    pub fn on(mut self, gateway: Gateway) -> OpenShell {
+        self.gateway = gateway;
+        self
+    }
+
+    pub fn gateway(&self) -> &Gateway {
+        &self.gateway
     }
 
     /// The installed `openshell`, if there is one.
@@ -295,17 +400,40 @@ impl OpenShell {
         args: &[&str],
         key: Option<(&str, &Key)>,
     ) -> Result<Output, OpenShellError> {
+        self.command(args, key)
+            .stdin(Stdio::null())
+            .output()
+            .map_err(|error| OpenShellError::Run(error.to_string()))
+    }
+
+    /// `openshell` with `args`, set to go to this gateway. A key goes in its environment, never in an argument.
+    fn command(&self, args: &[&str], key: Option<(&str, &Key)>) -> Command {
         let mut command = Command::new(&self.binary);
         if let Some((variable, key)) = key {
             command.env(variable, &key.0);
         }
+        if let Some(name) = self.gateway.name() {
+            command.env(GATEWAY_VARIABLE, name);
+        }
         command
             .args(args)
             // Plain text, since its errors are read back and shown.
-            .env("NO_COLOR", "1")
-            .stdin(Stdio::null())
-            .output()
-            .map_err(|error| OpenShellError::Run(error.to_string()))
+            .env("NO_COLOR", "1");
+        command
+    }
+
+    /// The gateways OpenShell has registered, whichever this command is set to. It's asked with none named, since
+    /// OpenShell marks the one that's named as the active one, and the order would change with the gateway shown.
+    pub fn gateways(&self) -> Result<Vec<GatewayInfo>, OpenShellError> {
+        parse_gateways(&self.without_gateway().run(
+            "list the gateways",
+            &["gateway", "list", "--output", "json"],
+        )?)
+    }
+
+    /// The same command, going to the active gateway.
+    fn without_gateway(&self) -> OpenShell {
+        self.clone().on(Gateway::Active)
     }
 
     pub fn sandboxes(&self) -> Result<Vec<Sandbox>, OpenShellError> {
@@ -828,7 +956,74 @@ impl OpenShell {
 
 #[cfg(test)]
 mod tests {
-    use super::{Phase, parse_provider_page, parse_sandboxes, resource_version, said};
+    use std::ffi::OsStr;
+
+    use super::{
+        GATEWAY_VARIABLE, Gateway, OpenShell, Phase, parse_gateways, parse_provider_page,
+        parse_sandboxes, resource_version, said,
+    };
+
+    /// What OpenShell 0.1.8 listed with the gateway it set up on this Mac.
+    const GATEWAYS: &str = include_str!("gateways.json");
+
+    #[test]
+    fn the_gateway_openshell_set_up_on_this_mac_is_local_and_active() {
+        let gateways = parse_gateways(GATEWAYS).unwrap();
+        assert_eq!(gateways.len(), 1);
+        assert_eq!(gateways[0].name, "openshell");
+        assert!(gateways[0].active && gateways[0].is_local());
+        assert_eq!(gateways[0].gateway(), Gateway::named("openshell"));
+    }
+
+    #[test]
+    fn the_active_gateway_is_listed_first_and_a_remote_one_is_not_local() {
+        // Written for this test: only the local gateway's shape has been seen.
+        let json = r#"[
+            {"name": "k8s-home", "endpoint": "https://os.example.com", "active": false, "type": "remote", "is_remote": true},
+            {"name": "openshell", "endpoint": "https://localhost:17670", "active": true, "type": "local", "is_remote": false},
+            {"name": "ec2", "active": false}
+        ]"#;
+        let gateways = parse_gateways(json).unwrap();
+        let names: Vec<_> = gateways
+            .iter()
+            .map(|gateway| gateway.name.as_str())
+            .collect();
+        assert_eq!(names, ["openshell", "ec2", "k8s-home"]);
+        assert!(!gateways[2].is_local());
+        assert!(
+            !gateways[1].is_local(),
+            "a gateway that doesn't say isn't assumed to be"
+        );
+    }
+
+    fn gateway_env(openshell: &OpenShell) -> Option<String> {
+        let command = openshell.command(&["sandbox", "list"], None);
+        command
+            .get_envs()
+            .find(|(name, _)| *name == OsStr::new(GATEWAY_VARIABLE))
+            .and_then(|(_, value)| value.map(|value| value.to_string_lossy().into_owned()))
+    }
+
+    #[test]
+    fn commands_go_to_the_active_gateway_unless_one_is_named() {
+        let openshell = OpenShell::new("/opt/homebrew/bin/openshell");
+        assert_eq!(openshell.gateway(), &Gateway::Active);
+        assert_eq!(gateway_env(&openshell), None);
+        let named = openshell.on(Gateway::named("k8s-home"));
+        assert_eq!(named.gateway().name(), Some("k8s-home"));
+        assert_eq!(gateway_env(&named).as_deref(), Some("k8s-home"));
+    }
+
+    #[test]
+    fn the_gateways_are_listed_with_none_named_so_the_order_doesnt_follow_the_one_shown() {
+        let named = OpenShell::new("/opt/homebrew/bin/openshell").on(Gateway::named("k8s-home"));
+        assert_eq!(gateway_env(&named.without_gateway()), None);
+        assert_eq!(
+            named.gateway().name(),
+            Some("k8s-home"),
+            "the command itself is as it was"
+        );
+    }
 
     /// What OpenShell 0.1.8 listed with one sandbox Playpen made.
     const SANDBOXES: &str = include_str!("sandboxes.json");

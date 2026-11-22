@@ -10,6 +10,7 @@ mod docker;
 mod dotenv;
 mod files;
 mod herdr;
+mod image;
 mod kit_setup;
 mod kits;
 mod links;
@@ -35,18 +36,23 @@ pub use dotenv::{
 };
 pub use files::write_atomically;
 pub use herdr::{AgentState, HerdrApp, HerdrCore, HerdrError};
+pub use image::{Image, ImageSource, Platform, Provided, Registry};
 pub use kit_setup::SetupFolder;
 pub use kits::{Kit, Kits, Variable, VariableValue};
 pub use links::{link_target, path_from_file_url};
 pub use locale::best_locale;
 pub use new_service::{Access, KeySource, NewService, find_op};
 pub use openshell::{
-    Key, OpenShell, OpenShellError, Phase, Profile, ProfileEndpoint, Provider, Sandbox, Service,
+    Forgotten, GATEWAY_VARIABLE, Gateway, GatewayInfo, Key, NewGateway, NewGatewayError, Oidc,
+    OpenShell, OpenShellError, Phase, Profile, ProfileEndpoint, Provider, Reach, Sandbox, Service,
 };
 pub use provider::{Endpoint, Kind, NewProvider, ProviderError};
 pub use secrets::Secret;
 pub use session::{Installed, Keep, Opened, Place, SessionError, ShowIn, What};
-pub use settings::{Appearance, Settings, TEXT_SCALES, step_text_scale};
+pub use settings::{
+    Appearance, GatewaySettings, ImageSourceError, ImagesFrom, Settings, TEXT_SCALES,
+    step_text_scale,
+};
 pub use state::{Frame, Screen, State};
 
 /// The app's version: the first `version` in the workspace's Cargo.toml.

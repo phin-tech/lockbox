@@ -103,6 +103,24 @@ fn save(settings: &Settings, path: &Path) {
     }
 }
 
+/// Sets what's chosen for the gateway `name`, or takes its entry out of the settings with `None`.
+pub fn set_gateway(name: &str, set: Option<playpen_core::GatewaySettings>, cx: &mut App) {
+    change(cx, |settings| match set {
+        Some(set) => {
+            settings.gateways.insert(name.to_string(), set);
+        }
+        None => {
+            settings.gateways.remove(name);
+        }
+    });
+}
+
+/// Settings kept in memory only, for a test that changes some.
+#[cfg(test)]
+pub fn init_in_memory(cx: &mut App) {
+    init_at(None, cx);
+}
+
 pub fn set_beta_updates(on: bool, cx: &mut App) {
     update::set_beta(on);
     change(cx, |settings| settings.beta_updates = on);

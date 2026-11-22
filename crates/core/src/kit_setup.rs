@@ -31,7 +31,7 @@ pub struct SetupFolder {
 }
 
 impl SetupFolder {
-    fn installs(&self) -> bool {
+    pub(crate) fn installs(&self) -> bool {
         self.folder.join("install.sh").is_file()
     }
 

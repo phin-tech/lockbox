@@ -93,6 +93,18 @@ pub fn menus() -> Vec<Menu> {
             ],
         ),
         menu(
+            t!("Gateway"),
+            vec![
+                run(t!("Add Gateway…"), "gateway.add"),
+                run(t!("Image Source…"), "gateway.images"),
+                run(t!("Sign In to Gateway…"), "gateway.sign-in"),
+                run(t!("Remove Gateway…"), "gateway.remove"),
+                MenuItem::separator(),
+                run(t!("Next Gateway"), "gateway.next"),
+                run(t!("Previous Gateway"), "gateway.previous"),
+            ],
+        ),
+        menu(
             t!("Sandbox"),
             vec![
                 run(t!("Open Agent"), "sandbox.open"),

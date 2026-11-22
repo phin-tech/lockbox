@@ -2,14 +2,14 @@
 //! keeps a session when it's installed, so closing the window showing it only detaches; without it, the window is the
 //! session, and closing it ends the session. Either way, the sandbox is left as it was.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 
 use serde::{Deserialize, Serialize};
 
 use crate::agent::{open_command, quote};
 use crate::herdr::{HerdrApp, HerdrCore, HerdrError};
-use crate::openshell::Sandbox;
+use crate::openshell::{OpenShell, Sandbox};
 
 /// Where sessions are shown unless one is opened somewhere else: kept in the settings.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -123,10 +123,12 @@ pub enum Keep {
 
 /// Opens the session running `what` in the sandbox, shown in `place`, kept by herdr-core when `keep` asks and it's
 /// installed. The Herdr app always has herdr-core keep it, since that's what it shows. A session herdr-core keeps that
-/// is already live is shown again rather than started twice.
+/// is already live is shown again rather than started twice. `label` names the sandbox to herdr and to the window: its
+/// name, with its gateway before it unless that's the one OpenShell runs on this Mac.
 pub fn open(
-    openshell: &Path,
+    openshell: &OpenShell,
     sandbox: &Sandbox,
+    label: &str,
     what: What,
     place: Place,
     keep: Keep,
@@ -137,15 +139,15 @@ pub fn open(
     } else {
         (Place::Terminal, Opened::InTerminalInstead(place))
     };
-    let command = open_command(openshell, sandbox, what);
+    let command = open_command(openshell.binary(), openshell.gateway(), sandbox, what);
     let core = HerdrCore::find().filter(|_| keep == Keep::InHerdrCore || place == Place::HerdrApp);
     let line = match &core {
         Some(core) => {
-            let address = core.session(sandbox, what, &command)?;
+            let address = core.session(label, what, &command)?;
             if place == Place::HerdrApp
                 && let Some(app) = HerdrApp::find()
             {
-                app.show(&sandbox.name, what, &address)?;
+                app.show(label, what, &address)?;
                 return Ok(opened);
             }
             core.attach_command(&address)
@@ -155,7 +157,8 @@ pub fn open(
     match place {
         Place::Ghostty => in_ghostty(&line)?,
         Place::Terminal | Place::HerdrApp => {
-            in_terminal(&format!("{}-{}", sandbox.name, what.id()), &line)?;
+            // A file's name, so a gateway's `/` isn't a folder.
+            in_terminal(&format!("{}-{}", label.replace('/', "-"), what.id()), &line)?;
         }
     }
     Ok(opened)

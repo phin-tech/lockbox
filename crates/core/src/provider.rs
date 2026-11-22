@@ -184,7 +184,7 @@ impl Kind {
             Kind::ZAi => "An API key from z.ai.",
             Kind::LiteLlm => "A virtual key from the proxy's admin.",
             Kind::ChatGptSubscription => {
-                "Sign in to ChatGPT in the Terminal window that opens. This is a login of the sandboxes' own, so your Mac's Codex stays signed in."
+                "Sign In… gives a code to sign in to ChatGPT with, in any browser. This is a login of the sandboxes' own, so your Mac's Codex stays signed in."
             }
         }
     }

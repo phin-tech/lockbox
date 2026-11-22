@@ -27,7 +27,7 @@ pub use agent::{Agent, MakeError, Plan, Step, is_sandbox_name, open_command, sug
 pub use bring_back::{
     BringBackError, Brought, Repo, branch as bring_back_branch, bring_back, seed,
 };
-pub use chatgpt::{Account, ChatGptError, Login, Tokens, find_codex};
+pub use chatgpt::{Account, ChatGptError, DeviceCode, Login, Tokens, find_codex};
 pub use docker::{Docker, DockerError};
 pub use dotenv::{
     EnvLine, Guess, guess as guess_env, looks_secret, parse as parse_env,

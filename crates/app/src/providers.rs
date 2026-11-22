@@ -17,8 +17,8 @@ use std::time::{Duration, Instant};
 
 use gpui_kit::component::radio::Radio;
 use playpen_core::{
-    Access, Account, ChatGptError, Key, KeySource, Kind, Login, NewProvider, NewService, OpenShell,
-    Provider, ProviderError, find_codex, find_op,
+    Access, Account, ChatGptError, DeviceCode, Key, KeySource, Kind, Login, NewProvider,
+    NewService, OpenShell, Provider, ProviderError, find_codex, find_op,
 };
 use rust_i18n::t;
 
@@ -52,8 +52,10 @@ struct Form {
     /// The name Playpen last suggested, which choosing another kind changes while the person hasn't typed one.
     suggested: String,
     saving: bool,
-    /// Whether it's waiting for the person to sign in, in Terminal.
+    /// Whether it's waiting for the person to sign in.
     signing_in: bool,
+    /// The page and code to sign in with, once Codex has given them.
+    device: Option<DeviceCode>,
     _chose: Subscription,
 }
 
@@ -441,6 +443,7 @@ impl Providers {
             suggested,
             saving: false,
             signing_in: false,
+            device: None,
             _chose: chose,
         });
         self.failed = None;
@@ -522,20 +525,17 @@ impl Providers {
         cx.notify();
     }
 
-    /// Signs in to ChatGPT with the Mac's Codex, in Terminal, into a folder of Playpen's, and waits up to a quarter of
+    /// Signs in to ChatGPT with the Mac's Codex, by device code, into a folder of Playpen's, and waits up to a quarter of
     /// an hour for the login to appear there. Its tokens go to OpenShell and the folder is deleted; the account is
     /// kept, for the sandboxes that use the provider.
     fn sign_in(&mut self, job: Job, window: &mut Window, cx: &mut Context<Self>) {
+        // Codex signs in by device code into a folder of Playpen's, so nothing opens but the page the person chooses.
         let started = (|| {
             let codex = find_codex().ok_or(ChatGptError::NoCodex)?;
             let login = Login::start()?;
-            playpen_core::session::show_in_terminal(
-                "chatgpt-sign-in",
-                &login.command_line(&codex),
-            )?;
-            anyhow::Ok(login)
+            anyhow::Ok((login, codex))
         })();
-        let login = match started {
+        let (mut login, codex) = match started {
             Ok(login) => login,
             Err(error) => {
                 tracing::warn!("couldn't start signing in to ChatGPT: {error:#}");
@@ -552,6 +552,30 @@ impl Providers {
         tracing::info!(provider = %job.name(), "signing in to ChatGPT");
         let accounts = crate::settings::file("chatgpt");
         self._working = Some(cx.spawn_in(window, async move |this, cx| {
+            let (back, code) = cx
+                .background_spawn(async move {
+                    let code = login.start_device(&codex);
+                    (login, code)
+                })
+                .await;
+            login = back;
+            match code {
+                Ok(code) => {
+                    let _ = this.update(cx, |this, cx| {
+                        if let Some(form) = &mut this.form {
+                            form.device = Some(code);
+                        }
+                        cx.notify();
+                    });
+                }
+                Err(error) => {
+                    let _ = this.update_in(cx, |this, window, cx| {
+                        this.saved(Err(error.into()), window, cx);
+                    });
+                    return;
+                }
+            }
+            // Codex gives a quarter of an hour to sign in.
             let deadline = Instant::now() + Duration::from_secs(15 * 60);
             let signed_in = loop {
                 if let Some(tokens) = login.tokens() {
@@ -778,14 +802,13 @@ impl Providers {
             })
             .map(|this| {
                 if form.kind.signs_in() {
-                    this.child(note(
-                        if form.signing_in {
-                            t!("Waiting for you to sign in, in Terminal…")
-                        } else {
-                            t!(form.kind.where_to_get_a_key())
-                        },
-                        cx,
-                    ))
+                    match (&form.device, form.signing_in) {
+                        (Some(device), true) => this.child(device_code(device, cx)),
+                        (None, true) => {
+                            this.child(note(t!("Asking Codex for a code to sign in with…"), cx))
+                        }
+                        _ => this.child(note(t!(form.kind.where_to_get_a_key()), cx)),
+                    }
                 } else {
                     this.child(field(
                         t!("Key"),
@@ -885,6 +908,50 @@ impl Render for Providers {
                 ),
             })
     }
+}
+
+/// The page to sign in at and the one-time code to give it, with buttons to open the one and copy the other.
+fn device_code(device: &DeviceCode, cx: &App) -> Div {
+    let theme = cx.theme();
+    let url = device.url.clone();
+    let code = device.code.clone();
+    v_flex()
+        .gap_2()
+        .child(note(
+            t!("Open the sign-in page, sign in to ChatGPT, and give it this code. Playpen carries on once you have."),
+            cx,
+        ))
+        .child(
+            h_flex()
+                .gap_3()
+                .child(
+                    div()
+                        .px_3()
+                        .py_1p5()
+                        .rounded(theme.radius)
+                        .bg(theme.muted)
+                        .font_family(theme.mono_font_family.clone())
+                        .text_lg()
+                        .font_semibold()
+                        .child(device.code.clone()),
+                )
+                .child(
+                    Button::new("copy-device-code")
+                        .small()
+                        .label(t!("Copy Code").into_owned())
+                        .on_click(move |_, _, cx| {
+                            cx.write_to_clipboard(ClipboardItem::new_string(code.clone()));
+                        }),
+                )
+                .child(
+                    Button::new("open-device-page")
+                        .primary()
+                        .small()
+                        .label(t!("Open Sign-In Page").into_owned())
+                        .on_click(move |_, _, cx| cx.open_url(&url)),
+                ),
+        )
+        .child(note(t!("The code lasts a quarter of an hour."), cx))
 }
 
 /// A labelled row of the form.

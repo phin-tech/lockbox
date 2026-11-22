@@ -10,7 +10,6 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::agent::quote;
 use crate::files::write_atomically;
 use crate::openshell::Key;
 
@@ -25,14 +24,64 @@ pub enum ChatGptError {
     Folder(String),
     #[error("Codex signed in, but Playpen couldn't read its login: {0}")]
     Unreadable(String),
+    #[error("Codex didn't give a code to sign in with: {0}")]
+    Device(String),
     #[error("Couldn't keep the ChatGPT account for “{0}”: {1}")]
     Account(String, String),
 }
 
-/// A sign-in under way, in a folder of its own, which goes when it does.
+/// A sign-in under way, in a folder of its own, which goes when it does, with the `codex login` running it.
 #[derive(Debug)]
 pub struct Login {
     home: PathBuf,
+    codex: Option<std::process::Child>,
+}
+
+/// Where to sign in, and the one-time code to give there, for a sign-in by device code.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeviceCode {
+    pub url: String,
+    pub code: String,
+}
+
+/// `text` without the colours a terminal would show.
+fn plain(text: &str) -> String {
+    let mut plain = String::with_capacity(text.len());
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' {
+            // An escape runs to its final letter, as `\x1b[94m` does.
+            for next in chars.by_ref() {
+                if next.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        } else {
+            plain.push(c);
+        }
+    }
+    plain
+}
+
+/// The page and code in what `codex login --device-auth` printed, once it has printed both.
+fn device_code(printed: &str) -> Option<DeviceCode> {
+    let printed = plain(printed);
+    let url = printed
+        .split_whitespace()
+        .find(|word| word.starts_with("https://"))?
+        .to_string();
+    let code = printed
+        .lines()
+        .map(str::trim)
+        .find(|line| {
+            (7..=12).contains(&line.len())
+                && line.contains('-')
+                && line
+                    .chars()
+                    .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '-')
+        })?
+        .to_string();
+    Some(DeviceCode { url, code })
 }
 
 /// What a finished sign-in gives.
@@ -96,16 +145,68 @@ impl Login {
             .mode(0o700)
             .create(&home)
             .map_err(|error| ChatGptError::Folder(error.to_string()))?;
-        Ok(Login { home })
+        Ok(Login { home, codex: None })
     }
 
-    /// The shell line that signs in with `codex`, into this sign-in's folder.
-    pub fn command_line(&self, codex: &Path) -> String {
-        format!(
-            "CODEX_HOME={} exec {} login",
-            quote(&self.home.to_string_lossy()),
-            quote(&codex.to_string_lossy())
-        )
+    /// Starts `codex login --device-auth` into this sign-in's folder, and gives the page to sign in at and the code
+    /// to give it once Codex prints them. It goes on waiting for the person until they've signed in or the sign-in is
+    /// dropped. No browser or terminal is opened.
+    pub fn start_device(&mut self, codex: &Path) -> Result<DeviceCode, ChatGptError> {
+        use std::io::Read as _;
+
+        let failed = |error: String| ChatGptError::Device(error);
+        let mut child = std::process::Command::new(codex)
+            .args(["login", "--device-auth"])
+            .env("CODEX_HOME", &self.home)
+            .env("NO_COLOR", "1")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|error| failed(error.to_string()))?;
+        let (sender, receiver) = std::sync::mpsc::channel::<String>();
+        for stream in [
+            child
+                .stdout
+                .take()
+                .map(|out| Box::new(out) as Box<dyn std::io::Read + Send>),
+            child
+                .stderr
+                .take()
+                .map(|err| Box::new(err) as Box<dyn std::io::Read + Send>),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            let sender = sender.clone();
+            // Read to the end, so Codex never blocks on a full pipe while it waits.
+            std::thread::spawn(move || {
+                let mut stream = stream;
+                let mut buffer = [0u8; 1024];
+                while let Ok(read) = stream.read(&mut buffer) {
+                    if read == 0 {
+                        break;
+                    }
+                    let _ = sender.send(String::from_utf8_lossy(&buffer[..read]).into_owned());
+                }
+            });
+        }
+        drop(sender);
+        self.codex = Some(child);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        let mut printed = String::new();
+        while let Some(left) = deadline.checked_duration_since(std::time::Instant::now()) {
+            match receiver.recv_timeout(left) {
+                Ok(text) => {
+                    printed.push_str(&text);
+                    if let Some(code) = device_code(&printed) {
+                        return Ok(code);
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        Err(failed(plain(printed.trim())))
     }
 
     /// The tokens, once the person has signed in, or none while they haven't. A file that isn't JSON yet is one
@@ -119,6 +220,10 @@ impl Login {
 
 impl Drop for Login {
     fn drop(&mut self) {
+        if let Some(mut codex) = self.codex.take() {
+            let _ = codex.kill();
+            let _ = codex.wait();
+        }
         let _ = std::fs::remove_dir_all(&self.home);
     }
 }
@@ -248,6 +353,19 @@ mod tests {
             format!("{:?}", tokens.refresh).contains('…'),
             "never printed"
         );
+    }
+
+    #[test]
+    fn the_page_and_code_are_read_from_what_codex_prints() {
+        let printed = "Welcome to Codex [v\x1b[90m0.167.0\x1b[0m]\n\nFollow these steps to sign in with ChatGPT using device code authorization:\n\n1. Open this link in your browser and sign in to your account\n   \x1b[94mhttps://auth.openai.com/codex/device\x1b[0m\n\n2. Enter this one-time code \x1b[90m(expires in 15 minutes)\x1b[0m\n   \x1b[94mABCD-EFGHI\x1b[0m\n";
+        assert_eq!(
+            super::device_code(printed),
+            Some(super::DeviceCode {
+                url: "https://auth.openai.com/codex/device".to_string(),
+                code: "ABCD-EFGHI".to_string(),
+            })
+        );
+        assert_eq!(super::device_code("Welcome to Codex"), None, "not yet");
     }
 
     #[test]

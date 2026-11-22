@@ -117,3 +117,14 @@ fn a_chatgpt_provider_is_added_renewable_signed_in_again_and_deleted() {
     let status = String::from_utf8_lossy(&status.stdout).to_lowercase();
     assert!(status.contains("oauth2"), "renewal is set up: {status}");
 }
+
+#[test]
+#[ignore = "needs Codex on this Mac and the internet; signs nobody in"]
+fn a_device_sign_in_gives_its_page_and_code_and_stops_when_dropped() {
+    let codex = playpen_core::find_codex().expect("Codex is installed");
+    let mut login = playpen_core::Login::start().unwrap();
+    let code = login.start_device(&codex).unwrap();
+    assert_eq!(code.url, "https://auth.openai.com/codex/device");
+    assert!(code.code.contains('-'), "a one-time code");
+    drop(login);
+}

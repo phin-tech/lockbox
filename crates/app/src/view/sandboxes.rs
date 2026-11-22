@@ -310,6 +310,7 @@ impl MainView {
         self.making = None;
         self.adding = None;
         self.imaging = None;
+        self.microvm = None;
         self.failed = None;
         tracing::info!(gateway = name, "showing a gateway");
         self.refresh(window, cx);
@@ -446,6 +447,7 @@ impl MainView {
         self.making = None;
         self.adding = None;
         self.imaging = None;
+        self.microvm = None;
         if changed {
             self.look_up_services(cx);
         }

@@ -7,6 +7,7 @@ mod gateways;
 mod images;
 mod kits;
 mod making;
+mod microvm;
 mod sandboxes;
 mod services;
 #[cfg(test)]
@@ -182,6 +183,8 @@ pub struct MainView {
     adding: Option<gateways::Adding>,
     /// Where the shown gateway gets its images, being chosen, in the detail panel's place.
     imaging: Option<images::Imaging>,
+    /// The MicroVM gateway being set up, in the detail panel's place.
+    microvm: Option<microvm::MicroVmForm>,
     /// What's being done to a gateway that takes a while, which the sidebar says.
     gateway_working: Option<gateways::GatewayWork>,
     card: Option<Card>,
@@ -237,6 +240,7 @@ impl MainView {
             providers: None,
             adding: None,
             imaging: None,
+            microvm: None,
             gateway_working: None,
             card: None,
             _watching: watching,
@@ -285,6 +289,7 @@ impl MainView {
             "gateway.next" => self.switch_gateway(1, window, cx),
             "gateway.previous" => self.switch_gateway(-1, window, cx),
             "gateway.add" => self.start_adding_gateway(window, cx),
+            "gateway.microvm" => self.start_microvm_form(window, cx),
             "gateway.images" => self.start_images_form(window, cx),
             "gateway.remove" => {
                 if let Some(name) = self.gateway.name().map(str::to_string) {
@@ -532,11 +537,12 @@ impl Render for MainView {
             Page::Sandboxes => (
                 self.list_heading(cx),
                 Some(self.sandbox_list(cx)),
-                match (&self.imaging, &self.adding, &self.making) {
-                    (Some(imaging), _, _) => self.images_panel(imaging, cx),
-                    (None, Some(adding), _) => self.adding_panel(adding, cx),
-                    (None, None, Some(making)) => self.making_panel(making, cx),
-                    (None, None, None) => self.sandbox_detail(cx),
+                match (&self.microvm, &self.imaging, &self.adding, &self.making) {
+                    (Some(microvm), ..) => self.microvm_panel(microvm, cx),
+                    (None, Some(imaging), _, _) => self.images_panel(imaging, cx),
+                    (None, None, Some(adding), _) => self.adding_panel(adding, cx),
+                    (None, None, None, Some(making)) => self.making_panel(making, cx),
+                    (None, None, None, None) => self.sandbox_detail(cx),
                 },
             ),
             Page::Agents => (

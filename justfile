@@ -52,6 +52,10 @@ services-test:
 bring-back-test:
     cargo test -p playpen-core --test bring_back -- --ignored
 
+# Set up the MicroVM gateway, make a Claude Code sandbox on it, and remove it again; not over one already set up
+microvm-test:
+    cargo test -p playpen-core --test microvm -- --ignored
+
 # Make a sandbox with a kit whose install.sh puts in jq and whose dotfiles are linked into its home
 kit-setup-test:
     cargo test -p playpen-core --test kit_setup -- --ignored

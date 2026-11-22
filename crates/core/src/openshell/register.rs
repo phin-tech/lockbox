@@ -187,7 +187,7 @@ fn clear_folder(config: &Path, gateway: &GatewayInfo) -> std::io::Result<Forgott
 }
 
 /// Where OpenShell keeps its configuration: `$XDG_CONFIG_HOME`, or `.config` in the home folder.
-fn config_home() -> Option<PathBuf> {
+pub(super) fn config_home() -> Option<PathBuf> {
     std::env::var_os("XDG_CONFIG_HOME")
         .filter(|path| !path.is_empty())
         .map(PathBuf::from)

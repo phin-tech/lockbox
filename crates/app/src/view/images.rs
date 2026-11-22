@@ -49,6 +49,7 @@ impl MainView {
         );
         self.making = None;
         self.adding = None;
+        self.microvm = None;
         self.failed = None;
         self.imaging = Some(Imaging {
             gateway: name,

@@ -5,6 +5,7 @@ mod added;
 mod agent;
 mod bring_back;
 mod chatgpt;
+mod claude_token;
 pub mod crash;
 mod docker;
 mod dotenv;
@@ -30,6 +31,7 @@ pub use bring_back::{
     BringBackError, Brought, Repo, branch as bring_back_branch, bring_back, seed,
 };
 pub use chatgpt::{Account, ChatGptError, DeviceCode, Login, Tokens, find_codex};
+pub use claude_token::{ClaudeTokenError, TokenSignIn, find_claude};
 pub use docker::{Docker, DockerError};
 pub use dotenv::{
     EnvLine, Guess, guess as guess_env, looks_secret, parse as parse_env,
@@ -48,8 +50,10 @@ pub use links::{link_target, path_from_file_url};
 pub use locale::best_locale;
 pub use new_service::{Access, KeySource, NewService, find_op};
 pub use openshell::{
-    Forgotten, GATEWAY_VARIABLE, Gateway, GatewayInfo, Key, NewGateway, NewGatewayError, Oidc,
-    OpenShell, OpenShellError, Phase, Profile, ProfileEndpoint, Provider, Reach, Sandbox, Service,
+    Forgotten, GATEWAY_VARIABLE, Gateway, GatewayInfo, Key, MICROVM_GATEWAY, MicroVm, MicroVmError,
+    MicroVmPlaces, MicroVmSize, Missing, NewGateway, NewGatewayError, Oidc, OpenShell,
+    OpenShellError, Phase, Profile, ProfileEndpoint, Provider, Reach, Sandbox, Service, SetUpStep,
+    install_e2fsprogs, why_not_started,
 };
 pub use provider::{Endpoint, Kind, NewProvider, ProviderError};
 pub use secrets::Secret;

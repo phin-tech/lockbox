@@ -25,6 +25,7 @@ pub const COMMANDS: &[&str] = &[
     "file.new",
     "gateway.add",
     "gateway.images",
+    "gateway.microvm",
     "gateway.next",
     "gateway.previous",
     "gateway.remove",

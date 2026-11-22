@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 
 use gpui_kit::component::radio::Radio;
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, StyledExt as _, button::Button, h_flex, switch::Switch,
-    v_flex,
+    ActiveTheme as _, Disableable as _, Sizable as _, StyledExt as _, button::Button, h_flex,
+    switch::Switch, v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -253,28 +253,31 @@ pub struct Keys {
 
 impl Keys {
     fn new(cx: &mut Context<Self>) -> Self {
-        let op = find_op();
-        let listing = op
-            .clone()
-            .filter(|_| !cfg!(feature = "screenshot"))
-            .map(|op| {
-                cx.spawn(async move |this, cx| {
-                    let listed = cx
-                        .background_spawn(
-                            async move { vaults(&op).map_err(|error| error.to_string()) },
-                        )
-                        .await;
-                    let _ = this.update(cx, |this, cx| {
-                        this.vaults = Some(listed);
-                        cx.notify();
-                    });
-                })
-            });
-        Self {
-            op,
+        let mut keys = Self {
+            op: find_op(),
             vaults: None,
-            _listing: listing,
-        }
+            _listing: None,
+        };
+        keys.list_vaults(cx);
+        keys
+    }
+
+    /// Asks 1Password for the vaults, off the window's thread. 1Password may ask the person to allow it first.
+    fn list_vaults(&mut self, cx: &mut Context<Self>) {
+        let Some(op) = self.op.clone().filter(|_| !cfg!(feature = "screenshot")) else {
+            return;
+        };
+        self.vaults = None;
+        self._listing = Some(cx.spawn(async move |this, cx| {
+            let listed = cx
+                .background_spawn(async move { vaults(&op).map_err(|error| error.to_string()) })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.vaults = Some(listed);
+                cx.notify();
+            });
+        }));
+        cx.notify();
     }
 }
 
@@ -298,10 +301,19 @@ impl Render for Keys {
                 "1Password's command line, `op`, isn't installed: `brew install 1password-cli`."
             )),
             (Some(_), None) => note(t!("Asking 1Password for your vaults…")),
-            (Some(_), Some(Err(error))) => note(t!(
-                "1Password didn't list your vaults: %{error}",
-                error = error.clone()
-            )),
+            (Some(_), Some(Err(error))) => v_flex()
+                .gap_2()
+                .items_start()
+                .child(note(error.clone().into()))
+                .child(note(t!(
+                    "1Password asks you to allow Playpen to use it. Allow it, then ask again."
+                )))
+                .child(
+                    Button::new("list-vaults")
+                        .small()
+                        .label(t!("Ask Again").into_owned())
+                        .on_click(cx.listener(|this, _, _, cx| this.list_vaults(cx))),
+                ),
             (Some(_), Some(Ok(vaults))) => {
                 v_flex().gap_1p5().children(vaults.iter().map(|vault| {
                     let id = vault.id.clone();

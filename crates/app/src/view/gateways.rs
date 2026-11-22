@@ -59,6 +59,12 @@ pub struct GatewayWork {
     _task: Task<()>,
 }
 
+impl GatewayWork {
+    pub(super) fn new(said: String, task: Task<()>) -> GatewayWork {
+        GatewayWork { said, _task: task }
+    }
+}
+
 impl MainView {
     /// Shows the form for adding a gateway.
     pub(super) fn start_adding_gateway(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -103,6 +109,7 @@ impl MainView {
         address.read(cx).focus_handle(cx).focus(window, cx);
         self.making = None;
         self.imaging = None;
+        self.microvm = None;
         self.failed = None;
         self.adding = Some(Adding {
             address,
@@ -221,6 +228,17 @@ impl MainView {
         else {
             return;
         };
+        // The MicroVM gateway Playpen set up is Playpen's to stop, as well as forget.
+        if gateway.name == playpen_core::MICROVM_GATEWAY
+            && self
+                .openshell()
+                .ok()
+                .and_then(|openshell| playpen_core::MicroVm::find(&openshell))
+                .is_some_and(|microvm| microvm.is_set_up())
+        {
+            self.confirm_remove_microvm(window, cx);
+            return;
+        }
         if gateway.has_certificates_of_its_own() {
             self.failed = Some(
                 t!(
@@ -414,6 +432,19 @@ impl MainView {
             .gap_5()
             .p_4()
             .child(section(t!("Address"), cx).child(div().w(rems(28.)).child(small_field(&adding.address))).child(how))
+            .child(
+                v_flex()
+                    .gap_2()
+                    .items_start()
+                    .child(hint(t!("Or run sandboxes as microVMs on this Mac, with a gateway Playpen sets up."), cx))
+                    .child(
+                        Button::new("adding-microvm")
+                            .xsmall()
+                            .disabled(working)
+                            .label(t!("Set Up MicroVM Gateway…").into_owned())
+                            .on_click(cx.listener(|this, _, window, cx| this.start_microvm_form(window, cx))),
+                    ),
+            )
             .when(browser, |body| {
                 let field = |title: String, state: &Entity<InputState>| {
                     section(title, cx).child(div().w(rems(28.)).child(small_field(state)))

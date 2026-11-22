@@ -1,6 +1,6 @@
 // Not a glob: the kit's `test` macro would shadow the `#[test]` it expands to.
 use super::sandboxes::gateway_where;
-use super::{Listing, MainView, Page, SandboxKey, Watch};
+use super::{Listing, MainView, Page, SandboxKey, Watch, microvm};
 use crate::commands::COMMANDS;
 use crate::providers::ShownGateway;
 use crate::shortcuts::SHORTCUTS;
@@ -1024,4 +1024,41 @@ fn choosing_a_gateway_by_name_shows_it_and_a_name_that_isnt_registered_does_noth
         assert!(matches!(view.listing(), Listing::Loading));
         assert_eq!(view.selected, None);
     });
+}
+
+#[gpui_kit::test]
+fn set_up_microvm_gateway_shows_its_form_in_place_of_the_others_and_chooses_each_sandboxs_size(
+    cx: &mut TestAppContext,
+) {
+    let (view, cx) = open(cx);
+    view.update_in(cx, |view, window, cx| {
+        view.run("gateway.add", window, cx);
+        view.run("gateway.microvm", window, cx);
+    });
+    view.read_with(cx, |view, _| {
+        assert!(view.microvm.is_some() && view.adding.is_none());
+        let form = view.microvm.as_ref().unwrap();
+        assert_eq!(form.size(), playpen_core::MicroVmSize::default());
+        assert_eq!(form.failure(), None);
+    });
+    view.update(cx, |view, cx| {
+        view.choose_microvm_size(microvm::SizePart::Cpus, 8, cx);
+        view.choose_microvm_size(microvm::SizePart::Memory, 2, cx);
+        view.choose_microvm_size(microvm::SizePart::Disk, 32, cx);
+    });
+    view.read_with(cx, |view, _| {
+        let size = view.microvm.as_ref().unwrap().size();
+        assert_eq!((size.cpus, size.memory_gib, size.disk_gib), (8, 2, 32));
+    });
+    // New Agent… takes its place.
+    cx.simulate_keystrokes("cmd-n");
+    view.read_with(cx, |view, _| {
+        assert!(view.microvm.is_none() && view.making.is_some());
+    });
+    view.update_in(cx, |view, window, cx| {
+        view.making = None;
+        view.run("gateway.microvm", window, cx);
+        view.cancel_microvm(window, cx);
+    });
+    view.read_with(cx, |view, _| assert!(view.microvm.is_none()));
 }

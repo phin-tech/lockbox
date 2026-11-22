@@ -1,12 +1,11 @@
 ---
 source: crates/core/src/agent/mod.rs
-assertion_line: 511
 expression: "args.join(\"\\n\")"
 ---
 --name
 claude-patchbay
 --from
-playpen-claude-code:2.1.329
+playpen-claude-code:2.1.329-b0ff9d7b
 --policy
 /tmp/policy.yaml
 --detach

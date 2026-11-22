@@ -187,3 +187,30 @@ fn a_provider_goes_to_another_gateway_with_its_key_from_the_keychain() {
     let (provider, copied) = tried.unwrap();
     assert_eq!(copied.map(|copied| copied.kind), Some(provider.kind));
 }
+
+#[test]
+#[ignore = "needs Claude Code on this Mac and the internet; signs nobody in"]
+fn a_claude_sign_in_gives_its_link_and_stops_when_dropped() {
+    let claude = playpen_core::find_claude().expect("Claude Code is installed");
+    let sign_in = playpen_core::TokenSignIn::start(&claude).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let link = loop {
+        if let Some(link) = sign_in.link() {
+            break link;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no link to sign in at"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    };
+    assert!(link.starts_with("https://claude"), "{link}");
+    assert!(sign_in.token().is_none());
+    drop(sign_in);
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let left = std::process::Command::new("/usr/bin/pgrep")
+        .args(["-f", "claude setup-token"])
+        .output()
+        .unwrap();
+    assert!(left.stdout.is_empty(), "Claude Code stopped with it");
+}

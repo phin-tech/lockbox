@@ -67,12 +67,18 @@ impl Agent {
         }
     }
 
-    /// The image it runs in, tagged with the agent's version.
+    /// The image it runs in, tagged with the agent's version and what its Dockerfile says, so a changed Dockerfile
+    /// makes a new image rather than using the one built before.
     pub fn image(self) -> String {
-        match self {
-            Agent::ClaudeCode => format!("playpen-claude-code:{CLAUDE_CODE_VERSION}"),
-            Agent::Codex => format!("playpen-codex:{CODEX_VERSION}"),
-        }
+        let name = match self {
+            Agent::ClaudeCode => "playpen-claude-code",
+            Agent::Codex => "playpen-codex",
+        };
+        format!(
+            "{name}:{}-{:08x}",
+            self.version(),
+            fnv1a(self.dockerfile().as_bytes())
+        )
     }
 
     /// The version of the agent its image is built with.
@@ -111,11 +117,22 @@ impl Agent {
         }
     }
 
-    /// The command that starts it.
-    pub fn command(self) -> &'static str {
+    /// What a sandbox for it is named after.
+    fn name_stem(self) -> &'static str {
         match self {
             Agent::ClaudeCode => "claude",
             Agent::Codex => "codex",
+        }
+    }
+
+    /// The command that starts it. Codex runs without the background server it would keep for its sessions, which
+    /// needs more of the processes around it than a sandbox shows, and which a sandbox's session has no use for; and
+    /// with SQLite, which it keeps its state in, putting its temporary files in /tmp rather than /var/tmp, which a
+    /// sandbox may only read. It's said on the command, since `sandbox exec` doesn't pass on the image's environment.
+    pub fn command(self) -> &'static str {
+        match self {
+            Agent::ClaudeCode => "claude",
+            Agent::Codex => "env SQLITE_TMPDIR=/tmp TMPDIR=/tmp codex --no-daemon",
         }
     }
 
@@ -123,7 +140,7 @@ impl Agent {
     fn continue_command(self) -> &'static str {
         match self {
             Agent::ClaudeCode => "claude --continue",
-            Agent::Codex => "codex resume --last",
+            Agent::Codex => "env SQLITE_TMPDIR=/tmp TMPDIR=/tmp codex resume --last --no-daemon",
         }
     }
 
@@ -517,7 +534,7 @@ pub fn is_sandbox_name(name: &str) -> bool {
 /// `claude-app-web` for `app` and `web`. Since OpenShell's names are short, it takes as many whole folder names as
 /// fit, cutting the first short only when even that doesn't.
 pub fn suggested_name(agent: Agent, folders: &[PathBuf]) -> String {
-    let mut name = agent.command().to_string();
+    let mut name = agent.name_stem().to_string();
     for folder in folders.iter().filter_map(|folder| folder.file_name()) {
         let mut part = String::new();
         for c in folder.to_string_lossy().chars() {
@@ -536,7 +553,7 @@ pub fn suggested_name(agent: Agent, folders: &[PathBuf]) -> String {
         if longer.len() <= SANDBOX_NAME_MAX {
             name = longer;
         } else {
-            if name == agent.command() {
+            if name == agent.name_stem() {
                 name = longer;
                 name.truncate(SANDBOX_NAME_MAX);
             }
@@ -581,6 +598,14 @@ pub fn open_command(openshell: &Path, gateway: &Gateway, sandbox: &Sandbox, what
         "{openshell} sandbox exec --name {name} --tty --workdir {workdir} -- {run}",
         workdir = quote(sandbox.workdir.as_deref().unwrap_or(SANDBOX_HOME)),
     )
+}
+
+/// A short hash of `bytes` that's the same in every build, unlike the standard library's, so an image's tag only
+/// changes when what it's built from does.
+fn fnv1a(bytes: &[u8]) -> u32 {
+    bytes.iter().fold(0x811c_9dc5_u32, |hash, byte| {
+        (hash ^ u32::from(*byte)).wrapping_mul(0x0100_0193)
+    })
 }
 
 /// `text` as one word to a POSIX shell.
@@ -832,5 +857,17 @@ mod tests {
         assert_eq!(Agent::from_id("claude-code"), Some(Agent::ClaudeCode));
         assert_eq!(Agent::from_id("codex"), Some(Agent::Codex));
         assert_eq!(Agent::from_id("cursor"), None);
+    }
+
+    #[test]
+    fn an_agents_image_is_tagged_with_its_version_and_its_dockerfile() {
+        let tag = Agent::Codex.image();
+        assert!(tag.starts_with("playpen-codex:0.171.0-"), "{tag}");
+        assert_eq!(tag, Agent::Codex.image(), "the same each time");
+        assert_ne!(
+            super::fnv1a(b"FROM debian\n"),
+            super::fnv1a(b"FROM debian\nRUN true\n"),
+            "a changed Dockerfile, a changed tag"
+        );
     }
 }

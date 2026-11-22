@@ -1,0 +1,20 @@
+---
+source: crates/core/src/openshell/microvm.rs
+expression: "gateway_toml(&places, &programs(), 17671, MicroVmSize::default())"
+---
+# Written by Playpen: a gateway whose sandboxes are microVMs.
+[openshell]
+version = 2
+
+[openshell.gateway]
+compute_driver = "vm"
+guest_tls_ca = "/Users/someone/.local/state/playpen/microvm/tls/ca.crt"
+
+[openshell.drivers.vm]
+default_image = "nvcr.io/nvidia/base/ubuntu:24.04"
+grpc_endpoint = "https://127.0.0.1:17671"
+driver_dir = "/opt/homebrew/opt/openshell/libexec"
+state_dir = "/Users/someone/.local/state/playpen/microvm/state"
+vcpus = 4
+mem_mib = 4096
+overlay_disk_mib = 16384

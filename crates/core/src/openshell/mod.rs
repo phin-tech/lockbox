@@ -18,6 +18,11 @@ use crate::new_service::{KeySource, NewService, with_key};
 use crate::provider::{CHATGPT_CLIENT_ID, Kind, NewProvider};
 use crate::secrets::{Secret, Wrapped, wrap};
 
+mod microvm;
+pub use microvm::{
+    MICROVM_GATEWAY, MicroVm, MicroVmError, MicroVmPlaces, MicroVmSize, Missing, SetUpStep,
+    install_e2fsprogs, why_not_started,
+};
 mod register;
 pub use register::{Forgotten, NewGateway, NewGatewayError, Oidc, Reach};
 
@@ -137,6 +142,11 @@ impl Key {
 
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
+    }
+
+    /// The key itself, for a masked field of the person's own, as when Playpen fetched it for them.
+    pub fn reveal(&self) -> &str {
+        &self.0
     }
 }
 
@@ -868,12 +878,8 @@ impl OpenShell {
             "--",
         ];
         all.extend_from_slice(args);
-        let mut child = Command::new(&self.binary)
-            .args(&all)
-            .env("NO_COLOR", "1")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+        let mut child = self
+            .exec_command(&all)
             .spawn()
             .map_err(|error| OpenShellError::Run(error.to_string()))?;
         if let Some(mut stdin) = child.stdin.take() {
@@ -894,6 +900,17 @@ impl OpenShell {
         }
     }
 
+    /// `openshell` with `args`, on this gateway, with its standard streams piped: a command run in a sandbox, which
+    /// is only found on the gateway that holds it.
+    fn exec_command(&self, args: &[&str]) -> Command {
+        let mut command = self.command(args, None);
+        command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        command
+    }
+
     /// Runs `command` in the sandbox `name`, in its home, with `input` on its standard input, and gives what it
     /// printed. What a sandbox needs that holds anything private goes in this way, never as an argument.
     pub fn exec_with_input(
@@ -907,12 +924,8 @@ impl OpenShell {
 
         let mut args = vec!["sandbox", "exec", "--name", name, "--"];
         args.extend_from_slice(command);
-        let mut child = Command::new(&self.binary)
-            .args(&args)
-            .env("NO_COLOR", "1")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+        let mut child = self
+            .exec_command(&args)
             .spawn()
             .map_err(|error| OpenShellError::Run(error.to_string()))?;
         if let Some(mut stdin) = child.stdin.take() {
@@ -1080,6 +1093,17 @@ mod tests {
         let named = openshell.on(Gateway::named("k8s-home"));
         assert_eq!(named.gateway().name(), Some("k8s-home"));
         assert_eq!(gateway_env(&named).as_deref(), Some("k8s-home"));
+    }
+
+    #[test]
+    fn a_command_run_in_a_sandbox_goes_to_the_gateway_that_holds_it() {
+        let openshell = OpenShell::new("/opt/homebrew/bin/openshell").on(Gateway::named("microvm"));
+        let command = openshell.exec_command(&["sandbox", "exec", "--name", "codex", "--", "true"]);
+        let gateway = command
+            .get_envs()
+            .find(|(name, _)| *name == OsStr::new(GATEWAY_VARIABLE))
+            .and_then(|(_, value)| value.map(|value| value.to_string_lossy().into_owned()));
+        assert_eq!(gateway.as_deref(), Some("microvm"));
     }
 
     #[test]

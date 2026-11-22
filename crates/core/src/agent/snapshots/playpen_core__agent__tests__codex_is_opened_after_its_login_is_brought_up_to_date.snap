@@ -1,5 +1,5 @@
 ---
 source: crates/core/src/agent/mod.rs
-expression: "open_command(openshell, &sandbox, What::Continue)"
+expression: "open_command(openshell, &active, &sandbox, What::Continue)"
 ---
-'/opt/homebrew/bin/openshell' sandbox exec --name 'codex-patchbay' --tty --workdir '/sandbox/Patchbay' -- sh -c 'node /sandbox/.codex/playpen-sign-in.js 2>/dev/null; exec codex resume --last'
+'/opt/homebrew/bin/openshell' sandbox exec --name 'codex-patchbay' --tty --workdir '/sandbox/Patchbay' -- sh -c 'node /sandbox/.codex/playpen-sign-in.js 2>/dev/null; exec env SQLITE_TMPDIR=/tmp TMPDIR=/tmp codex resume --last --no-daemon'

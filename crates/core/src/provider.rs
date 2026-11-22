@@ -176,7 +176,9 @@ impl Kind {
     /// Where the person gets a key, said beside the field it goes in.
     pub fn where_to_get_a_key(self) -> &'static str {
         match self {
-            Kind::ClaudeSubscription => "Run `claude setup-token` and paste the token it prints.",
+            Kind::ClaudeSubscription => {
+                "Sign in with Claude to get a token, or run `claude setup-token` and paste the token it prints."
+            }
             Kind::Anthropic => "An API key from console.anthropic.com.",
             Kind::OpenAi => "An API key from platform.openai.com.",
             Kind::OpenRouter => "A key from openrouter.ai/keys.",

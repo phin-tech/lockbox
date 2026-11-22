@@ -2,7 +2,6 @@
 //! call to OpenShell runs off the window's thread. A key goes from its field to OpenShell and nowhere else: it isn't
 //! kept, logged or shown again.
 
-use gpui_kit::component::IndexPath;
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::searchable_list::SearchableVec;
 use gpui_kit::component::select::{Select, SelectEvent, SelectItem, SelectState};
@@ -11,15 +10,17 @@ use gpui_kit::component::{
     button::{Button, ButtonVariants as _},
     h_flex, v_flex,
 };
+use gpui_kit::component::{Icon, IndexPath};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::radio::Radio;
 use playpen_core::{
     Access, Account, ChatGptError, DeviceCode, Gateway, Key, KeySource, Kind, Login, NewProvider,
-    NewService, OpenShell, Provider, ProviderError, find_codex, find_op,
+    NewService, OpenShell, Provider, ProviderError, TokenSignIn, find_claude, find_codex, find_op,
 };
 use playpen_core::{
     KeepKeysIn, KeyHome, KeyHomeError, KeyHomes, keychain_service, save_in_1password,
@@ -36,9 +37,10 @@ impl Global for ShownGateway {}
 
 /// The providers part of Settings.
 pub struct Providers {
-    /// The gateway it lists and acts on, taken from the main window each time it lists.
+    /// The gateway it acts on: the main window's at first, then the one whose group was last acted in.
     gateway: Gateway,
-    listing: Listing,
+    /// Each gateway's providers, by its name, in OpenShell's order, or why the gateways couldn't be listed.
+    listings: Result<Vec<(String, Listing)>, String>,
     form: Option<Form>,
     service: Option<ServiceForm>,
     /// Every gateway's name, so a provider can be added to another.
@@ -81,7 +83,23 @@ struct Form {
     keep: KeepKeysIn,
     /// The provider being put on another gateway, and that gateway, when it's that rather than a new provider.
     copying: Option<(Provider, Gateway)>,
+    /// Signing in with Claude for a token, while it's done.
+    claude: Option<ClaudeSignIn>,
+    /// Whether the key was filled in from signing in with Claude.
+    from_claude: bool,
     _chose: Subscription,
+}
+
+/// `claude setup-token`, run by Playpen, waiting for the person to sign in. Dropping it ends it.
+struct ClaudeSignIn {
+    session: Arc<Mutex<TokenSignIn>>,
+    /// The page to sign in at, once Claude Code has given it.
+    link: Option<String>,
+    /// The code the sign-in page shows, if it shows one, to give Claude Code.
+    code: Entity<InputState>,
+    /// Whether the code has gone to Claude Code, which is swapping it for a token.
+    sent: bool,
+    _waiting: Task<()>,
 }
 
 /// Adding a service: a key for something other than a model, sent to the one host given.
@@ -127,7 +145,7 @@ impl Providers {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let mut this = Self {
             gateway: Gateway::Active,
-            listing: Listing::Loading,
+            listings: Ok(Vec::new()),
             form: None,
             service: None,
             gateways: Vec::new(),
@@ -151,11 +169,22 @@ impl Providers {
                 name: name.to_string(),
                 kind: kind.to_string(),
             };
-            self.listing = Listing::Listed(vec![
-                stand_in("claude-subscription", "claude-code-oauth"),
-                stand_in("openrouter", "playpen-openrouter"),
-                stand_in("work", "playpen-litellm-work"),
-                stand_in("github", "playpen-service-github"),
+            self.gateway = Gateway::named("openshell");
+            self.gateways = vec!["openshell".to_string(), "microvm".to_string()];
+            self.listings = Ok(vec![
+                (
+                    "openshell".to_string(),
+                    Listing::Listed(vec![
+                        stand_in("claude-subscription", "claude-code-oauth"),
+                        stand_in("openrouter", "playpen-openrouter"),
+                        stand_in("work", "playpen-litellm-work"),
+                        stand_in("github", "playpen-service-github"),
+                    ]),
+                ),
+                (
+                    "microvm".to_string(),
+                    Listing::Listed(vec![stand_in("claude-subscription", "claude-code-oauth")]),
+                ),
             ]);
             if std::env::var("PLAYPEN_SHOT_ADD").as_deref() == Ok("service") {
                 self.start_adding_service(window, cx);
@@ -168,34 +197,61 @@ impl Providers {
             }
             return;
         }
-        let gateway = self.gateway.clone();
         if let Some(path) = crate::settings::file("key-homes.json") {
             self.homes = KeyHomes::load(&path);
         }
+        if let Ok(listings) = &mut self.listings {
+            for (_, listing) in listings.iter_mut() {
+                *listing = Listing::Loading;
+            }
+        }
         self._working = Some(cx.spawn_in(window, async move |this, cx| {
-            let (listed, gateways) = cx
+            // Every gateway's, one after another; one that isn't answering says so in its own group.
+            let listed = cx
                 .background_spawn(async move {
-                    let openshell = OpenShell::find();
-                    let gateways = openshell
-                        .as_ref()
-                        .ok()
-                        .and_then(|openshell| openshell.gateways().ok())
-                        .unwrap_or_default();
-                    (
-                        openshell.and_then(|openshell| openshell.on(gateway).providers()),
-                        gateways,
-                    )
+                    let openshell = OpenShell::find().map_err(|error| error.to_string())?;
+                    let gateways = openshell.gateways().map_err(|error| error.to_string())?;
+                    let active = gateways
+                        .iter()
+                        .find(|gateway| gateway.active)
+                        .map(|gateway| gateway.name.clone());
+                    let listings = gateways
+                        .into_iter()
+                        .map(|gateway| {
+                            let listing = match openshell
+                                .clone()
+                                .on(Gateway::named(gateway.name.clone()))
+                                .providers()
+                            {
+                                Ok(providers) => Listing::Listed(providers),
+                                Err(error) => {
+                                    tracing::warn!(gateway = %gateway.name, "couldn't list the providers: {error}");
+                                    Listing::Failed(error.to_string())
+                                }
+                            };
+                            (gateway.name, listing)
+                        })
+                        .collect::<Vec<_>>();
+                    Ok::<_, String>((listings, active))
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
-                this.gateways = gateways.into_iter().map(|gateway| gateway.name).collect();
-                this.listing = match listed {
-                    Ok(providers) => Listing::Listed(providers),
-                    Err(error) => {
-                        tracing::warn!("couldn't list the providers: {error}");
-                        Listing::Failed(error.to_string())
+                match listed {
+                    Ok((listings, active)) => {
+                        this.gateways = listings.iter().map(|(name, _)| name.clone()).collect();
+                        // The active gateway by its name, so its group is the one acted in.
+                        if this.gateway == Gateway::Active
+                            && let Some(active) = active
+                        {
+                            this.gateway = Gateway::named(active);
+                        }
+                        this.listings = Ok(listings);
                     }
-                };
+                    Err(error) => {
+                        tracing::warn!("couldn't list the gateways: {error}");
+                        this.listings = Err(error);
+                    }
+                }
                 cx.notify();
             });
         }));
@@ -463,8 +519,12 @@ impl Providers {
         let key = cx.new(|cx| InputState::new(window, cx).masked(true));
         let reference = cx
             .new(|cx| InputState::new(window, cx).placeholder("op://Private/Fireworks/credential"));
-        let keep = match crate::settings::current(cx).keep_keys_in {
-            KeepKeysIn::OnePassword if find_op().is_none() => KeepKeysIn::Nowhere,
+        let settings = crate::settings::current(cx);
+        // 1Password only when it can be saved in: `op` is installed and a vault is chosen.
+        let keep = match settings.keep_keys_in {
+            KeepKeysIn::OnePassword if find_op().is_none() || settings.vault.is_none() => {
+                KeepKeysIn::Nowhere
+            }
             keep => keep,
         };
         let chosen = Kind::ALL.iter().position(|known| *known == kind);
@@ -504,6 +564,8 @@ impl Providers {
             reference,
             keep,
             copying: None,
+            claude: None,
+            from_claude: false,
             _chose: chose,
         });
         self.failed = None;
@@ -822,9 +884,95 @@ impl Providers {
         }));
     }
 
-    fn list(&self, cx: &Context<Self>) -> Div {
+    /// Every gateway's providers, under its name, with the form under the group it's for.
+    fn groups(&self, cx: &Context<Self>) -> Div {
+        let listings = match &self.listings {
+            Ok(listings) => listings,
+            Err(error) => {
+                return div()
+                    .text_sm()
+                    .text_color(cx.theme().danger)
+                    .child(error.clone());
+            }
+        };
+        if listings.is_empty() {
+            return note(t!("Asking OpenShell…"), cx);
+        }
+        v_flex()
+            .gap_6()
+            .children(listings.iter().map(|(gateway, listing)| {
+                let here = self.gateway.name() == Some(gateway.as_str());
+                let busy = self.form.is_some() || self.service.is_some();
+                let failed = matches!(listing, Listing::Failed(_));
+                let adding = gateway.clone();
+                let adding_service = gateway.clone();
+                v_flex()
+                    .gap_3()
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .pb_1()
+                            .border_b_1()
+                            .border_color(cx.theme().border)
+                            .child(div().flex_1().font_semibold().child(gateway.clone()))
+                            .child(
+                                Button::new(ElementId::from((
+                                    ElementId::from("add-provider"),
+                                    gateway.clone(),
+                                )))
+                                .xsmall()
+                                .outline()
+                                .label(t!("Add Model Key…").into_owned())
+                                .disabled(busy || failed)
+                                .on_click(cx.listener(
+                                    move |this, _, window, cx| {
+                                        this.gateway = Gateway::named(adding.clone());
+                                        this.start_adding(window, cx);
+                                    },
+                                )),
+                            )
+                            .child(
+                                Button::new(ElementId::from((
+                                    ElementId::from("add-service"),
+                                    gateway.clone(),
+                                )))
+                                .xsmall()
+                                .outline()
+                                .label(t!("Add Service…").into_owned())
+                                .disabled(busy || failed)
+                                .on_click(cx.listener(
+                                    move |this, _, window, cx| {
+                                        this.gateway = Gateway::named(adding_service.clone());
+                                        this.start_adding_service(window, cx);
+                                    },
+                                )),
+                            ),
+                    )
+                    .child(self.list(gateway, listing, cx))
+                    .when(here, |group| {
+                        group
+                            .when_some(self.failed.clone(), |group, failed| {
+                                group.when(self.form.is_none(), |group| {
+                                    group.child(
+                                        div().text_sm().text_color(cx.theme().danger).child(failed),
+                                    )
+                                })
+                            })
+                            .when_some(self.form.as_ref(), |group, form| {
+                                group.child(self.form(form, cx))
+                            })
+                            .when_some(self.service.as_ref(), |group, service| {
+                                group.child(self.service_form(service, cx))
+                            })
+                    })
+            }))
+    }
+
+    /// One gateway's providers, each with what can be done to it there.
+    fn list(&self, gateway: &str, listing: &Listing, cx: &Context<Self>) -> Div {
         let muted = cx.theme().muted_foreground;
-        let providers = match &self.listing {
+        let providers = match listing {
             Listing::Loading => return note(t!("Asking OpenShell…"), cx),
             Listing::Failed(error) => {
                 return div()
@@ -849,8 +997,12 @@ impl Providers {
             let replace = provider.clone();
             let delete = provider.clone();
             let id = |what: &'static str| {
-                ElementId::from((ElementId::from(what), provider.name.clone()))
+                ElementId::from((
+                    ElementId::from(what),
+                    format!("{gateway}/{}", provider.name),
+                ))
             };
+            let on = gateway.to_string();
             h_flex()
                 .gap_2()
                 .items_center()
@@ -884,19 +1036,24 @@ impl Providers {
                             .into_owned(),
                         )
                         .disabled(provider.playpen_kind().is_none() || self.form.is_some())
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.start_replacing(replace.clone(), window, cx);
+                        .on_click(cx.listener({
+                            let on = on.clone();
+                            move |this, _, window, cx| {
+                                this.gateway = Gateway::named(on.clone());
+                                this.start_replacing(replace.clone(), window, cx);
+                            }
                         })),
                 )
                 .child({
                     let others: Vec<String> = self
                         .gateways
                         .iter()
-                        .filter(|gateway| Some(gateway.as_str()) != self.gateway.name())
+                        .filter(|other| other.as_str() != gateway)
                         .cloned()
                         .collect();
                     let view = cx.entity().downgrade();
                     let copying = provider.clone();
+                    let from = on.clone();
                     Button::new(id("add-to-gateway"))
                         .xsmall()
                         .outline()
@@ -906,10 +1063,12 @@ impl Providers {
                             for gateway in &others {
                                 let view = view.clone();
                                 let provider = copying.clone();
+                                let from = from.clone();
                                 let to = Gateway::named(gateway.clone());
                                 menu = menu.item(PopupMenuItem::new(gateway.clone()).on_click(
                                     move |_, window, cx| {
                                         let _ = view.update(cx, |this, cx| {
+                                            this.gateway = Gateway::named(from.clone());
                                             this.add_to_gateway(
                                                 provider.clone(),
                                                 to.clone(),
@@ -930,6 +1089,7 @@ impl Providers {
                         .label(t!("Delete…").into_owned())
                         .disabled(self.form.is_some())
                         .on_click(cx.listener(move |this, _, window, cx| {
+                            this.gateway = Gateway::named(on.clone());
                             this.delete(delete.clone(), window, cx);
                         })),
                 )
@@ -939,6 +1099,7 @@ impl Providers {
     /// Where the key comes from, pasted or a 1Password reference, and where a pasted one is kept besides OpenShell.
     fn key_fields(&self, form: &Form, cx: &Context<Self>) -> Div {
         let has_op = find_op().is_some();
+        let has_vault = crate::settings::current(cx).vault.is_some();
         let replacing = form.replacing.is_some();
         let from = |reference: bool, label: std::borrow::Cow<str>, id: &'static str| {
             Radio::new(id)
@@ -956,7 +1117,9 @@ impl Providers {
             Radio::new(id)
                 .label(label.into_owned())
                 .checked(form.keep == choice)
-                .disabled(form.saving || (choice == KeepKeysIn::OnePassword && !has_op))
+                .disabled(
+                    form.saving || (choice == KeepKeysIn::OnePassword && !(has_op && has_vault)),
+                )
                 .on_click(cx.listener(move |this, _, _, cx| {
                     if let Some(form) = &mut this.form {
                         form.keep = choice;
@@ -998,6 +1161,9 @@ impl Providers {
                         .child(div().w(rems(20.)).child(small_field(&form.key)))
                         .when(form.copying.is_none(), |this| {
                             this.child(note(t!(form.kind.where_to_get_a_key()), cx))
+                        })
+                        .when(form.kind == Kind::ClaudeSubscription, |this| {
+                            this.child(self.claude_sign_in(form, cx))
                         }),
                     cx,
                 )
@@ -1015,12 +1181,218 @@ impl Providers {
                                 .child(keep(KeepKeysIn::Keychain, t!("the Keychain too"), "keep-kc")),
                         )
                         .child(note(
-                            t!("Kept there too, it can go to another gateway, or be replaced everywhere, without being pasted again."),
+                            if has_op && !has_vault {
+                                t!("Kept there too, it can go to another gateway, or be replaced everywhere, without being pasted again. For 1Password, choose a vault in Settings ▸ Keys.")
+                            } else {
+                                t!("Kept there too, it can go to another gateway, or be replaced everywhere, without being pasted again.")
+                            },
                             cx,
                         )),
                     cx,
                 ))
             })
+    }
+
+    /// Runs `claude setup-token` for the person, shows the page to sign in at, and once they have, fills in the token
+    /// and saves the provider as if it had been pasted, kept where the form says.
+    fn sign_in_with_claude(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(form) = &mut self.form else {
+            return;
+        };
+        if form.claude.is_some() || form.saving {
+            return;
+        }
+        let started = find_claude()
+            .ok_or(playpen_core::ClaudeTokenError::NoClaude)
+            .and_then(|claude| TokenSignIn::start(&claude));
+        let session = match started {
+            Ok(session) => Arc::new(Mutex::new(session)),
+            Err(error) => {
+                tracing::warn!("couldn't start signing in with Claude: {error}");
+                self.failed = Some(error.to_string());
+                cx.notify();
+                return;
+            }
+        };
+        tracing::info!("signing in with Claude for a token");
+        self.failed = None;
+        let code = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(t!("Only if the page shows one").into_owned())
+        });
+        let watching = Arc::clone(&session);
+        let waiting = cx.spawn_in(window, async move |this, cx| {
+            // Claude Code's sign-in lasts a while; a quarter of an hour is plenty.
+            let deadline = Instant::now() + Duration::from_secs(15 * 60);
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_millis(500))
+                    .await;
+                let (link, token, ended) = match watching.lock() {
+                    Ok(mut session) => (session.link(), session.token(), session.ended()),
+                    Err(_) => break,
+                };
+                let timed_out = Instant::now() > deadline;
+                let done = this.update_in(cx, |this, window, cx| {
+                    let Some(form) = &mut this.form else {
+                        return true;
+                    };
+                    let Some(claude) = &mut form.claude else {
+                        return true;
+                    };
+                    if claude.link != link {
+                        claude.link = link;
+                        cx.notify();
+                    }
+                    if let Some(token) = token {
+                        tracing::info!("Claude gave a token");
+                        let key = token.reveal().to_string();
+                        form.key
+                            .update(cx, |field, cx| field.set_value(key, window, cx));
+                        form.from_1password = false;
+                        form.from_claude = true;
+                        form.claude = None;
+                        this.save(window, cx);
+                        return true;
+                    }
+                    let failed = ended.map(|error| error.to_string()).or_else(|| {
+                        timed_out.then(|| {
+                            t!("Nobody signed in within a quarter of an hour.").into_owned()
+                        })
+                    });
+                    if let Some(failed) = failed {
+                        tracing::warn!("signing in with Claude ended: {failed}");
+                        form.claude = None;
+                        this.failed = Some(failed);
+                        cx.notify();
+                        return true;
+                    }
+                    false
+                });
+                if done.unwrap_or(true) {
+                    break;
+                }
+            }
+        });
+        form.claude = Some(ClaudeSignIn {
+            session,
+            link: None,
+            code,
+            sent: false,
+            _waiting: waiting,
+        });
+        cx.notify();
+    }
+
+    /// Gives Claude Code the code the sign-in page showed.
+    fn send_claude_code(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(claude) = self.form.as_ref().and_then(|form| form.claude.as_ref()) else {
+            return;
+        };
+        let code = claude.code.read(cx).value().trim().to_string();
+        if code.is_empty() {
+            return;
+        }
+        let sent = claude
+            .session
+            .lock()
+            .map_err(|_| anyhow::anyhow!("the sign-in stopped"))
+            .and_then(|mut session| session.send_code(&code).map_err(anyhow::Error::from));
+        claude
+            .code
+            .update(cx, |field, cx| field.set_value("", window, cx));
+        let sent = sent.map_err(|error| format!("{error:#}"));
+        if let Some(claude) = self.form.as_mut().and_then(|form| form.claude.as_mut()) {
+            claude.sent = sent.is_ok();
+        }
+        self.failed = sent.err();
+        cx.notify();
+    }
+
+    /// The Sign In with Claude button, or, while it's signing in, the page to open and a box for a code.
+    fn claude_sign_in(&self, form: &Form, cx: &Context<Self>) -> Div {
+        let Some(claude) = &form.claude else {
+            if form.from_claude {
+                return h_flex()
+                    .gap_2()
+                    .child(
+                        Icon::new(assets::IconName::Check)
+                            .size_4()
+                            .text_color(cx.theme().success),
+                    )
+                    .child(note(
+                        t!("Claude gave a token, and it's in the Key field."),
+                        cx,
+                    ));
+            }
+            return h_flex().child(
+                Button::new("sign-in-with-claude")
+                    .small()
+                    .icon(assets::IconName::KeyRound)
+                    .label(t!("Sign In with Claude…").into_owned())
+                    .disabled(form.saving)
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.sign_in_with_claude(window, cx)),
+                    ),
+            );
+        };
+        let link = claude.link.clone();
+        v_flex()
+            .gap_2()
+            .child(note(
+                match (&link, claude.sent) {
+                    (_, true) => t!("Code sent. Waiting for Claude Code to swap it for a token…"),
+                    (Some(_), false) => t!("Open the sign-in page and sign in to Claude. Playpen fills in the token and adds the provider once you have."),
+                    (None, false) => t!("Asking Claude Code for a page to sign in at…"),
+                },
+                cx,
+            ))
+            .child(
+                h_flex()
+                    .gap_2()
+                    .child(
+                        Button::new("open-claude-sign-in")
+                            .primary()
+                            .small()
+                            .label(t!("Open Sign-In Page").into_owned())
+                            .disabled(link.is_none())
+                            .on_click({
+                                let link = link.clone();
+                                move |_, _, cx| {
+                                    if let Some(link) = &link {
+                                        cx.open_url(link);
+                                    }
+                                }
+                            }),
+                    )
+                    .child(
+                        Button::new("copy-claude-sign-in")
+                            .small()
+                            .label(t!("Copy Link").into_owned())
+                            .disabled(link.is_none())
+                            .on_click(move |_, _, cx| {
+                                if let Some(link) = &link {
+                                    cx.write_to_clipboard(ClipboardItem::new_string(link.clone()));
+                                }
+                            }),
+                    ),
+            )
+            .child(
+                h_flex()
+                    .gap_2()
+                    .child(div().w(rems(16.)).child(small_field(&claude.code)))
+                    .child(
+                        Button::new("send-claude-code")
+                            .small()
+                            .loading(claude.sent)
+                            .disabled(claude.sent)
+                            .label(t!("Send Code").into_owned())
+                            .on_click(cx.listener(|this, _, window, cx| this.send_claude_code(window, cx))),
+                    ),
+            )
+            .child(note(
+                t!("If the page shows a code instead, paste it here. Cancel stops the sign-in."),
+                cx,
+            ))
     }
 
     /// Puts `provider` on the gateway `to`: from where its key lives when Playpen knows, or by asking for the key,
@@ -1137,6 +1509,10 @@ impl Providers {
                     this.child(self.key_fields(form, cx))
                 }
             })
+            // Why saving failed, beside the buttons that try again.
+            .when_some(self.failed.clone(), |this, failed| {
+                this.child(div().text_sm().text_color(cx.theme().danger).child(failed))
+            })
             .child(
                 h_flex()
                     .gap_2()
@@ -1196,48 +1572,13 @@ impl Render for Providers {
         v_flex()
             .p_4()
             .gap_4()
-            .when_some(self.gateway.name().map(str::to_string), |this, gateway| {
-                this.child(note(
-                    t!("These are the providers on the “%{gateway}” gateway.", gateway = gateway),
-                    cx,
-                ))
-            })
             .child(note(
                 t!(
-                    "OpenShell holds each key. A sandbox's agent sees only a stand-in, which OpenShell swaps for the key on requests to that service, so one provider serves every sandbox you attach it to."
+                    "OpenShell holds each key, on each gateway its own. A sandbox's agent sees only a stand-in, which OpenShell swaps for the key on requests to that service, so one provider serves every sandbox on its gateway you attach it to."
                 ),
                 cx,
             ))
-            .child(self.list(cx))
-            .when_some(self.failed.clone(), |this, failed| {
-                this.child(div().text_sm().text_color(cx.theme().danger).child(failed))
-            })
-            .map(|this| match (&self.form, &self.service) {
-                (Some(form), _) => this.child(self.form(form, cx)),
-                (None, Some(service)) => this.child(self.service_form(service, cx)),
-                (None, None) => this.child(
-                    h_flex()
-                        .gap_2()
-                        .child(
-                            Button::new("add-provider")
-                                .outline()
-                                .label(t!("Add Model Key…").into_owned())
-                                .disabled(matches!(self.listing, Listing::Failed(_)))
-                                .on_click(
-                                    cx.listener(|this, _, window, cx| this.start_adding(window, cx)),
-                                ),
-                        )
-                        .child(
-                            Button::new("add-service")
-                                .outline()
-                                .label(t!("Add Service…").into_owned())
-                                .disabled(matches!(self.listing, Listing::Failed(_)))
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.start_adding_service(window, cx);
-                                })),
-                        ),
-                ),
-            })
+            .child(self.groups(cx))
     }
 }
 

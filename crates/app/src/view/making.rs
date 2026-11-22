@@ -101,6 +101,7 @@ impl MainView {
         }
         self.adding = None;
         self.imaging = None;
+        self.microvm = None;
         let suggested = suggested_name(agent, &[]);
         let name = cx.new(|cx| {
             let mut state = InputState::new(window, cx).placeholder(suggested.clone());

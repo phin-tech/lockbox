@@ -77,6 +77,25 @@ impl Docker {
         command
     }
 
+    /// Where Docker's current context reaches its engine, such as OrbStack's socket, for a program that finds Docker
+    /// by `DOCKER_HOST` and has no shell's context.
+    pub fn host(&self) -> Option<String> {
+        let output = self
+            .command()
+            .args([
+                "context",
+                "inspect",
+                "--format",
+                "{{.Endpoints.docker.Host}}",
+            ])
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output()
+            .ok()?;
+        let host = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        (output.status.success() && !host.is_empty()).then_some(host)
+    }
+
     /// Whether the image `tag` is already built.
     pub fn has_image(&self, tag: &str) -> Result<bool, DockerError> {
         let status = self

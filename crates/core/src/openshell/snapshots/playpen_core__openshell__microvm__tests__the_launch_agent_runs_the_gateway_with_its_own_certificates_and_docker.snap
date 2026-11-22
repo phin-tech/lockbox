@@ -1,0 +1,45 @@
+---
+source: crates/core/src/openshell/microvm.rs
+expression: "launch_agent(&places, &programs(), Path::new(\"/Users/someone\"), 17671,\nSome(\"unix:///Users/someone/.orbstack/run/docker.sock\"),)"
+---
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>tech.phin.playpen.microvm</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/opt/homebrew/opt/openshell/bin/openshell-gateway</string>
+		<string>--config</string>
+		<string>/Users/someone/.local/state/playpen/microvm/gateway.toml</string>
+		<string>--name</string>
+		<string>microvm</string>
+		<string>--db-url</string>
+		<string>sqlite:/Users/someone/.local/state/playpen/microvm/gateway.db?mode=rwc</string>
+		<string>--port</string>
+		<string>17671</string>
+	</array>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>HOME</key>
+		<string>/Users/someone</string>
+		<key>PATH</key>
+		<string>/usr/bin:/bin:/usr/sbin:/sbin</string>
+		<key>OPENSHELL_LOCAL_TLS_DIR</key>
+		<string>/Users/someone/.local/state/playpen/microvm/tls</string>
+		<key>DOCKER_HOST</key>
+		<string>unix:///Users/someone/.orbstack/run/docker.sock</string>
+	</dict>
+	<key>WorkingDirectory</key>
+	<string>/Users/someone/.local/state/playpen/microvm</string>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>StandardOutPath</key>
+	<string>/Users/someone/Library/Logs/tech.phin.playpen/microvm-gateway.log</string>
+	<key>StandardErrorPath</key>
+	<string>/Users/someone/Library/Logs/tech.phin.playpen/microvm-gateway.log</string>
+</dict>
+</plist>

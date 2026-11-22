@@ -76,10 +76,32 @@ fn op_output(
     if output.status.success() {
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     } else {
-        Err(failed(
-            String::from_utf8_lossy(&output.stderr).trim().to_string(),
-        ))
+        Err(failed(op_said(&String::from_utf8_lossy(&output.stderr))))
     }
+}
+
+/// What `op` said, without the `[ERROR] 2026/11/22 12:45:59` it starts each line with.
+fn op_said(stderr: &str) -> String {
+    stderr
+        .lines()
+        .map(|line| {
+            let line = line.trim();
+            match line.strip_prefix('[').and_then(|rest| rest.split_once(']')) {
+                Some((_, rest)) => {
+                    let rest = rest.trim_start();
+                    // The date and the time.
+                    let mut words = rest.splitn(3, ' ');
+                    match (words.next(), words.next(), words.next()) {
+                        (Some(date), Some(_), Some(said)) if date.contains('/') => said.to_string(),
+                        _ => rest.to_string(),
+                    }
+                }
+                None => line.to_string(),
+            }
+        })
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// The vaults 1Password lets the person save in.
@@ -225,5 +247,16 @@ mod tests {
             },
         );
         insta::assert_snapshot!(serde_json::to_string_pretty(&homes).unwrap());
+    }
+
+    #[test]
+    fn what_op_says_is_given_without_its_log_prefix() {
+        assert_eq!(
+            super::op_said(
+                "[ERROR] 2026/11/22 12:45:59 authorization prompt dismissed, please try again\n"
+            ),
+            "authorization prompt dismissed, please try again"
+        );
+        assert_eq!(super::op_said("plain words\n"), "plain words");
     }
 }

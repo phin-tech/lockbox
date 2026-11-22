@@ -96,6 +96,7 @@ pub fn menus() -> Vec<Menu> {
             t!("Gateway"),
             vec![
                 run(t!("Add Gateway…"), "gateway.add"),
+                run(t!("Set Up MicroVM Gateway…"), "gateway.microvm"),
                 run(t!("Image Source…"), "gateway.images"),
                 run(t!("Sign In to Gateway…"), "gateway.sign-in"),
                 run(t!("Remove Gateway…"), "gateway.remove"),

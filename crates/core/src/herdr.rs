@@ -179,29 +179,38 @@ impl HerdrApp {
             What::Shell => format!("{name} (shell)"),
         };
         let session = session_id(name, what);
-        for (doing, command, args) in [
+        // The window makes a labelled terminal's space and tab a moment after it hears of the terminal, so a name asked for
+        // too soon finds nothing to name. The names are only for looks: they're tried for a while, and never stop the
+        // terminal being shown.
+        for (command, args) in [
             (
-                "name the Playpen space",
                 "space.rename",
                 serde_json::json!({"id": SPACE, "name": "Playpen"}),
             ),
             (
-                "name the tab",
                 "tab.rename",
                 serde_json::json!({"id": tab_id(&session), "name": tab_name}),
             ),
-            (
-                "show the terminal",
-                "pane.focus",
-                serde_json::json!({"terminal": address}),
-            ),
         ] {
-            run(
-                &self.app,
-                doing,
-                &["do".to_string(), command.to_string(), args.to_string()],
-            )?;
+            let args = ["do".to_string(), command.to_string(), args.to_string()];
+            for attempt in 0..10 {
+                if attempt > 0 {
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                }
+                if run(&self.app, command, &args).is_ok() {
+                    break;
+                }
+            }
         }
+        run(
+            &self.app,
+            "show the terminal",
+            &[
+                "do".to_string(),
+                "pane.focus".to_string(),
+                serde_json::json!({"terminal": address}).to_string(),
+            ],
+        )?;
         Ok(())
     }
 }

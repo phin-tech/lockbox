@@ -11,6 +11,7 @@ mod dotenv;
 mod files;
 mod herdr;
 mod image;
+mod key_homes;
 mod kit_setup;
 mod kits;
 mod links;
@@ -37,6 +38,10 @@ pub use dotenv::{
 pub use files::write_atomically;
 pub use herdr::{AgentState, HerdrApp, HerdrCore, HerdrError};
 pub use image::{Image, ImageSource, Platform, Provided, Registry};
+pub use key_homes::{
+    KeyHome, KeyHomeError, KeyHomes, Vault, forget_keychain, keychain_service, save_in_1password,
+    save_in_keychain, vaults,
+};
 pub use kit_setup::SetupFolder;
 pub use kits::{Kit, Kits, Variable, VariableValue};
 pub use links::{link_target, path_from_file_url};
@@ -50,7 +55,7 @@ pub use provider::{Endpoint, Kind, NewProvider, ProviderError};
 pub use secrets::Secret;
 pub use session::{Installed, Keep, Opened, Place, SessionError, ShowIn, What};
 pub use settings::{
-    Appearance, GatewaySettings, ImageSourceError, ImagesFrom, Settings, TEXT_SCALES,
+    Appearance, GatewaySettings, ImageSourceError, ImagesFrom, KeepKeysIn, Settings, TEXT_SCALES,
     step_text_scale,
 };
 pub use state::{Frame, Screen, State};

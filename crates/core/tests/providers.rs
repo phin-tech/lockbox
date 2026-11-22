@@ -128,3 +128,62 @@ fn a_device_sign_in_gives_its_page_and_code_and_stops_when_dropped() {
     assert!(code.code.contains('-'), "a one-time code");
     drop(login);
 }
+
+#[test]
+#[ignore = "needs OpenShell's gateways `openshell` and `kind`, and the Keychain"]
+fn a_provider_goes_to_another_gateway_with_its_key_from_the_keychain() {
+    use playpen_core::{
+        Gateway, Key, KeyHome, Kind, NewProvider, forget_keychain, keychain_service,
+        save_in_keychain,
+    };
+
+    let from = OpenShell::find().unwrap().on(Gateway::named("openshell"));
+    let to = OpenShell::find().unwrap().on(Gateway::named("kind"));
+    let name = format!("pp-copy-{}", std::process::id());
+    let service = keychain_service(&name);
+    save_in_keychain(&service, &Key::new("fw-test-key")).unwrap();
+    let home = KeyHome::Keychain {
+        service: service.clone(),
+    };
+    let new = NewProvider::new(Kind::Fireworks, &name, "").unwrap();
+    let tried = (|| {
+        from.add_provider_from(
+            &new,
+            &home.source().map_err(|error| error.to_string())?,
+            None,
+        )
+        .map_err(|error| error.to_string())?;
+        let provider = from
+            .providers()
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .find(|provider| provider.name == name)
+            .ok_or("not added")?;
+        to.copy_provider(
+            &from,
+            &provider,
+            &home.source().map_err(|error| error.to_string())?,
+            None,
+        )
+        .map_err(|error| error.to_string())?;
+        let copied = to
+            .providers()
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .find(|there| there.name == name);
+        Ok::<_, String>((provider, copied))
+    })();
+    for gateway in [&from, &to] {
+        if let Some(provider) = gateway
+            .providers()
+            .unwrap()
+            .into_iter()
+            .find(|there| there.name == name)
+        {
+            let _ = gateway.delete_provider(&provider);
+        }
+    }
+    forget_keychain(&service);
+    let (provider, copied) = tried.unwrap();
+    assert_eq!(copied.map(|copied| copied.kind), Some(provider.kind));
+}

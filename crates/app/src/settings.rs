@@ -11,7 +11,9 @@ use gpui_kit::component::{
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
-use playpen_core::{Installed, Settings, ShowIn, step_text_scale};
+use playpen_core::{
+    Installed, KeepKeysIn, Settings, ShowIn, Vault, find_op, step_text_scale, vaults,
+};
 use rust_i18n::t;
 use typecase::settings::{Section, SettingsFrame};
 
@@ -175,10 +177,17 @@ pub fn open(cx: &mut App) {
 }
 
 /// The sections, in the sidebar's order.
-fn sections() -> Vec<Section> {
+fn sections(keys: Entity<Keys>) -> Vec<Section> {
     vec![
         Section::new(t!("General").into_owned(), |_, cx| general(cx)).keywords([
             "text", "size", "herdr", "ghostty", "terminal", "sessions", "agents",
+        ]),
+        Section::new(t!("Keys").into_owned(), move |_, _| keys.clone()).keywords([
+            "1password",
+            "keychain",
+            "op",
+            "vault",
+            "providers",
         ]),
         Section::appearance(),
         Section::new(t!("Updates").into_owned(), |_, cx| updates(cx)).keywords(["beta", "sparkle"]),
@@ -194,11 +203,12 @@ pub struct SettingsWindow {
 impl SettingsWindow {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let frame = cx.new(|cx| {
+            let keys = cx.new(Keys::new);
             #[cfg_attr(
                 not(feature = "screenshot"),
                 expect(unused_mut, reason = "only shots change it")
             )]
-            let mut frame = SettingsFrame::new(sections(), window, cx);
+            let mut frame = SettingsFrame::new(sections(keys), window, cx);
             // A shot can't click in this window, since its keys go to the main one, so it names the section to show.
             #[cfg(feature = "screenshot")]
             if let Ok(section) = std::env::var("PLAYPEN_SETTINGS_SECTION") {
@@ -231,6 +241,109 @@ fn part(title: std::borrow::Cow<str>, body: impl IntoElement) -> impl IntoElemen
         .gap_2()
         .child(div().text_sm().font_semibold().child(title.into_owned()))
         .child(body)
+}
+
+/// The Keys section: where a pasted key is kept besides OpenShell, and which 1Password vault, listed by `op` off the
+/// window's thread when it's installed.
+pub struct Keys {
+    op: Option<PathBuf>,
+    vaults: Option<Result<Vec<Vault>, String>>,
+    _listing: Option<Task<()>>,
+}
+
+impl Keys {
+    fn new(cx: &mut Context<Self>) -> Self {
+        let op = find_op();
+        let listing = op
+            .clone()
+            .filter(|_| !cfg!(feature = "screenshot"))
+            .map(|op| {
+                cx.spawn(async move |this, cx| {
+                    let listed = cx
+                        .background_spawn(
+                            async move { vaults(&op).map_err(|error| error.to_string()) },
+                        )
+                        .await;
+                    let _ = this.update(cx, |this, cx| {
+                        this.vaults = Some(listed);
+                        cx.notify();
+                    });
+                })
+            });
+        Self {
+            op,
+            vaults: None,
+            _listing: listing,
+        }
+    }
+}
+
+impl Render for Keys {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let muted = cx.theme().muted_foreground;
+        let settings = current(cx);
+        let keep =
+            |choice: KeepKeysIn, label: std::borrow::Cow<str>, id: &'static str, disabled: bool| {
+                Radio::new(id)
+                    .label(label.into_owned())
+                    .checked(settings.keep_keys_in == choice)
+                    .disabled(disabled)
+                    .on_click(move |_, _, cx| change(cx, |settings| settings.keep_keys_in = choice))
+            };
+        let note = |text: std::borrow::Cow<str>| {
+            div().text_sm().text_color(muted).child(text.into_owned())
+        };
+        let vaults = match (&self.op, &self.vaults) {
+            (None, _) => note(t!(
+                "1Password's command line, `op`, isn't installed: `brew install 1password-cli`."
+            )),
+            (Some(_), None) => note(t!("Asking 1Password for your vaults…")),
+            (Some(_), Some(Err(error))) => note(t!(
+                "1Password didn't list your vaults: %{error}",
+                error = error.clone()
+            )),
+            (Some(_), Some(Ok(vaults))) => {
+                v_flex().gap_1p5().children(vaults.iter().map(|vault| {
+                    let id = vault.id.clone();
+                    Radio::new(ElementId::from((
+                        ElementId::from("vault"),
+                        vault.id.clone(),
+                    )))
+                    .label(vault.name.clone())
+                    .checked(settings.vault.as_deref() == Some(&vault.id))
+                    .on_click(move |_, _, cx| {
+                        change(cx, |settings| settings.vault = Some(id.clone()))
+                    })
+                }))
+            }
+        };
+        v_flex()
+            .p_4()
+            .gap_6()
+            .child(part(
+                t!("Keep pasted keys in"),
+                v_flex()
+                    .gap_2()
+                    .child(keep(KeepKeysIn::Nowhere, t!("OpenShell only"), "keep-nowhere", false))
+                    .child(keep(KeepKeysIn::OnePassword, t!("1Password"), "keep-1password", self.op.is_none()))
+                    .child(keep(KeepKeysIn::Keychain, t!("The Keychain"), "keep-keychain", false))
+                    .child(note(t!(
+                        "OpenShell never gives a key back, so a key kept here too can go to another gateway, or be replaced on every gateway, without being pasted again. The forms start with this; you can change it each time."
+                    ))),
+            ))
+            .when(self.op.is_some(), |this| {
+                this.child(part(
+                    t!("1Password vault"),
+                    v_flex()
+                        .gap_2()
+                        .child(vaults)
+                        .child(note(t!("Keys are saved there as API Credentials named “Playpen: <provider>”."))),
+                ))
+            })
+            .when_some(self.op.clone(), |this, op| {
+                this.child(note(t!("1Password's command line: %{path}", path = op.display().to_string())))
+            })
+    }
 }
 
 fn text_button(id: &'static str, label: std::borrow::Cow<str>, steps: isize) -> Button {

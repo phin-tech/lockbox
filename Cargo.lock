@@ -5943,6 +5943,7 @@ version = "0.1.0"
 dependencies = [
  "insta",
  "jiff 0.2.46",
+ "security-framework",
  "serde",
  "serde_json",
  "thiserror 2.0.21",

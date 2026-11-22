@@ -15,10 +15,15 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use std::time::{Duration, Instant};
 
+use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::radio::Radio;
 use playpen_core::{
     Access, Account, ChatGptError, DeviceCode, Gateway, Key, KeySource, Kind, Login, NewProvider,
     NewService, OpenShell, Provider, ProviderError, find_codex, find_op,
+};
+use playpen_core::{
+    KeepKeysIn, KeyHome, KeyHomeError, KeyHomes, keychain_service, save_in_1password,
+    save_in_keychain,
 };
 use rust_i18n::t;
 
@@ -36,6 +41,10 @@ pub struct Providers {
     listing: Listing,
     form: Option<Form>,
     service: Option<ServiceForm>,
+    /// Every gateway's name, so a provider can be added to another.
+    gateways: Vec<String>,
+    /// Where each provider's key lives besides OpenShell, when it's kept anywhere.
+    homes: KeyHomes,
     /// The last thing done that failed, until something else is done.
     failed: Option<String>,
     /// Whatever is being asked of OpenShell, ended with the pane.
@@ -65,6 +74,13 @@ struct Form {
     signing_in: bool,
     /// The page and code to sign in with, once Codex has given them.
     device: Option<DeviceCode>,
+    /// Whether the key is a 1Password reference rather than pasted.
+    from_1password: bool,
+    reference: Entity<InputState>,
+    /// Where a pasted key is kept besides OpenShell.
+    keep: KeepKeysIn,
+    /// The provider being put on another gateway, and that gateway, when it's that rather than a new provider.
+    copying: Option<(Provider, Gateway)>,
     _chose: Subscription,
 }
 
@@ -114,6 +130,8 @@ impl Providers {
             listing: Listing::Loading,
             form: None,
             service: None,
+            gateways: Vec::new(),
+            homes: KeyHomes::default(),
             failed: None,
             _working: None,
         };
@@ -151,13 +169,26 @@ impl Providers {
             return;
         }
         let gateway = self.gateway.clone();
+        if let Some(path) = crate::settings::file("key-homes.json") {
+            self.homes = KeyHomes::load(&path);
+        }
         self._working = Some(cx.spawn_in(window, async move |this, cx| {
-            let listed = cx
+            let (listed, gateways) = cx
                 .background_spawn(async move {
-                    OpenShell::find().and_then(|openshell| openshell.on(gateway).providers())
+                    let openshell = OpenShell::find();
+                    let gateways = openshell
+                        .as_ref()
+                        .ok()
+                        .and_then(|openshell| openshell.gateways().ok())
+                        .unwrap_or_default();
+                    (
+                        openshell.and_then(|openshell| openshell.on(gateway).providers()),
+                        gateways,
+                    )
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
+                this.gateways = gateways.into_iter().map(|gateway| gateway.name).collect();
                 this.listing = match listed {
                     Ok(providers) => Listing::Listed(providers),
                     Err(error) => {
@@ -230,8 +261,12 @@ impl Providers {
         };
         form.saving = true;
         self.failed = None;
+        // On the gateway shown, as every other provider is.
+        let gateway = self.gateway.clone();
         let saved = cx.background_spawn(async move {
-            OpenShell::find()?.add_service(&new, &source, find_op().as_deref())?;
+            OpenShell::find()?
+                .on(gateway)
+                .add_service(&new, &source, find_op().as_deref())?;
             anyhow::Ok(new.name)
         });
         self._working = Some(cx.spawn_in(window, async move |this, cx| {
@@ -426,6 +461,12 @@ impl Providers {
         let address =
             cx.new(|cx| InputState::new(window, cx).placeholder("https://litellm.example.com"));
         let key = cx.new(|cx| InputState::new(window, cx).masked(true));
+        let reference = cx
+            .new(|cx| InputState::new(window, cx).placeholder("op://Private/Fireworks/credential"));
+        let keep = match crate::settings::current(cx).keep_keys_in {
+            KeepKeysIn::OnePassword if find_op().is_none() => KeepKeysIn::Nowhere,
+            keep => keep,
+        };
         let chosen = Kind::ALL.iter().position(|known| *known == kind);
         let kinds = cx.new(|cx| {
             SelectState::new(
@@ -459,6 +500,10 @@ impl Providers {
             saving: false,
             signing_in: false,
             device: None,
+            from_1password: false,
+            reference,
+            keep,
+            copying: None,
             _chose: chose,
         });
         self.failed = None;
@@ -498,9 +543,10 @@ impl Providers {
         if form.saving {
             return;
         }
-        let job = match &form.replacing {
-            Some(provider) => Job::Replace(provider.clone()),
-            None => match NewProvider::new(
+        let job = match (&form.copying, &form.replacing) {
+            (Some((provider, to)), _) => Job::Copy(provider.clone(), to.clone()),
+            (None, Some(provider)) => Job::Replace(provider.clone()),
+            (None, None) => match NewProvider::new(
                 form.kind,
                 &form.name.read(cx).value(),
                 &form.address.read(cx).value(),
@@ -517,22 +563,80 @@ impl Providers {
             self.sign_in(job, window, cx);
             return;
         }
-        let key = Key::new(&form.key.read(cx).value());
-        if key.is_empty() {
-            self.failed = Some(ProviderError::NoKey.to_string());
-            cx.notify();
-            return;
-        }
+        // Where the key comes from, and where it's kept besides OpenShell: a reference is 1Password's already, and a
+        // pasted key is saved where the form says first, so OpenShell takes it from there.
+        let from = if form.from_1password && !matches!(job, Job::Replace(_)) {
+            let reference = form.reference.read(cx).value().trim().to_string();
+            if !reference.starts_with("op://") {
+                self.failed = Some(ProviderError::Reference(reference).to_string());
+                cx.notify();
+                return;
+            }
+            Pasted::Reference(reference)
+        } else {
+            let key = Key::new(&form.key.read(cx).value());
+            if key.is_empty() {
+                self.failed = Some(ProviderError::NoKey.to_string());
+                cx.notify();
+                return;
+            }
+            Pasted::Key(key, form.keep)
+        };
+        let vault = crate::settings::current(cx).vault;
         form.saving = true;
         self.failed = None;
         let gateway = self.gateway.clone();
+        let homes_file = crate::settings::file("key-homes.json");
         let saved = cx.background_spawn(async move {
-            let openshell = OpenShell::find()?.on(gateway);
+            let op = find_op();
+            let name = job.name().to_string();
+            let (source, home) = match from {
+                Pasted::Reference(reference) => (
+                    KeySource::Reference(reference.clone()),
+                    Some(KeyHome::OnePassword { reference }),
+                ),
+                Pasted::Key(key, KeepKeysIn::Nowhere) => (KeySource::Key(key), None),
+                Pasted::Key(key, KeepKeysIn::OnePassword) => {
+                    let op = op.as_deref().ok_or(KeyHomeError::NoOp)?;
+                    let vault = vault.ok_or_else(|| {
+                        anyhow::anyhow!("Choose a 1Password vault in Settings ▸ Keys first.")
+                    })?;
+                    let reference = save_in_1password(op, &vault, &keychain_service(&name), &key)?;
+                    (
+                        KeySource::Reference(reference.clone()),
+                        Some(KeyHome::OnePassword { reference }),
+                    )
+                }
+                Pasted::Key(key, KeepKeysIn::Keychain) => {
+                    let service = keychain_service(&name);
+                    save_in_keychain(&service, &key)?;
+                    (KeySource::Key(key), Some(KeyHome::Keychain { service }))
+                }
+            };
+            let openshell = OpenShell::find()?;
             match &job {
-                Job::Add(new) => openshell.add_provider(new, &key)?,
-                Job::Replace(provider) => openshell.replace_key(provider, &key)?,
+                Job::Add(new) => {
+                    openshell
+                        .on(gateway)
+                        .add_provider_from(new, &source, op.as_deref())?
+                }
+                Job::Replace(provider) => match &source {
+                    KeySource::Key(key) => openshell.on(gateway).replace_key(provider, key)?,
+                    _ => anyhow::bail!("A new key is pasted, then kept where the form says."),
+                },
+                Job::Copy(provider, to) => openshell.clone().on(to.clone()).copy_provider(
+                    &openshell.on(gateway),
+                    provider,
+                    &source,
+                    op.as_deref(),
+                )?,
             }
-            anyhow::Ok(job.name().to_string())
+            if let (Some(home), Some(path)) = (home, homes_file) {
+                let mut homes = KeyHomes::load(&path);
+                homes.homes.insert(name.clone(), home);
+                homes.save(&path).map_err(anyhow::Error::msg)?;
+            }
+            anyhow::Ok(name)
         });
         self._working = Some(cx.spawn_in(window, async move |this, cx| {
             let saved = saved.await;
@@ -617,10 +721,21 @@ impl Providers {
                         cx.notify();
                     });
                     cx.background_spawn(async move {
-                        let openshell = OpenShell::find()?.on(gateway);
+                        let openshell = OpenShell::find()?;
                         match &job {
-                            Job::Add(new) => openshell.add_signed_in(new, &tokens)?,
-                            Job::Replace(provider) => openshell.sign_in_again(provider, &tokens)?,
+                            Job::Add(new) => openshell.on(gateway).add_signed_in(new, &tokens)?,
+                            Job::Replace(provider) => {
+                                openshell.on(gateway).sign_in_again(provider, &tokens)?;
+                            }
+                            // A login of its own on the other gateway, since each renews its own.
+                            Job::Copy(provider, to) => {
+                                let new = NewProvider::new(
+                                    Kind::ChatGptSubscription,
+                                    &provider.name,
+                                    "",
+                                )?;
+                                openshell.on(to.clone()).add_signed_in(&new, &tokens)?;
+                            }
                         }
                         if let Some(accounts) = accounts {
                             tokens.account.save(&accounts, job.name())?;
@@ -744,7 +859,17 @@ impl Providers {
                         .flex_1()
                         .min_w_0()
                         .child(div().child(provider.name.clone()))
-                        .child(div().text_sm().text_color(muted).child(kind)),
+                        .child(div().text_sm().text_color(muted).child(
+                            match self.homes.homes.get(&provider.name) {
+                                Some(KeyHome::OnePassword { .. }) => {
+                                    t!("%{kind} · key in 1Password", kind = kind).into_owned()
+                                }
+                                Some(KeyHome::Keychain { .. }) => {
+                                    t!("%{kind} · key in the Keychain", kind = kind).into_owned()
+                                }
+                                None => kind,
+                            },
+                        )),
                 )
                 .child(
                     Button::new(id("replace-key"))
@@ -763,6 +888,41 @@ impl Providers {
                             this.start_replacing(replace.clone(), window, cx);
                         })),
                 )
+                .child({
+                    let others: Vec<String> = self
+                        .gateways
+                        .iter()
+                        .filter(|gateway| Some(gateway.as_str()) != self.gateway.name())
+                        .cloned()
+                        .collect();
+                    let view = cx.entity().downgrade();
+                    let copying = provider.clone();
+                    Button::new(id("add-to-gateway"))
+                        .xsmall()
+                        .outline()
+                        .label(t!("Add to Gateway…").into_owned())
+                        .disabled(self.form.is_some() || others.is_empty())
+                        .dropdown_menu(move |mut menu, _, _| {
+                            for gateway in &others {
+                                let view = view.clone();
+                                let provider = copying.clone();
+                                let to = Gateway::named(gateway.clone());
+                                menu = menu.item(PopupMenuItem::new(gateway.clone()).on_click(
+                                    move |_, window, cx| {
+                                        let _ = view.update(cx, |this, cx| {
+                                            this.add_to_gateway(
+                                                provider.clone(),
+                                                to.clone(),
+                                                window,
+                                                cx,
+                                            );
+                                        });
+                                    },
+                                ));
+                            }
+                            menu
+                        })
+                })
                 .child(
                     Button::new(id("delete-provider"))
                         .xsmall()
@@ -776,14 +936,160 @@ impl Providers {
         }))
     }
 
+    /// Where the key comes from, pasted or a 1Password reference, and where a pasted one is kept besides OpenShell.
+    fn key_fields(&self, form: &Form, cx: &Context<Self>) -> Div {
+        let has_op = find_op().is_some();
+        let replacing = form.replacing.is_some();
+        let from = |reference: bool, label: std::borrow::Cow<str>, id: &'static str| {
+            Radio::new(id)
+                .label(label.into_owned())
+                .checked(form.from_1password == reference)
+                .disabled(form.saving)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if let Some(form) = &mut this.form {
+                        form.from_1password = reference;
+                        cx.notify();
+                    }
+                }))
+        };
+        let keep = |choice: KeepKeysIn, label: std::borrow::Cow<str>, id: &'static str| {
+            Radio::new(id)
+                .label(label.into_owned())
+                .checked(form.keep == choice)
+                .disabled(form.saving || (choice == KeepKeysIn::OnePassword && !has_op))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if let Some(form) = &mut this.form {
+                        form.keep = choice;
+                        cx.notify();
+                    }
+                }))
+        };
+        let reference = form.from_1password && !replacing;
+        v_flex()
+            .gap_3()
+            // A reference only for a new key: replacing one pastes it.
+            .when(has_op && !replacing, |fields| {
+                fields.child(field(
+                    t!("Key from"),
+                    h_flex()
+                        .gap_4()
+                        .child(from(false, t!("Paste"), "key-pasted"))
+                        .child(from(true, t!("1Password"), "key-1password")),
+                    cx,
+                ))
+            })
+            .child(if reference {
+                field(
+                    t!("1Password reference"),
+                    v_flex()
+                        .gap_1()
+                        .child(div().w(rems(20.)).child(small_field(&form.reference)))
+                        .child(note(
+                            t!("In 1Password, a field's menu has Copy Secret Reference. `op` gives the key to OpenShell, and it's taken from there for other gateways too."),
+                            cx,
+                        )),
+                    cx,
+                )
+            } else {
+                field(
+                    t!("Key"),
+                    v_flex()
+                        .gap_1()
+                        .child(div().w(rems(20.)).child(small_field(&form.key)))
+                        .when(form.copying.is_none(), |this| {
+                            this.child(note(t!(form.kind.where_to_get_a_key()), cx))
+                        }),
+                    cx,
+                )
+            })
+            .when(!reference, |fields| {
+                fields.child(field(
+                    t!("Keep it in"),
+                    v_flex()
+                        .gap_1()
+                        .child(
+                            h_flex()
+                                .gap_4()
+                                .child(keep(KeepKeysIn::Nowhere, t!("OpenShell only"), "keep-only"))
+                                .child(keep(KeepKeysIn::OnePassword, t!("1Password too"), "keep-op"))
+                                .child(keep(KeepKeysIn::Keychain, t!("the Keychain too"), "keep-kc")),
+                        )
+                        .child(note(
+                            t!("Kept there too, it can go to another gateway, or be replaced everywhere, without being pasted again."),
+                            cx,
+                        )),
+                    cx,
+                ))
+            })
+    }
+
+    /// Puts `provider` on the gateway `to`: from where its key lives when Playpen knows, or by asking for the key,
+    /// or, for a ChatGPT login, by signing in again there.
+    fn add_to_gateway(
+        &mut self,
+        provider: Provider,
+        to: Gateway,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let home = self.homes.homes.get(&provider.name).cloned();
+        let chatgpt = provider.playpen_kind() == Some(Kind::ChatGptSubscription);
+        if chatgpt || home.is_none() {
+            let kind = provider.playpen_kind().unwrap_or(Kind::OpenRouter);
+            self.open_form(None, kind, window, cx);
+            if let Some(form) = &mut self.form {
+                form.copying = Some((provider, to));
+            }
+            cx.notify();
+            return;
+        }
+        let Some(home) = home else {
+            return;
+        };
+        let from = self.gateway.clone();
+        self.failed = None;
+        let name = provider.name.clone();
+        let copied = cx.background_spawn(async move {
+            let openshell = OpenShell::find()?;
+            let source = home.source()?;
+            openshell.clone().on(to).copy_provider(
+                &openshell.on(from),
+                &provider,
+                &source,
+                find_op().as_deref(),
+            )?;
+            anyhow::Ok(())
+        });
+        self._working = Some(cx.spawn_in(window, async move |this, cx| {
+            let copied = copied.await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                match copied {
+                    Ok(()) => tracing::info!(provider = %name, "added a provider to another gateway"),
+                    Err(error) => {
+                        tracing::warn!(provider = %name, "couldn't add a provider to another gateway: {error:#}");
+                        this.failed = Some(format!("{error:#}"));
+                    }
+                }
+                this.refresh(window, cx);
+                cx.notify();
+            });
+        }));
+        cx.notify();
+    }
+
     fn form(&self, form: &Form, cx: &Context<Self>) -> Div {
-        let adding = form.replacing.is_none();
-        let title = match &form.replacing {
-            Some(provider) if form.kind.signs_in() => {
+        let adding = form.replacing.is_none() && form.copying.is_none();
+        let title = match (&form.copying, &form.replacing) {
+            (Some((provider, to)), _) => t!(
+                "Add “%{name}” to the %{gateway} gateway",
+                name = provider.name,
+                gateway = to.name().unwrap_or("active")
+            ),
+            (None, Some(provider)) if form.kind.signs_in() => {
                 t!("Sign “%{name}” In Again", name = provider.name)
             }
-            Some(provider) => t!("New Key for “%{name}”", name = provider.name),
-            None => t!("Add a Provider"),
+            (None, Some(provider)) => t!("New Key for “%{name}”", name = provider.name),
+            (None, None) => t!("Add a Provider"),
         };
         let kinds = div().w(rems(16.)).child(
             Select::new(&form.kinds)
@@ -828,14 +1134,7 @@ impl Providers {
                         _ => this.child(note(t!(form.kind.where_to_get_a_key()), cx)),
                     }
                 } else {
-                    this.child(field(
-                        t!("Key"),
-                        v_flex()
-                            .gap_1()
-                            .child(div().w(rems(20.)).child(small_field(&form.key)))
-                            .child(note(t!(form.kind.where_to_get_a_key()), cx)),
-                        cx,
-                    ))
+                    this.child(self.key_fields(form, cx))
                 }
             })
             .child(
@@ -873,13 +1172,21 @@ impl Providers {
 enum Job {
     Add(NewProvider),
     Replace(Provider),
+    /// Putting a provider on another gateway.
+    Copy(Provider, Gateway),
+}
+
+/// A key as the form gives it: pasted, with where to keep it besides OpenShell, or a 1Password reference.
+enum Pasted {
+    Key(Key, KeepKeysIn),
+    Reference(String),
 }
 
 impl Job {
     fn name(&self) -> &str {
         match self {
             Job::Add(new) => &new.name,
-            Job::Replace(provider) => &provider.name,
+            Job::Replace(provider) | Job::Copy(provider, _) => &provider.name,
         }
     }
 }

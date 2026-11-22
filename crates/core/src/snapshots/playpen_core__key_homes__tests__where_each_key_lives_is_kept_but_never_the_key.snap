@@ -1,0 +1,16 @@
+---
+source: crates/core/src/key_homes.rs
+expression: "serde_json::to_string_pretty(&homes).unwrap()"
+---
+{
+  "homes": {
+    "claude-sub": {
+      "in": "keychain",
+      "service": "Playpen: claude-sub"
+    },
+    "fireworks": {
+      "in": "onepassword",
+      "reference": "op://vault-id/item-id/credential"
+    }
+  }
+}

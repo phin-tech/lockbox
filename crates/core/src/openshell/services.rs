@@ -45,6 +45,15 @@ pub struct Profile {
     pub inference_capable: bool,
     #[serde(default)]
     pub endpoints: Vec<ProfileEndpoint>,
+    #[serde(default)]
+    pub credentials: Vec<ProfileCredential>,
+}
+
+/// A credential a profile takes, by the variables it's set in; only the first is set in a sandbox.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct ProfileCredential {
+    #[serde(default)]
+    pub env_vars: Vec<String>,
 }
 
 impl Profile {

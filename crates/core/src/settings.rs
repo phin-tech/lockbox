@@ -95,6 +95,22 @@ pub struct Settings {
     /// What's set for each gateway, by the name OpenShell gives it.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub gateways: BTreeMap<String, GatewaySettings>,
+    /// Where a pasted key is kept besides OpenShell, which the forms start with.
+    pub keep_keys_in: KeepKeysIn,
+    /// The 1Password vault keys are saved in, by its id.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vault: Option<String>,
+}
+
+/// Where a pasted key is kept besides OpenShell, so it can go to another gateway or be replaced everywhere without
+/// being pasted again.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum KeepKeysIn {
+    #[default]
+    Nowhere,
+    OnePassword,
+    Keychain,
 }
 
 impl Default for Settings {
@@ -109,6 +125,8 @@ impl Default for Settings {
             show_in: ShowIn::default(),
             keep_sessions: true,
             gateways: BTreeMap::new(),
+            keep_keys_in: KeepKeysIn::default(),
+            vault: None,
         }
     }
 }
@@ -188,8 +206,8 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::{
-        Appearance, GatewaySettings, ImageSourceError, ImagesFrom, Settings, TEXT_SCALES,
-        step_text_scale,
+        Appearance, GatewaySettings, ImageSourceError, ImagesFrom, KeepKeysIn, Settings,
+        TEXT_SCALES, step_text_scale,
     };
     use crate::agent::Agent;
     use crate::docker::{Docker, DockerError};
@@ -347,6 +365,8 @@ mod tests {
                     platform: Some(Platform::Amd64),
                 },
             )]),
+            keep_keys_in: KeepKeysIn::OnePassword,
+            vault: Some("vault-id".to_string()),
         };
         settings.save(&path).unwrap();
         assert_eq!(Settings::load(&path), settings);
@@ -364,6 +384,8 @@ mod tests {
             show_in: crate::session::ShowIn::Automatic,
             keep_sessions: true,
             gateways: BTreeMap::new(),
+            keep_keys_in: KeepKeysIn::Nowhere,
+            vault: None,
         };
         let text = toml::to_string(&settings).unwrap();
         insta::assert_snapshot!(text, @r#"
@@ -375,6 +397,7 @@ mod tests {
         beta_updates = false
         show_in = "automatic"
         keep_sessions = true
+        keep_keys_in = "nowhere"
         "#);
     }
 

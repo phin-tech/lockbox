@@ -21,6 +21,8 @@ thiserror = "2"
 anyhow = "1"
 jiff = "0.2"
 insta = { version = "1", features = ["filters"] }
+# The Keychain, where Playpen keeps a key the person asks it to, read by Playpen itself rather than `security`.
+security-framework = "3.7"
 # Pins the matching GPUI snapshot, whose API moves quickly; bump this deliberately.
 gpui-kit = "=0.9.1"
 # Phin Tech's shared GPUI parts, on the same gpui-kit: the palette, Keys, the Settings window and the themes. Bump it

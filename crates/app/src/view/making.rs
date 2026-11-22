@@ -37,6 +37,8 @@ impl SelectItem for AgentChoice {
 
 /// A sandbox being made for an agent.
 pub struct Making {
+    /// The gateway the sandbox is made on, by its name: its providers are the ones offered.
+    gateway: String,
     agent: Agent,
     /// The Agent menu, searchable, since there may be more agents than fit in a row.
     agents: Entity<SelectState<SearchableVec<AgentChoice>>>,
@@ -131,28 +133,11 @@ impl MainView {
             },
         );
         name.read(cx).focus_handle(cx).focus(window, cx);
-        let openshell = self.openshell();
-        let watching = self.watch;
-        let listing = cx.spawn_in(window, async move |this, cx| {
-            if watching == Watch::Nothing {
-                return;
-            }
-            let (listed, profiles) = cx
-                .background_spawn(async move {
-                    match openshell {
-                        Ok(openshell) => (openshell.providers(), openshell.profiles().ok()),
-                        Err(error) => (Err(error), None),
-                    }
-                })
-                .await;
-            let _ = this.update(cx, |this, cx| {
-                if let Some(making) = &mut this.making {
-                    making.profiles = profiles;
-                }
-                this.providers_listed(listed.map_err(|error| error.to_string()), cx);
-            });
-        });
+        // On the gateway shown, until another is chosen.
+        let gateway = self.gateway_key();
+        let listing = self.list_for_making(&gateway, window, cx);
         self.making = Some(Making {
+            gateway,
             agent,
             agents,
             name,
@@ -181,6 +166,81 @@ impl MainView {
             self.folders_added(folders, window, cx);
         }
         cx.notify();
+    }
+
+    /// Asks the gateway `gateway` names for its providers and profiles, off the window's thread, for New Agent.
+    fn list_for_making(
+        &mut self,
+        gateway: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Task<()> {
+        let openshell = self.openshell_for(gateway);
+        let watching = self.watch;
+        cx.spawn_in(window, async move |this, cx| {
+            if watching == Watch::Nothing {
+                return;
+            }
+            let (listed, profiles) = cx
+                .background_spawn(async move {
+                    match openshell {
+                        Ok(openshell) => (openshell.providers(), openshell.profiles().ok()),
+                        Err(error) => (Err(error), None),
+                    }
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                if let Some(making) = &mut this.making {
+                    making.profiles = profiles;
+                }
+                this.providers_listed(listed.map_err(|error| error.to_string()), cx);
+            });
+        })
+    }
+
+    /// Makes the sandbox on the gateway `gateway` names instead, offering its providers.
+    pub(super) fn choose_making_gateway(
+        &mut self,
+        gateway: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(making) = &self.making else {
+            return;
+        };
+        if making.gateway == gateway {
+            return;
+        }
+        let listing = self.list_for_making(&gateway, window, cx);
+        if let Some(making) = &mut self.making {
+            making.gateway = gateway;
+            making.listed = None;
+            making.profiles = None;
+            making.provider = None;
+            making._listing = listing;
+        }
+        cx.notify();
+    }
+
+    /// The gateways to make a sandbox on, when there's more than one, the chosen one marked.
+    fn gateway_choices(&self, making: &Making, working: bool, cx: &Context<Self>) -> Div {
+        h_flex()
+            .flex_wrap()
+            .gap_2()
+            .children(self.gateways.iter().map(|gateway| {
+                let name = gateway.name.clone();
+                shell::chip(making.gateway == gateway.name, cx)
+                    .id(ElementId::from((
+                        ElementId::from("making-gateway"),
+                        gateway.name.clone(),
+                    )))
+                    .child(gateway.name.clone())
+                    .when(!working, |chip| {
+                        chip.on_click(cx.listener(move |this, _, window, cx| {
+                            this.choose_making_gateway(name.clone(), window, cx);
+                        }))
+                    })
+            }))
     }
 
     /// Takes in the providers OpenShell listed, and chooses the first whose key the agent can use.
@@ -477,8 +537,11 @@ impl MainView {
 
     /// Makes the sandbox, off the window's thread, showing each step as it starts. Once it's made, it's chosen.
     pub(super) fn make(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let openshell = self.openshell();
-        let gateway = self.current_gateway();
+        let Some(chosen) = self.making.as_ref().map(|making| making.gateway.clone()) else {
+            return;
+        };
+        let openshell = self.openshell_for(&chosen);
+        let gateway = self.gateway_info(&chosen);
         let settings = crate::settings::current(cx);
         let Some(making) = &mut self.making else {
             return;
@@ -544,7 +607,7 @@ impl MainView {
                     tracing::info!(sandbox = %name, "made a sandbox");
                     this.cancel_making(window, cx);
                     this.selected = Some(SandboxKey {
-                        gateway: this.gateway_key(),
+                        gateway: chosen.clone(),
                         name,
                     });
                     this.refresh(window, cx);
@@ -635,7 +698,8 @@ impl MainView {
                 .child(error.clone()),
             Some(Ok(providers)) if providers.is_empty() => hint(
                 t!(
-                    "OpenShell has no provider with a key for %{agent}. Add one in Providers, then open New Agent… again.",
+                    "The %{gateway} gateway has no provider with a key for %{agent}. Choose another gateway, or add one in Providers, where Add to Gateway… copies one from another gateway.",
+                    gateway = making.gateway.clone(),
                     agent = making.agent.name()
                 ),
                 cx,
@@ -694,6 +758,11 @@ impl MainView {
                 section(t!("Name"), cx).child(div().w(rems(20.)).child(small_field(&making.name))),
             )
             .child(section(t!("Folders"), cx).child(folders))
+            .when(self.gateways.len() > 1, |body| {
+                body.child(
+                    section(t!("Gateway"), cx).child(self.gateway_choices(making, working, cx)),
+                )
+            })
             .when(!self.kits.kits.kits.is_empty(), |body| {
                 body.child(section(t!("Kits"), cx).child(self.kit_choices(making, working, cx)))
             })

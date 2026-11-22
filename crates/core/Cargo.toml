@@ -15,6 +15,7 @@ toml.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 jiff.workspace = true
+security-framework.workspace = true
 
 [dev-dependencies]
 insta.workspace = true

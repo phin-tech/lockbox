@@ -509,6 +509,68 @@ impl OpenShell {
         created.map(drop)
     }
 
+    /// Puts `provider`, as it is on the gateway `from`, onto this one: its profile copied across, then the provider
+    /// made of it with its key from `source`. OpenShell never gives a key back, so the key has to come from where it
+    /// lives, or from the person. A ChatGPT login isn't copied: each gateway renews a login of its own.
+    pub fn copy_provider(
+        &self,
+        from: &OpenShell,
+        provider: &Provider,
+        source: &KeySource,
+        op: Option<&Path>,
+    ) -> Result<(), OpenShellError> {
+        let adding = format!("add “{}”", provider.name);
+        if provider.playpen_kind() == Some(Kind::ChatGptSubscription) {
+            return Err(OpenShellError::Failed(
+                adding,
+                "a ChatGPT login is signed in on each gateway, since each renews its own"
+                    .to_string(),
+            ));
+        }
+        if self
+            .providers()?
+            .iter()
+            .any(|there| there.name == provider.name)
+        {
+            return Err(OpenShellError::Failed(
+                adding,
+                "this gateway has a provider called that already".to_string(),
+            ));
+        }
+        let profile = from.run(
+            &format!("read the profile of “{}”", provider.name),
+            &["provider", "profile", "export", &provider.kind, "--global"],
+        )?;
+        // A profile's version is its gateway's own count, which another gateway doesn't take.
+        let profile: String = profile
+            .lines()
+            .filter(|line| !line.starts_with("resource_version:"))
+            .map(|line| format!("{line}\n"))
+            .collect();
+        let variable = from
+            .profiles()?
+            .into_iter()
+            .find(|profile| profile.id == provider.kind)
+            .and_then(|profile| profile.credentials.into_iter().next())
+            .and_then(|credential| credential.env_vars.into_iter().next())
+            .ok_or_else(|| {
+                OpenShellError::Unreadable(format!(
+                    "the profile {} names no variable",
+                    provider.kind
+                ))
+            })?;
+        self.create_with(
+            &adding,
+            &provider.name,
+            &provider.kind,
+            &profile,
+            &variable,
+            source,
+            op,
+            provider.has_own_profile(),
+        )
+    }
+
     /// Imports the profile `id`, `profile`, for the provider `name`, bringing one Playpen wrote up to date when it's
     /// there already and leaving any other as it is.
     fn import_profile(

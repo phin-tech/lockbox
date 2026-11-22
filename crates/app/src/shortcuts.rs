@@ -52,6 +52,8 @@ pub const SHORTCUTS: &[(&str, &str, Option<&str>)] = &[
     ("primary-.", "sandbox.stop", None),
     ("primary-backspace", "sandbox.delete", Some(CONTEXT)),
     ("primary-r", "sandboxes.refresh", None),
+    ("primary-]", "gateway.next", None),
+    ("primary-[", "gateway.previous", None),
     ("down", "sandbox.next", Some(CONTEXT)),
     ("up", "sandbox.previous", Some(CONTEXT)),
 ];

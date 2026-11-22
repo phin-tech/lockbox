@@ -8,7 +8,8 @@ use crate::docker::{Docker, DockerError};
 
 /// The CPU an image is built for. It's not always the Mac's: Apple Silicon builds `linux/arm64`, and a cluster is often
 /// `linux/amd64`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Platform {
     Arm64,
     Amd64,

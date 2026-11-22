@@ -19,11 +19,17 @@ headless; `crates/app` is the GPUI front end. Read `CONTEXT.md` before naming an
   `~/Library/Logs/tech.phin.playpen/`; `crash.rs` writes a report there on a panic and says so at the next launch.
   `theme.rs`: the look, Typecase's themes, which follow the appearance, theme and text size set there.
 - `update.rs`: Sparkle, which only the released app carries; Check for Updates… and Settings ask it.
-- `view/`: the window. `sandboxes.rs` lists OpenShell's sandboxes and acts on the chosen one, `making.rs` is
-  New Agent…. Every call to OpenShell or Docker runs off the window's thread.
-- `crates/core/src/openshell/`: the `openshell` command, whose JSON it reads; `agent/` each agent's image, policy and
-  how a sandbox is made for it; `docker.rs` builds images; `herdr.rs` opens a sandbox's
-  agent in a Herdr terminal, labelled `herdr.space`/`herdr.tab` so the Herdr app shows it. `just openshell-test <provider>` makes a real sandbox.
+- `view/`: the window. `sandboxes.rs` is the sidebar (each gateway, its sandboxes nested under it) and acts on the
+  chosen sandbox, `gateways.rs` adds, signs in to and removes a gateway, `images.rs` is Gateway ▸ Image Source…,
+  `making.rs` is New Agent…. `providers.rs` is Settings ▸ Providers, which acts on the gateway in focus. Every call to
+  OpenShell or Docker runs off the window's thread.
+- `crates/core/src/openshell/`: the `openshell` command, whose JSON it reads, and which gateway it goes to; `register.rs`
+  there is `gateway add`, `login` and `remove`. `agent/` each agent's image, policy and how a sandbox is made for it;
+  `image.rs` where an image comes from (this Mac's Docker, a registry, or the person's own) and `docker.rs` builds and
+  pushes it; `herdr.rs` opens a sandbox's agent in a Herdr terminal, labelled `herdr.space`/`herdr.tab` so the Herdr app
+  shows it. `just openshell-test <provider>` makes a real sandbox.
+- Gateways: OpenShell keeps the list (`openshell gateway list`), Playpen keeps none. What Playpen keeps for one is a
+  `[gateways.<name>]` section of the settings file: where its images come from.
 - `crates/cli`: the command line, which the app's own binary answers before any window opens.
 - `DEVELOPMENT.md`: building, checking, CI, releasing.
 
@@ -53,6 +59,20 @@ foreground.
 - Check layout at the window's real size. A larger frame hides clipping.
 
 ## Gotchas
+
+- A call goes to a gateway by `OPENSHELL_GATEWAY`, set by `OpenShell::on`, not by `--gateway`, so it reaches a shell line
+  too. `openshell gateway list` is asked with none named: it marks the named one active, which reorders the list.
+- A sandbox is identified by its gateway and its name (`SandboxKey`); two gateways can each hold one of a name. Herdr knows
+  it by its name on the local Docker gateway and by `gateway/name` on any other. Never key a sandbox by name alone.
+- `openshell gateway add` makes the new gateway the active one, and `gateway remove` leaves its folder, with the
+  certificates, behind. `OpenShell::add_gateway` and `remove_gateway` put the first right and clean up the second; a test
+  or a shot that registers a gateway has to remove it again and leave the active one as it was.
+- A test must never reach a real `openshell` that changes something. Tests that do are `#[ignore]` and say what they touch
+  (`tests/gateways.rs` registers a gateway; `tests/openshell.rs` makes a sandbox on `PLAYPEN_TEST_GATEWAY`).
+- `just shot` runs against OpenShell's real configuration, so a shot shows the gateways and sandboxes that are really
+  there.
+- A Kubernetes gateway takes sandbox names of up to 19 characters, Docker's 63, and its nodes must support
+  `supplementalGroupsPolicy` (OrbStack's don't); `docs/adr/0001-*` has what trying a real cluster found.
 
 - A key bound in a view's context reaches every text field inside the view too, and takes the letter before the field
   sees it: `o` bound to a Command makes `o` impossible to type in a search box there. The main view keeps its context

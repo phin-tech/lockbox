@@ -3,6 +3,8 @@
 
 mod agents;
 mod bring_back;
+mod gateways;
+mod images;
 mod kits;
 mod making;
 mod sandboxes;
@@ -10,7 +12,7 @@ mod services;
 #[cfg(test)]
 mod tests;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use gpui_kit::component::Icon;
 use gpui_kit::component::button::DropdownButton;
@@ -24,7 +26,8 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use playpen_core::{
-    AddedFolders, Agent, AgentState, OpenShell, OpenShellError, Place, Sandbox, What,
+    AddedFolders, Agent, AgentState, Gateway, GatewayInfo, OpenShell, OpenShellError, Place,
+    Sandbox, What,
 };
 use rust_i18n::t;
 use typecase::help::{HelpEvent, KeyHelp};
@@ -139,14 +142,23 @@ pub struct MainView {
     /// The `openshell` command, or why there isn't one, looked for again at each refresh until it's found.
     openshell: Result<OpenShell, OpenShellError>,
     watch: Watch,
-    /// The sandboxes as last listed, or why they couldn't be.
-    sandboxes: Listing,
-    /// The chosen sandbox, by name, which the Sandbox menu's Commands act on.
-    selected: Option<String>,
+    /// The gateways OpenShell has registered, as last listed.
+    gateways: Vec<GatewayInfo>,
+    /// The gateway whose sandboxes are shown, and which every call goes to. It's the active one until the gateways
+    /// have been listed, and until another is chosen.
+    gateway: Gateway,
+    /// The sandboxes of each gateway as last listed, by the gateway's name (empty before they're listed), or why they
+    /// couldn't be. A gateway that was never asked isn't in it.
+    lists: BTreeMap<String, Listing>,
+    /// The gateways whose sandboxes the sidebar shows under them, which are asked every few seconds; the others aren't
+    /// asked at all, so several gateways don't mean several processes every few seconds.
+    expanded: BTreeSet<String>,
+    /// The chosen sandbox, which the Sandbox menu's Commands act on.
+    selected: Option<SandboxKey>,
     /// Where Playpen notes the folders added to sandboxes since they were made; none in a capture or a test.
     added: Option<AddedFolders>,
-    /// What's being done to a sandbox, by its name, while it's done.
-    working: BTreeMap<String, Task<()>>,
+    /// What's being done to a sandbox, while it's done.
+    working: BTreeMap<SandboxKey, Task<()>>,
     /// Why herdr-core's sessions couldn't be read last time, so it's logged once rather than every few seconds.
     herdr_failed: Option<String>,
     /// What the agent in each sandbox's sessions is doing, by sandbox, when herdr-core keeps them.
@@ -166,6 +178,12 @@ pub struct MainView {
     kits_asking: Option<Task<()>>,
     /// The Providers place, made the first time it's shown, since it asks OpenShell for its providers.
     providers: Option<Entity<Providers>>,
+    /// A gateway being added, in the detail panel's place.
+    adding: Option<gateways::Adding>,
+    /// Where the shown gateway gets its images, being chosen, in the detail panel's place.
+    imaging: Option<images::Imaging>,
+    /// What's being done to a gateway that takes a while, which the sidebar says.
+    gateway_working: Option<gateways::GatewayWork>,
     card: Option<Card>,
     _watching: Option<Task<()>>,
     _appearance: Subscription,
@@ -196,7 +214,10 @@ impl MainView {
             focus,
             openshell: OpenShell::find(),
             watch,
-            sandboxes: Listing::Loading,
+            gateways: Vec::new(),
+            gateway: Gateway::Active,
+            lists: BTreeMap::new(),
+            expanded: BTreeSet::new(),
             selected: None,
             added: (watch == Watch::OpenShell)
                 .then(|| crate::settings::file("added-folders"))
@@ -214,6 +235,9 @@ impl MainView {
             kits: kits::KitsPage::new(watch),
             kits_asking: None,
             providers: None,
+            adding: None,
+            imaging: None,
+            gateway_working: None,
             card: None,
             _watching: watching,
             _appearance: appearance,
@@ -258,6 +282,20 @@ impl MainView {
             "go.agents" => self.show_page(Page::Agents, window, cx),
             "go.providers" => self.show_page(Page::Providers, window, cx),
             "sandboxes.refresh" => self.refresh(window, cx),
+            "gateway.next" => self.switch_gateway(1, window, cx),
+            "gateway.previous" => self.switch_gateway(-1, window, cx),
+            "gateway.add" => self.start_adding_gateway(window, cx),
+            "gateway.images" => self.start_images_form(window, cx),
+            "gateway.remove" => {
+                if let Some(name) = self.gateway.name().map(str::to_string) {
+                    self.confirm_remove_gateway(name, window, cx);
+                }
+            }
+            "gateway.sign-in" => {
+                if let Some(name) = self.gateway.name().map(str::to_string) {
+                    self.sign_in_to_gateway(name, window, cx);
+                }
+            }
             "app.palette" => self.open_palette(window, cx),
             "app.keys" => self.open_keys(window, cx),
             _ => {
@@ -343,6 +381,14 @@ const LIST_WIDTH: f32 = 260. / 13.;
 
 /// The title bar's height: taller than the kit's, since the list's heading and its buttons sit in it.
 const TITLE_BAR_HEIGHT: Pixels = px(46.);
+
+/// A sandbox, by its gateway and its name: two gateways can each have one of a name. The gateway is empty before the
+/// gateways are listed, which is when there's only the active one.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) struct SandboxKey {
+    gateway: String,
+    name: String,
+}
 
 /// The sandboxes, as far as they're known.
 enum Listing {
@@ -486,9 +532,11 @@ impl Render for MainView {
             Page::Sandboxes => (
                 self.list_heading(cx),
                 Some(self.sandbox_list(cx)),
-                match &self.making {
-                    Some(making) => self.making_panel(making, cx),
-                    None => self.sandbox_detail(cx),
+                match (&self.imaging, &self.adding, &self.making) {
+                    (Some(imaging), _, _) => self.images_panel(imaging, cx),
+                    (None, Some(adding), _) => self.adding_panel(adding, cx),
+                    (None, None, Some(making)) => self.making_panel(making, cx),
+                    (None, None, None) => self.sandbox_detail(cx),
                 },
             ),
             Page::Agents => (

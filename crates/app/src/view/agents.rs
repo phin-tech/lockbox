@@ -150,7 +150,7 @@ impl MainView {
     }
 
     /// The sandboxes running `agent`, by name.
-    fn sandboxes_of(&self, agent: Agent) -> Vec<&Sandbox> {
+    fn sandboxes_running(&self, agent: Agent) -> Vec<&Sandbox> {
         self.listed_sandboxes()
             .iter()
             .filter(|sandbox| sandbox.agent.as_deref() == Some(agent.id()))
@@ -170,7 +170,7 @@ impl MainView {
         let theme = cx.theme();
         let rows = Agent::ALL.map(|agent| {
             let chosen = self.agents.selected == agent;
-            let running = self.sandboxes_of(agent).len();
+            let running = self.sandboxes_running(agent).len();
             let said = match running {
                 0 => t!("Version %{version}", version = agent.version()).into_owned(),
                 count => t!(
@@ -319,7 +319,7 @@ impl MainView {
                 }
             }
         };
-        let sandboxes = self.sandboxes_of(agent);
+        let sandboxes = self.sandboxes_running(agent);
         let mut info = vec![
             (
                 t!("Image").into_owned(),

@@ -97,6 +97,8 @@ impl MainView {
             self.choose_agent(agent, window, cx);
             return;
         }
+        self.adding = None;
+        self.imaging = None;
         let suggested = suggested_name(agent, &[]);
         let name = cx.new(|cx| {
             let mut state = InputState::new(window, cx).placeholder(suggested.clone());
@@ -476,6 +478,8 @@ impl MainView {
     /// Makes the sandbox, off the window's thread, showing each step as it starts. Once it's made, it's chosen.
     pub(super) fn make(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let openshell = self.openshell();
+        let gateway = self.current_gateway();
+        let settings = crate::settings::current(cx);
         let Some(making) = &mut self.making else {
             return;
         };
@@ -515,8 +519,8 @@ impl MainView {
         let name = plan.name.clone();
         let made = cx.background_spawn(async move {
             let openshell = openshell?;
-            let docker = Docker::find()?;
-            plan.make(&openshell, &docker, |step| {
+            let images = settings.image_source(&gateway, Docker::find)?;
+            plan.make(&openshell, images.as_ref(), |step| {
                 let _ = steps.unbounded_send(step);
             })?;
             anyhow::Ok(())
@@ -539,7 +543,10 @@ impl MainView {
                 Ok(()) => {
                     tracing::info!(sandbox = %name, "made a sandbox");
                     this.cancel_making(window, cx);
-                    this.selected = Some(name);
+                    this.selected = Some(SandboxKey {
+                        gateway: this.gateway_key(),
+                        name,
+                    });
                     this.refresh(window, cx);
                     cx.notify();
                 }

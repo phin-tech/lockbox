@@ -51,6 +51,14 @@ impl Docker {
             .ok_or(DockerError::NotInstalled)
     }
 
+    /// The `docker` at `binary`, for a test that never runs it.
+    #[cfg(test)]
+    pub(crate) fn at(binary: impl Into<PathBuf>) -> Docker {
+        Docker {
+            binary: binary.into(),
+        }
+    }
+
     /// A `PATH` with the docker binary's own folder in it, where its credential helpers are, and Homebrew's.
     fn path(&self) -> OsString {
         let mut dirs: Vec<PathBuf> = self

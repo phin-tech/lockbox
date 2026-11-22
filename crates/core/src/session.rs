@@ -123,10 +123,12 @@ pub enum Keep {
 
 /// Opens the session running `what` in the sandbox, shown in `place`, kept by herdr-core when `keep` asks and it's
 /// installed. The Herdr app always has herdr-core keep it, since that's what it shows. A session herdr-core keeps that
-/// is already live is shown again rather than started twice.
+/// is already live is shown again rather than started twice. `label` names the sandbox to herdr and to the window: its
+/// name, with its gateway before it unless that's the one OpenShell runs on this Mac.
 pub fn open(
     openshell: &OpenShell,
     sandbox: &Sandbox,
+    label: &str,
     what: What,
     place: Place,
     keep: Keep,
@@ -141,11 +143,11 @@ pub fn open(
     let core = HerdrCore::find().filter(|_| keep == Keep::InHerdrCore || place == Place::HerdrApp);
     let line = match &core {
         Some(core) => {
-            let address = core.session(sandbox, what, &command)?;
+            let address = core.session(label, what, &command)?;
             if place == Place::HerdrApp
                 && let Some(app) = HerdrApp::find()
             {
-                app.show(&sandbox.name, what, &address)?;
+                app.show(label, what, &address)?;
                 return Ok(opened);
             }
             core.attach_command(&address)
@@ -155,7 +157,8 @@ pub fn open(
     match place {
         Place::Ghostty => in_ghostty(&line)?,
         Place::Terminal | Place::HerdrApp => {
-            in_terminal(&format!("{}-{}", sandbox.name, what.id()), &line)?;
+            // A file's name, so a gateway's `/` isn't a folder.
+            in_terminal(&format!("{}-{}", label.replace('/', "-"), what.id()), &line)?;
         }
     }
     Ok(opened)

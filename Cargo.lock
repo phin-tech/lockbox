@@ -5935,6 +5935,7 @@ name = "playpen-cli"
 version = "0.1.0"
 dependencies = [
  "playpen-core",
+ "serde_json",
 ]
 
 [[package]]

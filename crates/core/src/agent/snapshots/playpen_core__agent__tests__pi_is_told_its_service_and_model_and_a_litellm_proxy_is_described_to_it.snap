@@ -1,0 +1,26 @@
+---
+source: crates/core/src/agent/mod.rs
+expression: "shown.join(\"\\n\")"
+---
+/sandbox/.pi/agent/settings.json
+{
+  "defaultModel": "gpt-5",
+  "defaultProvider": "litellm",
+  "enableInstallTelemetry": false
+}
+
+/sandbox/.pi/agent/models.json
+{
+  "providers": {
+    "litellm": {
+      "api": "openai-completions",
+      "apiKey": "$LITELLM_API_KEY",
+      "baseUrl": "http://litellm.example.com:4000/v1",
+      "models": [
+        {
+          "id": "gpt-5"
+        }
+      ]
+    }
+  }
+}

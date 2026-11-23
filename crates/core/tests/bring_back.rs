@@ -80,6 +80,7 @@ fn work_comes_back_as_a_branch_without_the_persons_own_edits_and_touching_nothin
         name: name.clone(),
         agent: Agent::ClaudeCode,
         provider: None,
+        model: None,
         account: None,
         services: Vec::new(),
         variables: Vec::new(),

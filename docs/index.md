@@ -6,8 +6,9 @@ services you attach, and nothing else, until you say so.
 
 ## Make a sandbox
 
-**File ▸ New Agent…** (⌘N) asks which agent (Claude Code or Codex), a name, the folders to copy in, any kits, and the
-model key to use. Folders are copied into `/sandbox` with their git history, respecting `.gitignore`. Open the agent
+**File ▸ New Agent…** (⌘N) asks which agent (Claude Code, Codex, Pi, oh-my-pi or PiG), a name, the folders to copy
+in, any kits, and the model key to use. Pi, oh-my-pi and PiG take an API key for OpenRouter, Anthropic, OpenAI or a
+LiteLLM proxy, and the model to start with, which a LiteLLM proxy needs. Folders are copied into `/sandbox` with their git history, respecting `.gitignore`. Open the agent
 in a Herdr terminal, Ghostty or Terminal from the sandbox's **Open** button. A sandbox outlives its sessions:
 close the window and the agent keeps going when Herdr is installed.
 
@@ -62,5 +63,5 @@ and the text size is yours to set.
 
 ## Requires
 
-macOS 14 or later, and [OpenShell](https://github.com/NVIDIA/OpenShell) with Docker (or its MicroVM driver). Claude
-Code and Codex are run from images Playpen builds or pulls; you sign in to them from Providers.
+macOS 14 or later, and [OpenShell](https://github.com/NVIDIA/OpenShell) with Docker (or its MicroVM driver). Every
+agent runs from an image Playpen builds or pulls; you sign in to Claude and ChatGPT, or add an API key, in Providers.

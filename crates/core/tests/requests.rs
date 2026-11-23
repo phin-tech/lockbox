@@ -46,6 +46,7 @@ fn a_blocked_connection_waits_as_a_request_and_gets_through_once_approved() {
         name: format!("pp-requests-{}", std::process::id()),
         agent: Agent::Codex,
         provider: None,
+        model: None,
         account: None,
         services: Vec::new(),
         variables: Vec::new(),

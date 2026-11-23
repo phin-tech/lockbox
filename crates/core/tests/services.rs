@@ -69,6 +69,7 @@ fn plan(name: String, services: Vec<Service>) -> Plan {
         name,
         agent: Agent::ClaudeCode,
         provider: None,
+        model: None,
         account: None,
         services,
         variables: Vec::new(),

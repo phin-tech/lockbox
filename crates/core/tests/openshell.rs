@@ -37,6 +37,7 @@ fn ask(openshell: &OpenShell, plan: &Plan) -> String {
     let command: Vec<&str> = match plan.agent {
         Agent::ClaudeCode => vec!["claude", "-p", QUESTION],
         Agent::Codex => vec!["sh", "-c", &codex],
+        Agent::Pi | Agent::Omp | Agent::Pig => vec![plan.agent.command(), "-p", QUESTION],
     };
     let output = Command::new(openshell.binary())
         .args([
@@ -75,6 +76,7 @@ fn claude_code_answers_from_a_sandbox_playpen_made() {
         name: format!("playpen-test-{}", std::process::id()),
         agent: Agent::ClaudeCode,
         provider: Some(provider),
+        model: None,
         account: None,
         services: Vec::new(),
         variables: Vec::new(),
@@ -158,6 +160,7 @@ fn a_sandbox_is_made_on_a_named_gateway_and_is_not_on_the_other() {
         name: format!("pp-gw-{}", std::process::id()),
         agent: Agent::ClaudeCode,
         provider: None,
+        model: None,
         account: None,
         services: Vec::new(),
         variables: Vec::new(),
@@ -231,6 +234,7 @@ fn codex_answers_on_a_chatgpt_subscription_from_a_sandbox_playpen_made() {
         name: format!("pp-codex-{}", std::process::id()),
         agent: Agent::Codex,
         provider: Some(provider),
+        model: None,
         account: Some(account),
         services: Vec::new(),
         variables: Vec::new(),
@@ -260,4 +264,52 @@ fn codex_answers_on_a_chatgpt_subscription_from_a_sandbox_playpen_made() {
         again.to_lowercase().contains("periwinkle"),
         "still signed in after a restart: {again}"
     );
+}
+
+#[test]
+#[ignore = "needs OpenShell, Docker and an API-key provider: PLAYPEN_TEST_PI_PROVIDER, and PLAYPEN_TEST_PI_MODEL for LiteLLM"]
+fn pi_omp_and_pig_each_answer_on_an_api_key_from_a_sandbox_playpen_made() {
+    let provider = std::env::var("PLAYPEN_TEST_PI_PROVIDER")
+        .expect("PLAYPEN_TEST_PI_PROVIDER names a provider");
+    let id = std::env::var("PLAYPEN_TEST_PI_MODEL").ok();
+    let openshell = OpenShell::find().unwrap();
+    let docker = Docker::find().unwrap();
+    let listed = openshell.providers().unwrap();
+    let held = listed
+        .iter()
+        .find(|listed| listed.name == provider)
+        .expect("the provider is on the active gateway");
+    let profiles = openshell.profiles().unwrap();
+    let model = playpen_core::Model::of(held, &profiles, id).expect("a kind Playpen adds");
+    let mut failed = Vec::new();
+    for agent in [Agent::Pi, Agent::Omp, Agent::Pig] {
+        let folder = std::env::temp_dir()
+            .join(format!("pp-{}-{}", agent.id(), std::process::id()))
+            .join("Project");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("NOTES.md"), "The password is periwinkle.\n").unwrap();
+        let plan = Plan {
+            name: format!("pp-{}-{}", agent.id(), std::process::id()),
+            agent,
+            provider: Some(provider.clone()),
+            model: Some(model.clone()),
+            account: None,
+            services: Vec::new(),
+            variables: Vec::new(),
+            setups: Vec::new(),
+            folders: vec![folder],
+        };
+        let made = plan.make(&openshell, &docker, |_| {});
+        let tried = made.map_err(|error| error.to_string()).and_then(|()| {
+            once_in(&openshell, &plan.name, Phase::Ready)?;
+            Ok(ask(&openshell, &plan))
+        });
+        let _ = openshell.delete(&plan.name);
+        match tried {
+            Ok(answer) if answer.to_lowercase().contains("periwinkle") => {}
+            Ok(answer) => failed.push(format!("{}: {answer}", agent.name())),
+            Err(error) => failed.push(format!("{}: {error}", agent.name())),
+        }
+    }
+    assert!(failed.is_empty(), "{failed:#?}");
 }

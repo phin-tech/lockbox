@@ -1,0 +1,16 @@
+---
+source: crates/core/src/agent/mod.rs
+expression: "pi_plan(Agent::Pi, litellm(Some(\"gpt-5\"))).policy(Platform::Arm64)"
+---
+# Written by Playpen. Everything this doesn't allow is denied.
+version: 1
+network_policies:
+  pi:
+    endpoints:
+      - host: litellm.example.com
+        port: 4000
+        protocol: rest
+        access: read-write
+        enforcement: enforce
+    binaries:
+      - path: /usr/local/bin/node

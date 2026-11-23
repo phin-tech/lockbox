@@ -13,8 +13,8 @@ use std::collections::BTreeSet;
 
 use gpui_kit::component::checkbox::Checkbox;
 use playpen_core::{
-    Docker, Kit, Plan, Profile, Provider, Service, SetupFolder, Step, Variable, VariableValue,
-    suggested_name,
+    Docker, Kit, Model, Plan, Profile, Provider, Service, SetupFolder, Step, Variable,
+    VariableValue, suggested_name,
 };
 
 use super::*;
@@ -43,6 +43,8 @@ pub struct Making {
     /// The Agent menu, searchable, since there may be more agents than fit in a row.
     agents: Entity<SelectState<SearchableVec<AgentChoice>>>,
     name: Entity<InputState>,
+    /// The model to start with, for an agent that reaches whichever service its key is for; empty for its own choice.
+    model: Entity<InputState>,
     /// The name Playpen last suggested, which choosing folders may change while the person hasn't typed another.
     suggested: String,
     /// The folders to copy in, in the order they were added.
@@ -133,6 +135,7 @@ impl MainView {
                 this.choose_agent(*agent, window, cx);
             },
         );
+        let model = cx.new(|cx| InputState::new(window, cx).placeholder(t!("Its own choice")));
         name.read(cx).focus_handle(cx).focus(window, cx);
         // On the gateway shown, until another is chosen.
         let gateway = self.gateway_key();
@@ -142,6 +145,7 @@ impl MainView {
             agent,
             agents,
             name,
+            model,
             suggested,
             folders: Vec::new(),
             listed: None,
@@ -572,6 +576,7 @@ impl MainView {
             name: making.name.read(cx).value().trim().to_string(),
             agent: making.agent,
             provider: making.provider.clone(),
+            model: making.model(cx),
             account,
             services: making.chosen_services(),
             setups: making.setups.clone(),
@@ -796,6 +801,18 @@ impl MainView {
                 body.child(section(t!("Variables"), cx).child(self.kit_variables(making, cx)))
             })
             .child(section(t!("Model key"), cx).child(providers))
+            .when(making.agent.chooses_a_model(), |body| {
+                body.child(
+                    section(t!("Model"), cx)
+                        .child(div().w(rems(16.)).child(small_field(&making.model)))
+                        .child(hint(
+                            t!(
+                                "As the service names it, such as anthropic/claude-sonnet-4.5 on OpenRouter. A LiteLLM proxy needs one; any other key starts with its service's own."
+                            ),
+                            cx,
+                        )),
+                )
+            })
             .child(section(t!("Services"), cx).child(self.service_choices(making, working, cx)))
             .child(hint(
                 t!(
@@ -856,15 +873,33 @@ impl Making {
 
     /// The providers whose key the agent can use, once OpenShell has listed them.
     fn usable(&self) -> Option<Result<Vec<&Provider>, &String>> {
-        let kinds = self.agent.provider_kinds();
         self.listed.as_ref().map(|listed| {
             listed.as_ref().map(|providers| {
                 providers
                     .iter()
-                    .filter(|provider| kinds.contains(&provider.kind.as_str()))
+                    .filter(|provider| self.agent.takes(&provider.kind))
                     .collect()
             })
         })
+    }
+
+    /// The chosen key as Pi and its kin need it, with the model typed, for an agent that chooses one.
+    fn model(&self, cx: &App) -> Option<Model> {
+        if !self.agent.chooses_a_model() {
+            return None;
+        }
+        let name = self.provider.as_ref()?;
+        let provider = self
+            .usable()?
+            .ok()?
+            .into_iter()
+            .find(|provider| &provider.name == name)?;
+        let typed = self.model.read(cx).value().to_string();
+        Model::of(
+            provider,
+            self.profiles.as_deref().unwrap_or_default(),
+            Some(typed),
+        )
     }
 
     fn choose_first_provider(&mut self) {
@@ -921,5 +956,20 @@ impl Making {
 
     pub(super) fn name_typed(&self, cx: &App) -> String {
         self.name.read(cx).value().to_string()
+    }
+
+    pub(super) fn model_for_plan(&self, cx: &App) -> Option<Model> {
+        self.model(cx)
+    }
+}
+
+#[cfg(test)]
+impl MainView {
+    pub(super) fn type_model(&mut self, model: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(making) = &self.making {
+            making.model.update(cx, |field, cx| {
+                field.set_value(model.to_string(), window, cx)
+            });
+        }
     }
 }

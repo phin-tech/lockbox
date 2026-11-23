@@ -192,6 +192,41 @@ fn choosing_codex_renames_the_sandbox_and_chooses_a_chatgpt_provider(cx: &mut Te
 }
 
 #[gpui_kit::test]
+fn choosing_pi_offers_only_api_keys_and_carries_the_model_typed_to_the_sandbox(
+    cx: &mut TestAppContext,
+) {
+    let (view, cx) = open(cx);
+    cx.simulate_keystrokes("cmd-n");
+    cx.run_until_parked();
+    view.update_in(cx, |view, window, cx| {
+        view.providers_listed(
+            Ok(vec![
+                Provider {
+                    name: "claude-sub".to_string(),
+                    kind: "claude-code-oauth".to_string(),
+                },
+                Provider {
+                    name: "openrouter".to_string(),
+                    kind: "playpen-openrouter".to_string(),
+                },
+            ]),
+            cx,
+        );
+        view.choose_agent(Agent::Pi, window, cx);
+        view.type_model("anthropic/claude-sonnet-4.5", window, cx);
+    });
+    view.read_with(cx, |view, cx| {
+        let making = view.making.as_ref().expect("New Agent… is showing");
+        assert_eq!(making.chosen_provider(), Some("openrouter"));
+        assert_eq!(making.name_typed(cx), "pi");
+        let model = making.model_for_plan(cx).expect("Pi is told its key");
+        assert_eq!(model.kind, playpen_core::Kind::OpenRouter);
+        assert_eq!(model.id.as_deref(), Some("anthropic/claude-sonnet-4.5"));
+        assert_eq!(model.endpoints[0].host, "openrouter.ai");
+    });
+}
+
+#[gpui_kit::test]
 fn kits_fill_new_agent_with_all_their_services_the_later_ones_variables_and_the_first_ones_model_key(
     cx: &mut TestAppContext,
 ) {

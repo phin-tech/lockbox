@@ -21,8 +21,8 @@ keeps a session when it's installed, so closing the window showing it only detac
 session. The Herdr app, Ghostty or Terminal shows it.
 _Avoid_: tab, window, run
 
-**Agent**: a coding agent Playpen knows how to run in a sandbox (Claude Code), with the image it runs in and the policy
-that lets it reach its model.
+**Agent**: a coding agent Playpen knows how to run in a sandbox (Claude Code, Codex, Pi, oh-my-pi, PiG), with the image
+it runs in and the policy that lets it reach its model. Pi and its kin reach whichever service their key is for.
 _Avoid_: client, assistant
 
 **Provider**: OpenShell's name for a credential it keeps, of a type (`claude-code-oauth`) saying what it's for. Its key

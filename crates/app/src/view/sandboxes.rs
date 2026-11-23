@@ -1499,6 +1499,9 @@ fn agent_icon(agent: Option<Agent>) -> assets::IconName {
     match agent {
         Some(Agent::ClaudeCode) => assets::IconName::Asterisk,
         Some(Agent::Codex) => assets::IconName::SquareTerminal,
+        Some(Agent::Pi) => assets::IconName::Pi,
+        Some(Agent::Omp) => assets::IconName::Omega,
+        Some(Agent::Pig) => assets::IconName::PiggyBank,
         None => assets::IconName::Box,
     }
 }

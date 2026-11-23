@@ -44,6 +44,7 @@ fn folders_go_in_side_by_side_when_its_made_and_while_it_runs() {
         name: format!("pp-folders-{}", std::process::id()),
         agent: Agent::ClaudeCode,
         provider: None,
+        model: None,
         account: None,
         services: Vec::new(),
         variables: Vec::new(),

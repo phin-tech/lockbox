@@ -323,11 +323,7 @@ impl MainView {
             Built::Building => t!("Building, which takes a few minutes…").into_owned(),
             Built::Failed(_) => t!("Couldn't build it").into_owned(),
         };
-        let kinds: Vec<Kind> = agent
-            .provider_kinds()
-            .iter()
-            .filter_map(|kind| Kind::of(kind))
-            .collect();
+        let kinds: Vec<Kind> = agent.model_kinds().to_vec();
         let names: Vec<&str> = kinds.iter().map(|kind| kind.name()).collect();
         // The providers that hold a key it can use, by name, or none yet, with a way to add the first kind it takes.
         let yours = match &self.agents.providers {
@@ -337,7 +333,7 @@ impl MainView {
             Some(Ok(providers)) => {
                 let usable: Vec<&str> = providers
                     .iter()
-                    .filter(|provider| agent.provider_kinds().contains(&provider.kind.as_str()))
+                    .filter(|provider| agent.takes(&provider.kind))
                     .map(|provider| provider.name.as_str())
                     .collect();
                 match (usable.is_empty(), kinds.first().copied()) {

@@ -29,6 +29,7 @@ fn a_kits_install_sh_and_dotfiles_reach_the_sandbox_but_not_its_secrets() {
         name: format!("pp-kit-{pid}"),
         agent: Agent::ClaudeCode,
         provider: None,
+        model: None,
         account: None,
         services: Vec::new(),
         variables: Vec::new(),

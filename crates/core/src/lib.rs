@@ -27,7 +27,9 @@ mod settings;
 mod state;
 
 pub use added::{AddError, AddedFolders};
-pub use agent::{Agent, MakeError, Plan, Step, is_sandbox_name, open_command, suggested_name};
+pub use agent::{
+    Agent, MakeError, Model, Plan, Step, is_sandbox_name, open_command, suggested_name,
+};
 pub use bring_back::{
     BringBackError, Brought, Repo, branch as bring_back_branch, bring_back, seed,
 };

@@ -11,9 +11,10 @@ use crate::kit_setup::{SetupFolder, image_name, link_dotfiles};
 use crate::kits::{Variable, VariableValue};
 use crate::new_service::find_op;
 use crate::openshell::{
-    AGENT_LABEL, FOLDER_ANNOTATION, GATEWAY_VARIABLE, Gateway, OpenShell, OpenShellError, Sandbox,
-    Service, WORKDIR_ANNOTATION,
+    AGENT_LABEL, FOLDER_ANNOTATION, GATEWAY_VARIABLE, Gateway, OpenShell, OpenShellError, Profile,
+    Provider, Sandbox, Service, WORKDIR_ANNOTATION,
 };
+use crate::provider::{Endpoint, Kind};
 use crate::secrets::Secret;
 use crate::session::What;
 
@@ -22,6 +23,19 @@ const CLAUDE_CODE_VERSION: &str = "2.1.329";
 
 /// The Codex release its image is built with.
 const CODEX_VERSION: &str = "0.171.0";
+
+/// The Pi release its image is built with, from npm.
+const PI_VERSION: &str = "1.5.0";
+
+/// The oh-my-pi release its image is built with, and the digests its release published for each platform's program.
+const OMP_VERSION: &str = "18.22.2";
+const OMP_SHA256_X64: &str = "80a692c5adb9c71124bb11e77bd7edb3cf8fbbab6980db3206dcb6a4cb2905b5";
+const OMP_SHA256_ARM64: &str = "82a880ba04d73f1c81a12931447f9f9ed8945581998564eae900c1238f4502e2";
+
+/// The PiG release its image is built with, and the digests its release published for each platform's archive.
+const PIG_VERSION: &str = "0.7.0";
+const PIG_SHA256_AMD64: &str = "0b5ab7cb5f680e7d3353bdaa3a1018863c3c3552f88bec730370668e5819995a";
+const PIG_SHA256_ARM64: &str = "88d2dcb4a4852a980dc1ca9202eed9455ff8fb011553c8db62c1b85c676a366b";
 
 /// Codex's real program, which npm installs for the image's platform, so the path depends on it.
 fn codex_binary(platform: Platform) -> &'static str {
@@ -43,16 +57,31 @@ const SANDBOX_HOME: &str = "/sandbox";
 pub enum Agent {
     ClaudeCode,
     Codex,
+    /// Pi, which reaches whichever model service its key is for.
+    Pi,
+    /// oh-my-pi, a fork of Pi.
+    Omp,
+    /// PiG, Pi written again in Go.
+    Pig,
 }
 
 impl Agent {
-    pub const ALL: [Agent; 2] = [Agent::ClaudeCode, Agent::Codex];
+    pub const ALL: [Agent; 5] = [
+        Agent::ClaudeCode,
+        Agent::Codex,
+        Agent::Pi,
+        Agent::Omp,
+        Agent::Pig,
+    ];
 
     /// Its name in a sandbox's label.
     pub fn id(self) -> &'static str {
         match self {
             Agent::ClaudeCode => "claude-code",
             Agent::Codex => "codex",
+            Agent::Pi => "pi",
+            Agent::Omp => "omp",
+            Agent::Pig => "pig",
         }
     }
 
@@ -64,6 +93,9 @@ impl Agent {
         match self {
             Agent::ClaudeCode => "Claude Code",
             Agent::Codex => "Codex",
+            Agent::Pi => "Pi",
+            Agent::Omp => "oh-my-pi",
+            Agent::Pig => "PiG",
         }
     }
 
@@ -73,6 +105,9 @@ impl Agent {
         let name = match self {
             Agent::ClaudeCode => "playpen-claude-code",
             Agent::Codex => "playpen-codex",
+            Agent::Pi => "playpen-pi",
+            Agent::Omp => "playpen-omp",
+            Agent::Pig => "playpen-pig",
         };
         format!(
             "{name}:{}-{:08x}",
@@ -86,6 +121,9 @@ impl Agent {
         match self {
             Agent::ClaudeCode => CLAUDE_CODE_VERSION,
             Agent::Codex => CODEX_VERSION,
+            Agent::Pi => PI_VERSION,
+            Agent::Omp => OMP_VERSION,
+            Agent::Pig => PIG_VERSION,
         }
     }
 
@@ -107,6 +145,9 @@ impl Agent {
         match self {
             Agent::ClaudeCode => include_str!("claude-code.Dockerfile"),
             Agent::Codex => include_str!("codex.Dockerfile"),
+            Agent::Pi => include_str!("pi.Dockerfile"),
+            Agent::Omp => include_str!("omp.Dockerfile"),
+            Agent::Pig => include_str!("pig.Dockerfile"),
         }
     }
 
@@ -114,6 +155,17 @@ impl Agent {
         match self {
             Agent::ClaudeCode => vec![("CLAUDE_CODE_VERSION", CLAUDE_CODE_VERSION)],
             Agent::Codex => vec![("CODEX_VERSION", CODEX_VERSION)],
+            Agent::Pi => vec![("PI_VERSION", PI_VERSION)],
+            Agent::Omp => vec![
+                ("OMP_VERSION", OMP_VERSION),
+                ("OMP_SHA256_X64", OMP_SHA256_X64),
+                ("OMP_SHA256_ARM64", OMP_SHA256_ARM64),
+            ],
+            Agent::Pig => vec![
+                ("PIG_VERSION", PIG_VERSION),
+                ("PIG_SHA256_AMD64", PIG_SHA256_AMD64),
+                ("PIG_SHA256_ARM64", PIG_SHA256_ARM64),
+            ],
         }
     }
 
@@ -122,6 +174,9 @@ impl Agent {
         match self {
             Agent::ClaudeCode => "claude",
             Agent::Codex => "codex",
+            Agent::Pi => "pi",
+            Agent::Omp => "omp",
+            Agent::Pig => "pig",
         }
     }
 
@@ -133,6 +188,11 @@ impl Agent {
         match self {
             Agent::ClaudeCode => "claude",
             Agent::Codex => "env SQLITE_TMPDIR=/tmp TMPDIR=/tmp codex --no-daemon",
+            Agent::Pi => "pi",
+            // The sandbox's home is where its folders are, and oh-my-pi would otherwise start in a folder of its own
+            // rather than in a home.
+            Agent::Omp => "omp --allow-home",
+            Agent::Pig => "pig",
         }
     }
 
@@ -141,39 +201,64 @@ impl Agent {
         match self {
             Agent::ClaudeCode => "claude --continue",
             Agent::Codex => "env SQLITE_TMPDIR=/tmp TMPDIR=/tmp codex resume --last --no-daemon",
+            Agent::Pi => "pi --continue",
+            Agent::Omp => "omp --allow-home --continue",
+            Agent::Pig => "pig --continue",
         }
     }
 
     /// The program that reaches the model, by its real path in the image. OpenShell matches a rule's binaries by
-    /// the path a connection really came from, so `/usr/local/bin/claude`, a link to this, matches nothing.
+    /// the path a connection really came from, so `/usr/local/bin/claude`, a link to this, matches nothing. Pi is a
+    /// Node script, so its program is node itself, and any other Node script in the sandbox may reach its model's
+    /// host too; OpenShell still adds the key only on the hosts the key is for.
     fn binary(self, platform: Platform) -> &'static str {
         match self {
             Agent::ClaudeCode => {
                 "/usr/local/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe"
             }
             Agent::Codex => codex_binary(platform),
+            Agent::Pi => "/usr/local/bin/node",
+            Agent::Omp => "/usr/local/bin/omp",
+            Agent::Pig => "/usr/local/bin/pig",
         }
     }
 
-    /// The types of provider that hold a key it can use: a subscription's token, or an API key.
-    pub fn provider_kinds(self) -> &'static [&'static str] {
+    /// The kinds of provider Playpen adds that hold a key it can use, the one to suggest first. Pi and its kin take
+    /// API keys only: OpenShell gives a sandbox a stand-in for a key, and they tell a subscription's token by what's in
+    /// it, which a stand-in doesn't show.
+    pub fn model_kinds(self) -> &'static [Kind] {
         match self {
-            Agent::ClaudeCode => &[
-                "claude-code-oauth",
-                "claude-code",
-                "anthropic",
-                "playpen-anthropic",
+            Agent::ClaudeCode => &[Kind::ClaudeSubscription, Kind::Anthropic],
+            Agent::Codex => &[Kind::ChatGptSubscription, Kind::OpenAi],
+            Agent::Pi | Agent::Omp | Agent::Pig => &[
+                Kind::OpenRouter,
+                Kind::Anthropic,
+                Kind::OpenAi,
+                Kind::LiteLlm,
             ],
-            Agent::Codex => &["playpen-chatgpt", "playpen-openai"],
         }
     }
 
-    /// The hosts it needs: its model's API, and, for Claude Code, the service it checks for when it starts
-    /// interactively, which it won't start without.
+    /// Whether a provider OpenShell lists with the type `kind` holds a key it can use. Claude Code also takes the
+    /// providers OpenShell makes itself, which aren't Playpen's kinds.
+    pub fn takes(self, kind: &str) -> bool {
+        Kind::of(kind).is_some_and(|known| self.model_kinds().contains(&known))
+            || (self == Agent::ClaudeCode && matches!(kind, "claude-code" | "anthropic"))
+    }
+
+    /// Whether the person says which model it starts with, since it reaches several services. It's needed for a
+    /// LiteLLM proxy, whose models only the proxy knows.
+    pub fn chooses_a_model(self) -> bool {
+        matches!(self, Agent::Pi | Agent::Omp | Agent::Pig)
+    }
+
+    /// The hosts it needs whatever its key: its model's API, and, for Claude Code, the service it checks for when it
+    /// starts interactively, which it won't start without. Pi and its kin reach only the host their key is for.
     fn hosts(self) -> &'static [&'static str] {
         match self {
             Agent::ClaudeCode => &["api.anthropic.com", "platform.claude.com"],
             Agent::Codex => &["chatgpt.com", "api.openai.com"],
+            Agent::Pi | Agent::Omp | Agent::Pig => &[],
         }
     }
 
@@ -186,6 +271,19 @@ impl Agent {
                 ("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1"),
             ],
             Agent::Codex => &[],
+            // Nothing at startup: no version check, model catalogue or count of installs, which the policy would only
+            // deny.
+            Agent::Pi => &[
+                ("PI_OFFLINE", "1"),
+                ("PI_SKIP_VERSION_CHECK", "1"),
+                ("PI_TELEMETRY", "0"),
+            ],
+            Agent::Omp => &[("PI_AUTO_QA", "0"), ("PI_TELEMETRY", "0")],
+            Agent::Pig => &[
+                ("PIG_OFFLINE", "1"),
+                ("PI_SKIP_VERSION_CHECK", "1"),
+                ("PI_TELEMETRY", "0"),
+            ],
         }
     }
 
@@ -193,6 +291,11 @@ impl Agent {
     /// provider adds its own rules, but one written for another image names another path, so the agent's are written
     /// here too.
     pub fn policy(self, platform: Platform) -> String {
+        self.policy_reaching(platform, &[])
+    }
+
+    /// Its policy, reaching `model` too: the hosts its key is for, when it reaches whichever service that is.
+    fn policy_reaching(self, platform: Platform, model: &[Endpoint]) -> String {
         let mut policy = format!(
             "# Written by Playpen. Everything this doesn't allow is denied.\n\
              version: 1\n\
@@ -201,9 +304,13 @@ impl Agent {
              \x20   endpoints:\n",
             id = self.id(),
         );
-        for host in self.hosts() {
+        let fixed = self.hosts().iter().map(|host| ((*host).to_string(), 443));
+        let keyed = model
+            .iter()
+            .map(|endpoint| (endpoint.host.clone(), endpoint.port));
+        for (host, port) in fixed.chain(keyed) {
             policy.push_str(&format!(
-                "      - host: {host}\n        port: 443\n        protocol: rest\n        access: read-write\n        enforcement: enforce\n"
+                "      - host: {host}\n        port: {port}\n        protocol: rest\n        access: read-write\n        enforcement: enforce\n"
             ));
         }
         policy.push_str(&format!(
@@ -214,6 +321,80 @@ impl Agent {
     }
 }
 
+/// The model key, as an agent that reaches whichever service its key is for needs it: the kind of key, the hosts it's
+/// sent to, and the model to start with, when the person chose one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Model {
+    pub kind: Kind,
+    pub endpoints: Vec<Endpoint>,
+    pub id: Option<String>,
+}
+
+impl Model {
+    /// The model key `provider` holds, by the profile OpenShell lists for its type, starting with the model `id` when
+    /// one's given. None for a provider Playpen didn't add, whose kind it doesn't know.
+    pub fn of(provider: &Provider, profiles: &[Profile], id: Option<String>) -> Option<Model> {
+        let kind = Kind::of(&provider.kind)?;
+        let endpoints = match profiles.iter().find(|profile| profile.id == provider.kind) {
+            Some(profile) => profile
+                .endpoints
+                .iter()
+                .map(|endpoint| Endpoint {
+                    host: endpoint.host.clone(),
+                    port: endpoint.port,
+                })
+                .collect(),
+            None => kind
+                .hosts()
+                .iter()
+                .map(|host| Endpoint {
+                    host: (*host).to_string(),
+                    port: 443,
+                })
+                .collect(),
+        };
+        let id = id
+            .map(|id| id.trim().to_string())
+            .filter(|id| !id.is_empty());
+        Some(Model {
+            kind,
+            endpoints,
+            id,
+        })
+    }
+
+    /// The name Pi and its kin know the service by: their own for each they know, and `litellm` for a proxy, which
+    /// Playpen describes to them.
+    fn provider(&self) -> &'static str {
+        match self.kind {
+            Kind::Anthropic | Kind::ClaudeSubscription => "anthropic",
+            Kind::OpenAi | Kind::ChatGptSubscription => "openai",
+            Kind::OpenRouter => "openrouter",
+            Kind::Fireworks => "fireworks",
+            Kind::ZAi => "zai",
+            Kind::LiteLlm => "litellm",
+        }
+    }
+
+    /// The model, as Pi and its kin name one: under its service.
+    fn qualified(&self) -> Option<String> {
+        self.id
+            .as_deref()
+            .map(|id| format!("{}/{id}", self.provider()))
+    }
+
+    /// Where a LiteLLM proxy's OpenAI-style API is. One on 443 is taken as HTTPS, and one on another port as plain
+    /// HTTP, as a proxy on a LAN usually is, since OpenShell keeps only its host and port.
+    fn base_url(&self) -> Option<String> {
+        let endpoint = self.endpoints.first()?;
+        Some(match endpoint.port {
+            443 => format!("https://{}/v1", endpoint.host),
+            80 => format!("http://{}/v1", endpoint.host),
+            port => format!("http://{}:{port}/v1", endpoint.host),
+        })
+    }
+}
+
 /// A sandbox to make for an agent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Plan {
@@ -221,6 +402,8 @@ pub struct Plan {
     pub agent: Agent,
     /// The provider holding its model's key, by name.
     pub provider: Option<String>,
+    /// What the agent needs to know of its key, when it reaches whichever service that's for.
+    pub model: Option<Model>,
     /// The ChatGPT account, when the provider is a ChatGPT subscription.
     pub account: Option<Account>,
     /// Services to attach besides the model's key, each with its hosts opened.
@@ -267,6 +450,12 @@ pub enum MakeError {
         "Two of the folders are called “{0}”, and each is copied in under its own name. Leave one out, or rename it."
     )]
     SameFolderName(String),
+    #[error("Say which of the LiteLLM proxy's models {0} starts with: only the proxy knows them.")]
+    NoModel(&'static str),
+    #[error(
+        "Playpen couldn't tell which hosts the model key is for, so {0} couldn't reach its model. Try again once OpenShell lists the gateway's providers."
+    )]
+    NoModelHosts(&'static str),
     #[error(
         "A kit that installs software is built into an image with this Mac's Docker, which a gateway that pulls from a registry can't use yet. Use a gateway that shares this Mac's Docker, or leave that kit out."
     )]
@@ -282,7 +471,11 @@ impl Plan {
     /// The sandbox's policy: its agent reaching its model from its program in an image for `platform`, and each
     /// service's hosts.
     pub fn policy(&self, platform: Platform) -> String {
-        let mut policy = self.agent.policy(platform);
+        let model = match (&self.model, self.agent.chooses_a_model()) {
+            (Some(model), true) => model.endpoints.as_slice(),
+            _ => &[],
+        };
+        let mut policy = self.agent.policy_reaching(platform, model);
         for service in &self.services {
             policy.push_str(&service.policy());
         }
@@ -378,6 +571,16 @@ impl Plan {
         if let Some(name) = self.shared_folder_name() {
             return Err(MakeError::SameFolderName(name));
         }
+        if self.agent.chooses_a_model()
+            && let Some(model) = &self.model
+        {
+            if model.kind == Kind::LiteLlm && model.id.is_none() {
+                return Err(MakeError::NoModel(self.agent.name()));
+            }
+            if model.endpoints.is_empty() {
+                return Err(MakeError::NoModelHosts(self.agent.name()));
+            }
+        }
         let image = if self.setups.iter().any(SetupFolder::installs) {
             // A kit's `install.sh` is run over the agent's image by Docker, on this Mac, and the image that makes is
             // the one the sandbox starts from, so only a gateway that shares this Mac's Docker can use it.
@@ -452,7 +655,92 @@ impl Plan {
                 return Err(error.into());
             }
         }
+        let files = self.settings_files();
+        if !files.is_empty() {
+            step(Step::Preparing);
+            let input = serde_json::Value::from(
+                files
+                    .iter()
+                    .map(|(path, contents)| serde_json::json!({ "path": path, "contents": contents }))
+                    .collect::<Vec<_>>(),
+            )
+            .to_string();
+            if let Err(error) = openshell.exec_with_input(
+                &self.name,
+                &format!("set up {} in “{}”", self.agent.name(), self.name),
+                &["node", "-e", WRITE_FILES_SCRIPT],
+                input.as_bytes(),
+            ) {
+                let _ = openshell.delete(&self.name);
+                return Err(error.into());
+            }
+        }
         Ok(())
+    }
+
+    /// The files Pi and its kin read their settings from, by path in the sandbox's home: the service and model to
+    /// start with, a LiteLLM proxy described, and nothing checked for at startup, which the policy would deny. PiG
+    /// asks its first-run questions unless it finds settings, so it always has some.
+    pub fn settings_files(&self) -> Vec<(String, String)> {
+        let model = self.model.as_ref();
+        let litellm = model.filter(|model| model.kind == Kind::LiteLlm);
+        match self.agent {
+            Agent::ClaudeCode | Agent::Codex => Vec::new(),
+            Agent::Pi | Agent::Pig => {
+                let home = if self.agent == Agent::Pi {
+                    "/sandbox/.pi/agent"
+                } else {
+                    "/sandbox/.pig/agent"
+                };
+                // In the order serde_json sorts them, so the file's the same with or without its `preserve_order`.
+                let mut settings = serde_json::Map::new();
+                if let Some(id) = model.and_then(|model| model.id.clone()) {
+                    settings.insert("defaultModel".into(), id.into());
+                }
+                if let Some(model) = model {
+                    settings.insert("defaultProvider".into(), model.provider().into());
+                }
+                settings.insert("enableInstallTelemetry".into(), false.into());
+                let settings = serde_json::Value::Object(settings);
+                let mut files = vec![(format!("{home}/settings.json"), pretty(&settings))];
+                if let Some(model) = litellm {
+                    files.push((
+                        format!("{home}/models.json"),
+                        pretty(&litellm_models(model)),
+                    ));
+                }
+                files
+            }
+            Agent::Omp => {
+                let home = "/sandbox/.omp/agent";
+                let mut config = String::from(
+                    "# Written by Playpen: nothing is checked for or updated at startup, which the sandbox would deny.\n\
+                     startup:\n  checkUpdate: false\n\
+                     update:\n  auto: false\n\
+                     marketplace:\n  autoUpdate: off\n\
+                     dev:\n  autoqa: false\n",
+                );
+                if let Some(qualified) = model.and_then(Model::qualified) {
+                    config.push_str(&format!("modelRoles:\n  default: {qualified}\n"));
+                }
+                let mut files = vec![(format!("{home}/config.yml"), config)];
+                if let Some(model) = litellm
+                    && let Some(base_url) = model.base_url()
+                {
+                    let id = model.id.as_deref().unwrap_or_default();
+                    files.push((
+                        format!("{home}/models.yml"),
+                        format!(
+                            "# Written by Playpen: the LiteLLM proxy this sandbox's key is for.\n\
+                             providers:\n  litellm:\n    baseUrl: {base_url}\n    api: openai-completions\n    \
+                             apiKey: {variable}\n    models:\n      - id: {id}\n",
+                            variable = Kind::LiteLlm.variable(),
+                        ),
+                    ));
+                }
+                files
+            }
+        }
     }
 
     /// What the agent needs written in the sandbox before it starts, given to [`SETUP_SCRIPT`]; none for Claude Code.
@@ -464,7 +752,7 @@ impl Plan {
     /// tries to renew the login itself, which it couldn't: the sandbox can't reach OpenAI's sign-in.
     fn setup(&self) -> Option<serde_json::Value> {
         match self.agent {
-            Agent::ClaudeCode => None,
+            Agent::ClaudeCode | Agent::Pi | Agent::Omp | Agent::Pig => None,
             Agent::Codex => Some(serde_json::json!({
                 "config": "# Written by Playpen.\nsandbox_mode = \"danger-full-access\"\ncheck_for_update_on_startup = false\n",
                 "account": self.account,
@@ -503,6 +791,37 @@ if (setup.account) {
 /// Puts the sandbox's current stand-in for the ChatGPT access token in Codex's `auth.json`, run before Codex each
 /// time it's opened. OpenShell gives each new process the current stand-in, and the one in the file would go stale
 /// when the person signs in again; it can't be kept stable, since OpenShell renews the token.
+/// Writes each file it's given on its input, `[{path, contents}]`, making its folder, readable only by the sandbox's
+/// user.
+const WRITE_FILES_SCRIPT: &str = r#"
+const fs = require("fs");
+const path = require("path");
+for (const file of JSON.parse(fs.readFileSync(0, "utf8"))) {
+  fs.mkdirSync(path.dirname(file.path), { recursive: true, mode: 0o700 });
+  fs.writeFileSync(file.path, file.contents, { mode: 0o600 });
+}
+"#;
+
+/// A LiteLLM proxy described to Pi and PiG, its key read from the variable OpenShell sets.
+fn litellm_models(model: &Model) -> serde_json::Value {
+    serde_json::json!({
+        "providers": {
+            "litellm": {
+                "api": "openai-completions",
+                "apiKey": format!("${}", Kind::LiteLlm.variable()),
+                "baseUrl": model.base_url(),
+                "models": model.id.iter().map(|id| serde_json::json!({ "id": id })).collect::<Vec<_>>(),
+            }
+        }
+    })
+}
+
+fn pretty(value: &serde_json::Value) -> String {
+    let mut text = serde_json::to_string_pretty(value).unwrap_or_default();
+    text.push('\n');
+    text
+}
+
 const SIGN_IN_SCRIPT: &str = r#"
 const fs = require("fs");
 const file = "/sandbox/.codex/auth.json";
@@ -617,9 +936,10 @@ pub(crate) fn quote(text: &str) -> String {
 mod tests {
     use std::path::{Path, PathBuf};
 
-    use super::{Agent, Plan, is_sandbox_name, open_command, suggested_name};
+    use super::{Agent, Model, Plan, is_sandbox_name, open_command, suggested_name};
     use crate::image::Platform;
     use crate::openshell::{Gateway, Phase, Sandbox};
+    use crate::provider::{Endpoint, Kind};
     use crate::session::What;
 
     fn plan() -> Plan {
@@ -627,6 +947,7 @@ mod tests {
             name: "claude-patchbay".to_string(),
             agent: Agent::ClaudeCode,
             provider: Some("claude-sub".to_string()),
+            model: None,
             account: None,
             services: Vec::new(),
             variables: Vec::new(),
@@ -852,10 +1173,136 @@ mod tests {
         );
     }
 
+    fn pi_plan(agent: Agent, model: Model) -> Plan {
+        Plan {
+            name: "pi-patchbay".to_string(),
+            agent,
+            provider: Some("work".to_string()),
+            model: Some(model),
+            ..plan()
+        }
+    }
+
+    fn litellm(id: Option<&str>) -> Model {
+        Model {
+            kind: Kind::LiteLlm,
+            endpoints: vec![Endpoint {
+                host: "litellm.example.com".to_string(),
+                port: 4000,
+            }],
+            id: id.map(str::to_string),
+        }
+    }
+
+    fn openrouter() -> Model {
+        Model {
+            kind: Kind::OpenRouter,
+            endpoints: vec![Endpoint {
+                host: "openrouter.ai".to_string(),
+                port: 443,
+            }],
+            id: Some("anthropic/claude-sonnet-4.5".to_string()),
+        }
+    }
+
+    #[test]
+    fn pis_policy_reaches_only_the_host_its_key_is_for_from_node() {
+        insta::assert_snapshot!(pi_plan(Agent::Pi, litellm(Some("gpt-5"))).policy(Platform::Arm64));
+        let omp = pi_plan(Agent::Omp, openrouter()).policy(Platform::Arm64);
+        assert!(
+            omp.contains("host: openrouter.ai\n        port: 443"),
+            "{omp}"
+        );
+        assert!(omp.contains("path: /usr/local/bin/omp"), "{omp}");
+        assert!(
+            pi_plan(Agent::Pig, openrouter())
+                .policy(Platform::Amd64)
+                .contains("path: /usr/local/bin/pig")
+        );
+    }
+
+    #[test]
+    fn claude_codes_policy_is_the_same_whatever_its_key_says() {
+        let with = Plan {
+            model: Some(openrouter()),
+            ..plan()
+        };
+        assert_eq!(with.policy(Platform::Arm64), plan().policy(Platform::Arm64));
+    }
+
+    #[test]
+    fn pi_and_its_kin_take_api_keys_and_no_subscription() {
+        for agent in [Agent::Pi, Agent::Omp, Agent::Pig] {
+            assert!(agent.takes("playpen-openrouter"));
+            assert!(agent.takes("playpen-anthropic"));
+            assert!(agent.takes("playpen-openai"));
+            assert!(agent.takes("playpen-litellm-work"));
+            assert!(!agent.takes("claude-code-oauth"), "{agent:?}");
+            assert!(!agent.takes("playpen-chatgpt"), "{agent:?}");
+            assert!(agent.chooses_a_model());
+        }
+        assert!(Agent::ClaudeCode.takes("claude-code"));
+        assert!(Agent::ClaudeCode.takes("claude-code-oauth"));
+        assert!(!Agent::ClaudeCode.takes("playpen-openrouter"));
+        assert!(Agent::Codex.takes("playpen-chatgpt"));
+        assert!(!Agent::Codex.chooses_a_model());
+    }
+
+    #[test]
+    fn pi_is_told_its_service_and_model_and_a_litellm_proxy_is_described_to_it() {
+        let files = pi_plan(Agent::Pi, litellm(Some("gpt-5"))).settings_files();
+        let shown: Vec<String> = files
+            .iter()
+            .map(|(path, contents)| format!("{path}\n{contents}"))
+            .collect();
+        insta::assert_snapshot!(shown.join("\n"));
+        let pig = pi_plan(Agent::Pig, openrouter()).settings_files();
+        assert_eq!(pig.len(), 1, "no proxy to describe");
+        assert_eq!(pig[0].0, "/sandbox/.pig/agent/settings.json");
+        assert!(pig[0].1.contains("\"defaultProvider\": \"openrouter\""));
+    }
+
+    #[test]
+    fn omp_is_told_its_model_and_checks_for_nothing_at_startup() {
+        let files = pi_plan(Agent::Omp, litellm(Some("gpt-5"))).settings_files();
+        let shown: Vec<String> = files
+            .iter()
+            .map(|(path, contents)| format!("{path}\n{contents}"))
+            .collect();
+        insta::assert_snapshot!(shown.join("\n"));
+    }
+
+    #[test]
+    fn a_litellm_proxys_address_is_https_only_on_443() {
+        assert_eq!(
+            litellm(None).base_url().as_deref(),
+            Some("http://litellm.example.com:4000/v1")
+        );
+        let on_443 = Model {
+            endpoints: vec![Endpoint {
+                host: "litellm.example.com".to_string(),
+                port: 443,
+            }],
+            ..litellm(None)
+        };
+        assert_eq!(
+            on_443.base_url().as_deref(),
+            Some("https://litellm.example.com/v1")
+        );
+    }
+
+    #[test]
+    fn claude_code_and_codex_have_no_settings_files_written() {
+        assert!(plan().settings_files().is_empty());
+    }
+
     #[test]
     fn an_agent_is_found_by_its_label() {
         assert_eq!(Agent::from_id("claude-code"), Some(Agent::ClaudeCode));
         assert_eq!(Agent::from_id("codex"), Some(Agent::Codex));
+        assert_eq!(Agent::from_id("pi"), Some(Agent::Pi));
+        assert_eq!(Agent::from_id("omp"), Some(Agent::Omp));
+        assert_eq!(Agent::from_id("pig"), Some(Agent::Pig));
         assert_eq!(Agent::from_id("cursor"), None);
     }
 

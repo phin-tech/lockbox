@@ -72,6 +72,10 @@ openshell-test provider:
 codex-test provider:
     PLAYPEN_TEST_CHATGPT_PROVIDER={{provider}} cargo test -p playpen-core --test openshell codex -- --ignored
 
+# Make a Pi, an oh-my-pi and a PiG sandbox on an API-key provider, and ask each something; a LiteLLM one needs a model
+pi-test provider model="":
+    PLAYPEN_TEST_PI_PROVIDER={{provider}} PLAYPEN_TEST_PI_MODEL={{model}} cargo test -p playpen-core --test openshell pi_omp -- --ignored
+
 # Build Playpen.app and put it in /Applications, signed only for this Mac
 install-local:
     scripts/install-local.sh

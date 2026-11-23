@@ -1,0 +1,26 @@
+---
+source: crates/core/src/agent/mod.rs
+expression: "shown.join(\"\\n\")"
+---
+/sandbox/.omp/agent/config.yml
+# Written by Playpen: nothing is checked for or updated at startup, which the sandbox would deny.
+startup:
+  checkUpdate: false
+update:
+  auto: false
+marketplace:
+  autoUpdate: off
+dev:
+  autoqa: false
+modelRoles:
+  default: litellm/gpt-5
+
+/sandbox/.omp/agent/models.yml
+# Written by Playpen: the LiteLLM proxy this sandbox's key is for.
+providers:
+  litellm:
+    baseUrl: http://litellm.example.com:4000/v1
+    api: openai-completions
+    apiKey: LITELLM_API_KEY
+    models:
+      - id: gpt-5

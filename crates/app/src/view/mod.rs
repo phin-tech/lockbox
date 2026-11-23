@@ -433,8 +433,8 @@ impl MainView {
                                 this.services.picker_dirty = true;
                             }
                         }
-                        ProvidersEvent::Saved => {
-                            this.guide_done(guide::GuideStep::SignIn, window, cx);
+                        ProvidersEvent::Saved(name) => {
+                            this.guide_key_saved(name.clone(), window, cx);
                         }
                         ProvidersEvent::ServiceCancelled => {
                             if this.services.pending_attach.take().is_some() {
@@ -452,8 +452,12 @@ impl MainView {
             Page::Providers => {}
         }
         self.page = page;
-        // The guide holds the keyboard while it shows a place, so Return and the arrows still go through its steps.
-        if self.guide.is_none() {
+        // The guide's card holds the keyboard while it shows a place, so Return and the arrows still go through its steps.
+        if !self
+            .guide
+            .as_ref()
+            .is_some_and(|guide| guide.tour_shows_a_card())
+        {
             self.focus.focus(window, cx);
         }
         cx.notify();

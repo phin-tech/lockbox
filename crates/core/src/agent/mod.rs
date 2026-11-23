@@ -642,7 +642,13 @@ impl Plan {
     /// Whether it starts from an image named in full, which nothing builds or pushes, so the gateway needn't say where
     /// its images come from.
     pub fn names_its_image(&self) -> bool {
-        self.image.is_some() || matches!(self.agent, Harness::Custom(_))
+        match &self.agent {
+            Harness::Custom(_) => true,
+            // Codex's program is somewhere else on each CPU, so its policy needs the gateway's platform, which only its
+            // image source says.
+            Harness::Agent(Agent::Codex) => false,
+            Harness::Agent(_) => self.image.is_some(),
+        }
     }
 
     /// The sandbox's policy: its agent reaching its model from its program in an image for `platform`, and each
@@ -767,7 +773,11 @@ impl Plan {
         if self.agent.chooses_a_model()
             && let Some(model) = &self.model
         {
-            if model.kind == Kind::LiteLlm && model.id.is_none() {
+            // Only Playpen's own agents are told the model; a custom agent's image says its own.
+            if model.kind == Kind::LiteLlm
+                && model.id.is_none()
+                && matches!(self.agent, Harness::Agent(_))
+            {
                 return Err(MakeError::NoModel(self.agent.name().to_string()));
             }
             if model.endpoints.is_empty() {
@@ -1594,6 +1604,21 @@ mod tests {
         assert_eq!(
             cursor.settings_files()[0].0,
             "/sandbox/.cursor/cli-config.json"
+        );
+    }
+
+    #[test]
+    fn an_image_named_in_full_needs_no_image_source_unless_codexs_program_depends_on_the_cpu() {
+        let theirs = |agent: Agent| Plan {
+            agent: agent.into(),
+            image: Some("ghcr.io/me/agent:1".to_string()),
+            ..plan()
+        };
+        assert!(theirs(Agent::Pi).names_its_image());
+        assert!(!theirs(Agent::Codex).names_its_image());
+        assert!(
+            !plan().names_its_image(),
+            "Playpen's own image comes from the source"
         );
     }
 

@@ -6,9 +6,10 @@ services you attach, and nothing else, until you say so.
 
 ## Get started
 
-The first time Playpen opens, it offers to set you up or show you around. Setting up asks which model you'll use
-(Claude, ChatGPT, OpenRouter or a LiteLLM proxy), signs you in to it, checks your gateway (OpenShell's own on Docker, a
-MicroVM, or another), makes a kit with your key, then a sandbox with it, and opens its agent. **Help ▸ Set Up
+The first time Playpen opens, it offers to set you up or show you around. Setting up asks which agent you'll run,
+where its sandboxes run (OpenShell's own gateway on Docker, a MicroVM, or another) and waits for that gateway to
+answer, then which key it uses: one the gateway holds already, or a new one you sign in to (Claude, ChatGPT) or paste
+(OpenRouter, LiteLLM and the rest). It makes a kit with the key, then a sandbox with the kit, and opens its agent. **Help ▸ Set Up
 Playpen…** and **Help ▸ Tour of the Window** bring either back.
 
 ## Make a sandbox

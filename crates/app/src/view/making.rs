@@ -287,6 +287,13 @@ impl MainView {
         cx.notify();
     }
 
+    /// Whether New Agent… has the kit `name` chosen.
+    pub(super) fn making_uses_kit(&self, name: &str) -> bool {
+        self.making
+            .as_ref()
+            .is_some_and(|making| making.kits.iter().any(|kit| kit == name))
+    }
+
     /// Chooses the kit `name` for the new sandbox, or leaves it out if it's chosen already.
     pub(super) fn use_kit(&mut self, name: &str, cx: &mut Context<Self>) {
         let Some(making) = &mut self.making else {

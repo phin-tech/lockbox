@@ -1355,7 +1355,7 @@ fn the_welcome_offers_setting_up_which_starts_by_asking_for_the_model(cx: &mut T
     });
     cx.run_until_parked();
     view.read_with(cx, |view, _| {
-        assert_eq!(view.guide_step_shown(), Some(guide::GuideStep::ChooseModel));
+        assert_eq!(view.guide_step_shown(), Some(guide::GuideStep::ChooseAgent));
     });
 }
 
@@ -1378,7 +1378,7 @@ fn the_tour_shows_each_place_and_ends_offering_to_set_up(cx: &mut TestAppContext
 }
 
 #[gpui_kit::test]
-fn setting_up_on_docker_steps_aside_until_the_gateway_answers_then_asks_for_a_kit(
+fn setting_up_on_docker_steps_aside_until_the_gateway_answers_then_asks_for_its_key(
     cx: &mut TestAppContext,
 ) {
     let (view, cx) = open(cx);
@@ -1397,8 +1397,7 @@ fn setting_up_on_docker_steps_aside_until_the_gateway_answers_then_asks_for_a_ki
         .advance_clock(std::time::Duration::from_secs(1));
     cx.run_until_parked();
     view.read_with(cx, |view, _| {
-        assert_eq!(view.guide_step_shown(), Some(guide::GuideStep::NewKit));
+        assert_eq!(view.guide_step_shown(), Some(guide::GuideStep::ChooseKey));
         assert!(!view.guide_banner_shown());
-        assert_eq!(view.page, Page::Kits);
     });
 }

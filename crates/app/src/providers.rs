@@ -41,8 +41,8 @@ use crate::view::{choice_chip, copyable_command};
 /// that asked for it.
 #[derive(Debug, Clone)]
 pub enum ProvidersEvent {
-    /// A model key or a service was saved.
-    Saved,
+    /// A model key or a service was saved, by its provider's name.
+    Saved(String),
     ServiceAdded(String),
     ServiceCancelled,
 }
@@ -1544,7 +1544,7 @@ impl Providers {
         match saved {
             Ok(name) => {
                 tracing::info!(provider = %name, "saved a provider");
-                cx.emit(ProvidersEvent::Saved);
+                cx.emit(ProvidersEvent::Saved(name.clone()));
                 Toast::new(t!("Saved “%{name}”", name = name).into_owned())
                     .key("provider-saved")
                     .show(window, cx);

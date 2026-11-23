@@ -8,12 +8,12 @@ use std::time::Duration;
 use gpui_kit::base::Placement;
 use typecase::tour::{Advance, Card, Step, Tour, TourEvent};
 
-use playpen_core::{Harness, Kind, MICROVM_GATEWAY};
+use playpen_core::{Harness, Kind, MICROVM_GATEWAY, Provider};
 
 use super::*;
 
 /// Where OpenShell's own guides are, which the last step offers.
-const OPENSHELL_DOCS: &str = "https://docs.nvidia.com/openshell/v0.1.9/";
+const OPENSHELL_DOCS: &str = "https://docs.nvidia.com/openshell/";
 const OPENSHELL_REPOSITORY: &str = "https://github.com/NVIDIA/OpenShell";
 
 /// Which of the guide's tours runs.
@@ -38,10 +38,11 @@ pub(super) enum GuideStep {
     Providers,
     Palette,
     TourEnd,
-    ChooseModel,
-    SignIn,
+    ChooseAgent,
     ChooseGateway,
     Gateway,
+    ChooseKey,
+    SignIn,
     NewKit,
     KitKey,
     MakeSandbox,
@@ -63,29 +64,17 @@ pub(super) enum Place {
 pub(super) enum Pick {
     Tour,
     Setup,
-    Model(Kind),
+    Agent(Agent),
+    /// One of the person's own agents, by where it is in their list.
+    Custom(usize),
     Gateway(Place),
+    /// A key the gateway holds already, by where it is in the keys listed.
+    Key(usize),
+    /// A new key of this kind, signed in to or pasted.
+    NewKey(Kind),
     Docs,
     Repository,
     Finish,
-}
-
-/// The models setting up offers, each signed in to as its kind, and the agent each is made for.
-const MODELS: [Kind; 4] = [
-    Kind::ClaudeSubscription,
-    Kind::ChatGptSubscription,
-    Kind::OpenRouter,
-    Kind::LiteLlm,
-];
-
-/// The agent setting up makes a sandbox for, for a model key of `kind`.
-fn agent_for(kind: Kind) -> Agent {
-    match kind {
-        Kind::ClaudeSubscription | Kind::Anthropic => Agent::ClaudeCode,
-        Kind::ChatGptSubscription | Kind::OpenAi => Agent::Codex,
-        Kind::Cursor => Agent::Cursor,
-        Kind::OpenRouter | Kind::LiteLlm | Kind::Fireworks | Kind::ZAi => Agent::Pi,
-    }
 }
 
 /// The guide while it runs.
@@ -95,22 +84,38 @@ pub(super) struct Guide {
     steps: Vec<GuideStep>,
     /// The step shown, from 0.
     at: Option<usize>,
+    /// Whether the step shown was come back to, with Back, so what it waits on may be done already; it then waits for
+    /// Next rather than going on by itself.
+    came_back: bool,
     /// How many steps of setting up came before these, and how many there are in all, which the cards count by.
     before: usize,
     all: usize,
     /// Whether the tour has stepped aside for a step that waits on the person, which a card in the window's corner
     /// says instead, leaving the window theirs to use.
     parked: bool,
-    model: Option<Kind>,
+    agent: Option<Harness>,
     place: Option<Place>,
+    /// The keys the chosen gateway holds, once listed.
+    keys: Option<Result<Vec<Provider>, String>>,
+    /// The key chosen or added, by its provider's name, and its kind.
+    key: Option<String>,
+    kind: Option<Kind>,
     /// The kit made while setting up, by name.
     kit: Option<String>,
+    /// Whether the sandbox was made.
+    made: bool,
     _events: Subscription,
+    _listing: Option<Task<()>>,
     /// Looking every so often for what a waiting step waits on, such as a gateway answering.
     _watching: Task<()>,
 }
 
 impl Guide {
+    /// Whether the tour shows a card, which holds the keyboard; not while it's stepped aside for a step that waits.
+    pub(super) fn tour_shows_a_card(&self) -> bool {
+        !self.parked
+    }
+
     fn shown(&self) -> Option<GuideStep> {
         self.steps.get(self.at?).copied()
     }
@@ -130,13 +135,11 @@ impl Stage {
                 GuideStep::Palette,
                 GuideStep::TourEnd,
             ],
-            Stage::Setup => vec![
-                GuideStep::ChooseModel,
-                GuideStep::SignIn,
-                GuideStep::ChooseGateway,
-            ],
+            Stage::Setup => vec![GuideStep::ChooseAgent, GuideStep::ChooseGateway],
             Stage::SetupRest => vec![
                 GuideStep::Gateway,
+                GuideStep::ChooseKey,
+                GuideStep::SignIn,
                 GuideStep::NewKit,
                 GuideStep::KitKey,
                 GuideStep::MakeSandbox,
@@ -159,10 +162,11 @@ impl GuideStep {
             GuideStep::Providers => t!("Providers"),
             GuideStep::Palette => t!("Every command"),
             GuideStep::TourEnd => t!("That's the window"),
-            GuideStep::ChooseModel => t!("Which model?"),
-            GuideStep::SignIn => t!("Sign in"),
+            GuideStep::ChooseAgent => t!("Which agent?"),
             GuideStep::ChooseGateway => t!("Where do sandboxes run?"),
             GuideStep::Gateway => t!("Your gateway"),
+            GuideStep::ChooseKey => t!("Its key"),
+            GuideStep::SignIn => t!("Sign in"),
             GuideStep::NewKit => t!("Make a kit"),
             GuideStep::KitKey => t!("Give it your key"),
             GuideStep::MakeSandbox => t!("Make a sandbox"),
@@ -172,35 +176,40 @@ impl GuideStep {
         .into_owned()
     }
 
-    /// What it points at, by the name the window marks it with; none for a card in the middle. A form's step points at
-    /// the whole form, since only what a step points at takes clicks, with the card on its right, where forms are
-    /// empty.
-    fn target(self, place: Option<Place>) -> Option<&'static str> {
+    /// What it points at, by the name the window marks it with; none for a card in the middle.
+    fn target(self) -> Option<&'static str> {
         match self {
             GuideStep::Places => Some("places"),
             GuideStep::Gateways | GuideStep::Kits => Some("list"),
-            GuideStep::Gateway => match place {
-                Some(Place::MicroVm | Place::Another) => Some("detail"),
-                Some(Place::Docker) | None => Some("list"),
-            },
             GuideStep::Detail | GuideStep::Providers => Some("detail"),
-            GuideStep::SignIn | GuideStep::MakeSandbox => Some("detail"),
-            GuideStep::KitKey => Some("kit-model"),
             GuideStep::NewAgent => Some("new-agent"),
             GuideStep::NewKit => Some("new-kit"),
-            GuideStep::OpenIt => Some("open-session"),
             GuideStep::Welcome
             | GuideStep::Palette
             | GuideStep::TourEnd
-            | GuideStep::ChooseModel
+            | GuideStep::ChooseAgent
             | GuideStep::ChooseGateway
+            | GuideStep::ChooseKey
             | GuideStep::LearnMore => None,
+            // Said in the window's corner instead.
+            GuideStep::Gateway
+            | GuideStep::SignIn
+            | GuideStep::KitKey
+            | GuideStep::MakeSandbox
+            | GuideStep::OpenIt => None,
         }
     }
 
     /// Whether it waits for a choice from its card, rather than going on with Next.
     fn chooses(self) -> bool {
-        !self.choices().is_empty() && self != GuideStep::LearnMore
+        matches!(
+            self,
+            GuideStep::Welcome
+                | GuideStep::TourEnd
+                | GuideStep::ChooseAgent
+                | GuideStep::ChooseGateway
+                | GuideStep::ChooseKey
+        )
     }
 
     /// Whether it waits for the person to do something in the window.
@@ -215,28 +224,8 @@ impl GuideStep {
         )
     }
 
-    fn choices(self) -> Vec<Pick> {
-        match self {
-            GuideStep::Welcome => vec![Pick::Setup, Pick::Tour],
-            GuideStep::TourEnd => vec![Pick::Setup, Pick::Finish],
-            GuideStep::ChooseModel => MODELS.into_iter().map(Pick::Model).collect(),
-            GuideStep::ChooseGateway => vec![
-                Pick::Gateway(Place::Docker),
-                Pick::Gateway(Place::MicroVm),
-                Pick::Gateway(Place::Another),
-            ],
-            GuideStep::LearnMore => vec![Pick::Docs, Pick::Repository],
-            _ => Vec::new(),
-        }
-    }
-
-    fn step(self, place: Option<Place>) -> Step {
-        // A step that waits on the person is said in the window's corner, so it points at nothing here.
-        let target = if self.waits() {
-            None
-        } else {
-            self.target(place)
-        };
+    fn step(self) -> Step {
+        let target = self.target();
         let step = Step::new(self.title(), String::new());
         let step = match target {
             Some(target) => step.on(target),
@@ -244,8 +233,7 @@ impl GuideStep {
         };
         let step = match target {
             Some("places" | "list") => step.placement(Placement::Right),
-            Some("new-agent" | "new-kit" | "open-session") => step.placement(Placement::Bottom),
-            Some("detail") if self.waits() => step.placement(Placement::Right).padding(px(0.)),
+            Some("new-agent" | "new-kit") => step.placement(Placement::Bottom),
             Some(_) => step.placement(Placement::Left),
             None => step,
         };
@@ -261,70 +249,131 @@ impl GuideStep {
     }
 }
 
-impl Pick {
-    fn title(self) -> String {
-        match self {
-            Pick::Tour => t!("Show Me Around").into_owned(),
-            Pick::Setup => t!("Set Up").into_owned(),
-            Pick::Model(kind) => match kind {
-                Kind::ClaudeSubscription => t!("Claude").into_owned(),
-                Kind::ChatGptSubscription => t!("ChatGPT").into_owned(),
-                kind => kind.name().to_string(),
-            },
-            Pick::Gateway(Place::Docker) => t!("Docker on this Mac").into_owned(),
-            Pick::Gateway(Place::MicroVm) => t!("A MicroVM on this Mac").into_owned(),
-            Pick::Gateway(Place::Another) => t!("Another gateway").into_owned(),
-            Pick::Docs => t!("OpenShell's Guides").into_owned(),
-            Pick::Repository => t!("OpenShell on GitHub").into_owned(),
-            Pick::Finish => t!("Done").into_owned(),
-        }
-    }
-
-    fn detail(self) -> String {
-        match self {
-            Pick::Tour => t!("A look at each part of the window").into_owned(),
-            Pick::Setup => {
-                t!("Sign in to a model, then make and run your first sandbox").into_owned()
-            }
-            Pick::Model(kind) => {
-                let agent = agent_for(kind).name();
-                match kind {
-                    Kind::ClaudeSubscription => {
-                        t!("Your Claude subscription, for %{agent}", agent = agent)
-                    }
-                    Kind::ChatGptSubscription => {
-                        t!("Your ChatGPT subscription, for %{agent}", agent = agent)
-                    }
-                    Kind::LiteLlm => t!("Your own LiteLLM proxy, for %{agent}", agent = agent),
-                    _ => t!("An API key, for %{agent}", agent = agent),
-                }
-                .into_owned()
-            }
-            Pick::Gateway(Place::Docker) => {
-                t!("Recommended: OpenShell's own gateway, ready once OpenShell runs").into_owned()
-            }
-            Pick::Gateway(Place::MicroVm) => {
-                t!("Each sandbox a small virtual machine, which Playpen sets up").into_owned()
-            }
-            Pick::Gateway(Place::Another) => {
-                t!("A gateway on a server or a cluster, by its address").into_owned()
-            }
-            Pick::Docs => t!("How OpenShell's sandboxes, policies and providers work").into_owned(),
-            Pick::Repository => t!("Its code, releases and issues").into_owned(),
-            Pick::Finish => t!("Close the tour").into_owned(),
-        }
-    }
-
-    fn id(self) -> String {
-        match self {
-            Pick::Model(kind) => format!("model-{}", kind.suggested_name()),
-            Pick::Gateway(place) => format!("gateway-{place:?}"),
-            pick => format!("{pick:?}"),
-        }
-    }
-}
-
 impl MainView {
+    /// What a step's card offers to choose from, which can follow what's been chosen and what the gateway holds.
+    fn guide_choices(&self, step: GuideStep) -> Vec<Pick> {
+        match step {
+            GuideStep::Welcome => vec![Pick::Setup, Pick::Tour],
+            GuideStep::TourEnd => vec![Pick::Setup, Pick::Finish],
+            GuideStep::ChooseAgent => Agent::ALL
+                .into_iter()
+                .map(Pick::Agent)
+                .chain((0..self.agents.custom.agents.len()).map(Pick::Custom))
+                .collect(),
+            GuideStep::ChooseGateway => vec![
+                Pick::Gateway(Place::Docker),
+                Pick::Gateway(Place::MicroVm),
+                Pick::Gateway(Place::Another),
+            ],
+            GuideStep::ChooseKey => {
+                let Some(guide) = &self.guide else {
+                    return Vec::new();
+                };
+                let Some(agent) = &guide.agent else {
+                    return Vec::new();
+                };
+                let held = match &guide.keys {
+                    Some(Ok(keys)) => keys
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, key)| agent.takes(&key.kind))
+                        .map(|(at, _)| Pick::Key(at))
+                        .collect(),
+                    _ => Vec::new(),
+                };
+                let kinds: Vec<Kind> = match agent {
+                    Harness::Agent(agent) => agent.model_kinds().to_vec(),
+                    Harness::Custom(custom) => custom.takes.clone(),
+                };
+                held.into_iter()
+                    .chain(kinds.into_iter().map(Pick::NewKey))
+                    .collect()
+            }
+            GuideStep::LearnMore => vec![Pick::Docs, Pick::Repository],
+            _ => Vec::new(),
+        }
+    }
+
+    /// A choice's title and the line under it.
+    fn guide_pick_words(&self, pick: Pick) -> (String, String) {
+        let kinds = |kinds: &[Kind]| {
+            kinds
+                .iter()
+                .map(|kind| kind.name())
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        match pick {
+            Pick::Tour => (
+                t!("Show Me Around").into_owned(),
+                t!("A look at each part of the window").into_owned(),
+            ),
+            Pick::Setup => (
+                t!("Set Up").into_owned(),
+                t!("Choose an agent and sign in, then make and run your first sandbox")
+                    .into_owned(),
+            ),
+            Pick::Agent(agent) => (
+                agent.name().to_string(),
+                t!("Takes %{kinds}", kinds = kinds(agent.model_kinds())).into_owned(),
+            ),
+            Pick::Custom(at) => match self.agents.custom.agents.get(at) {
+                Some(custom) => (
+                    custom.name.clone(),
+                    t!("Yours · %{kinds}", kinds = kinds(&custom.takes)).into_owned(),
+                ),
+                None => (String::new(), String::new()),
+            },
+            Pick::Gateway(Place::Docker) => (
+                t!("Docker on this Mac").into_owned(),
+                t!("Recommended: OpenShell's own gateway, ready once OpenShell runs").into_owned(),
+            ),
+            Pick::Gateway(Place::MicroVm) => (
+                t!("A MicroVM on this Mac").into_owned(),
+                t!("Each sandbox a small virtual machine, which Playpen sets up").into_owned(),
+            ),
+            Pick::Gateway(Place::Another) => (
+                t!("Another gateway").into_owned(),
+                t!("A gateway on a server or a cluster, by its address").into_owned(),
+            ),
+            Pick::Key(at) => {
+                let key = self
+                    .guide
+                    .as_ref()
+                    .and_then(|guide| guide.keys.as_ref()?.as_ref().ok()?.get(at).cloned());
+                match key {
+                    Some(key) => (
+                        t!("Use “%{name}”", name = key.name).into_owned(),
+                        t!(
+                            "%{kind}, which the gateway holds already",
+                            kind =
+                                Kind::of(&key.kind).map_or(key.kind.as_str(), |kind| kind.name())
+                        )
+                        .into_owned(),
+                    ),
+                    None => (String::new(), String::new()),
+                }
+            }
+            Pick::NewKey(kind) => (
+                match kind {
+                    Kind::ClaudeSubscription => t!("Sign In with Claude").into_owned(),
+                    Kind::ChatGptSubscription => t!("Sign In with ChatGPT").into_owned(),
+                    kind => t!("Add Your %{kind} Key", kind = kind.name()).into_owned(),
+                },
+                kind.where_to_get_a_key().to_string(),
+            ),
+            Pick::Docs => (
+                t!("OpenShell's Guides").into_owned(),
+                t!("How OpenShell's sandboxes, policies and providers work").into_owned(),
+            ),
+            Pick::Repository => (
+                t!("OpenShell on GitHub").into_owned(),
+                t!("Its code, releases and issues").into_owned(),
+            ),
+            Pick::Finish => (t!("Done").into_owned(), t!("Close the tour").into_owned()),
+        }
+    }
+
     /// Starts the guide's `stage`, over whatever else is running of it.
     pub(super) fn start_guide(
         &mut self,
@@ -337,9 +386,9 @@ impl MainView {
         }
         self.card = None;
         self.agents.form = None;
-        let (model, place, kit) = match self.guide.take() {
-            Some(guide) if stage == Stage::SetupRest => (guide.model, guide.place, guide.kit),
-            _ => (None, None, None),
+        let (agent, place) = match self.guide.take() {
+            Some(guide) if stage == Stage::SetupRest => (guide.agent, guide.place),
+            _ => (None, None),
         };
         let steps = stage.steps();
         let setting_up = Stage::Setup.steps().len() + Stage::SetupRest.steps().len();
@@ -350,7 +399,7 @@ impl MainView {
         };
         let main = cx.entity().downgrade();
         let tour = cx.new(|cx| {
-            Tour::new(steps.iter().map(|step| step.step(place)).collect(), cx)
+            Tour::new(steps.iter().map(|step| step.step()).collect(), cx)
                 .with_card(move |card, window, cx| guide_card(&main, card, window, cx))
         });
         let events = cx.subscribe_in(&tour, window, |this, _, event, window, cx| match event {
@@ -375,13 +424,19 @@ impl MainView {
             stage,
             steps,
             at: None,
+            came_back: false,
             before,
             all,
             parked: false,
-            model,
+            agent,
             place,
-            kit,
+            keys: None,
+            key: None,
+            kind: None,
+            kit: None,
+            made: false,
             _events: events,
+            _listing: None,
             _watching: watching,
         });
         // Once the window's drawn, so what the first step points at is there.
@@ -391,13 +446,20 @@ impl MainView {
         cx.notify();
     }
 
-    /// Does what a step needs of the window as it's shown: the place it's about, or the form it points at.
+    /// Does what a step needs of the window as it's shown: the place it's about, or the form it waits on. Each is safe to
+    /// do again, since Back shows a step again.
     fn guide_shown(&mut self, at: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(guide) = &mut self.guide else {
             return;
         };
+        guide.came_back = guide.at.is_some_and(|before| at < before);
         guide.at = Some(at);
-        let (model, place, kit) = (guide.model, guide.place, guide.kit.clone());
+        let (agent, place, kind, kit) = (
+            guide.agent.clone(),
+            guide.place,
+            guide.kind,
+            guide.kit.clone(),
+        );
         let Some(step) = guide.shown() else {
             return;
         };
@@ -408,16 +470,35 @@ impl MainView {
             }
             GuideStep::Kits | GuideStep::NewKit => self.show_page(Page::Kits, window, cx),
             GuideStep::Providers => self.show_page(Page::Providers, window, cx),
-            GuideStep::SignIn => {
-                let kind = model.unwrap_or(Kind::ClaudeSubscription);
-                self.add_provider_of(kind, window, cx);
-            }
             GuideStep::Gateway => {
                 self.show_page(Page::Sandboxes, window, cx);
                 match place {
-                    Some(Place::MicroVm) => self.start_microvm_form(window, cx),
-                    Some(Place::Another) => self.start_adding_gateway(window, cx),
-                    Some(Place::Docker) | None => self.dismiss_active_form(window, cx),
+                    Some(Place::MicroVm) if self.microvm.is_none() => {
+                        self.start_microvm_form(window, cx);
+                    }
+                    Some(Place::Another) if self.adding.is_none() => {
+                        self.start_adding_gateway(window, cx);
+                    }
+                    _ => {}
+                }
+            }
+            GuideStep::ChooseKey => {
+                // The key goes on the gateway chosen, which Providers acts on.
+                if let Some(gateway) = self.guide_gateway()
+                    && self.gateway.name() != Some(gateway.as_str())
+                {
+                    self.show_gateway(&gateway, window, cx);
+                }
+                self.guide_list_keys(window, cx);
+            }
+            // Coming back to signing in is coming back to choosing the key, which may have been one held already.
+            GuideStep::SignIn if self.guide.as_ref().is_some_and(|guide| guide.came_back) => {
+                self.guide_show(GuideStep::ChooseKey, window, cx);
+                return;
+            }
+            GuideStep::SignIn => {
+                if let Some(kind) = kind {
+                    self.add_provider_of(kind, window, cx);
                 }
             }
             GuideStep::KitKey => {
@@ -429,12 +510,17 @@ impl MainView {
                 }
             }
             GuideStep::MakeSandbox => {
-                let agent = agent_for(model.unwrap_or(Kind::ClaudeSubscription));
-                self.start_making_for(Harness::Agent(agent), window, cx);
-                if let Some(gateway) = self.guide_gateway() {
-                    self.choose_making_gateway(gateway, window, cx);
+                if self.making.is_none()
+                    && let Some(agent) = agent
+                {
+                    self.start_making_for(agent, window, cx);
+                    if let Some(gateway) = self.guide_gateway() {
+                        self.choose_making_gateway(gateway, window, cx);
+                    }
                 }
-                if let Some(kit) = kit {
+                if let Some(kit) = kit
+                    && !self.making_uses_kit(&kit)
+                {
                     self.use_kit(&kit, cx);
                 }
             }
@@ -442,7 +528,7 @@ impl MainView {
             GuideStep::Welcome
             | GuideStep::Palette
             | GuideStep::TourEnd
-            | GuideStep::ChooseModel
+            | GuideStep::ChooseAgent
             | GuideStep::ChooseGateway
             | GuideStep::LearnMore => {}
         }
@@ -454,8 +540,47 @@ impl MainView {
             cx.defer_in(window, move |_, _, cx| {
                 tour.update(cx, |tour, cx| tour.stop(cx))
             });
+            // A step with a form leaves the keyboard in it; the rest give it back to the window.
+            let opens_a_form = match step {
+                GuideStep::SignIn | GuideStep::MakeSandbox => true,
+                GuideStep::Gateway => matches!(place, Some(Place::MicroVm | Place::Another)),
+                _ => false,
+            };
+            if !opens_a_form {
+                self.focus.focus(window, cx);
+            }
         }
         cx.notify();
+    }
+
+    /// Asks the chosen gateway for the keys it holds, off the window's thread. A capture or a test doesn't ask.
+    fn guide_list_keys(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(guide) = &mut self.guide else {
+            return;
+        };
+        if self.watch == Watch::Nothing {
+            guide.keys = Some(Ok(Vec::new()));
+            return;
+        }
+        guide.keys = None;
+        let key = self.gateway_key();
+        let openshell = self.openshell_for(&key);
+        let task = cx.spawn_in(window, async move |this, cx| {
+            let listed = cx
+                .background_spawn(
+                    async move { openshell.and_then(|openshell| openshell.providers()) },
+                )
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                if let Some(guide) = &mut this.guide {
+                    guide.keys = Some(listed.map_err(|error| error.to_string()));
+                }
+                cx.notify();
+            });
+        });
+        if let Some(guide) = &mut self.guide {
+            guide._listing = Some(task);
+        }
     }
 
     /// Brings the tour back at the step `step` places from the one waiting: the next once it's done, or the one before.
@@ -473,6 +598,19 @@ impl MainView {
             self.guide = None;
         }
         cx.notify();
+    }
+
+    /// Shows the step `step`, wherever the tour is.
+    fn guide_show(&mut self, step: GuideStep, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(guide) = &mut self.guide else {
+            return;
+        };
+        let Some(to) = guide.steps.iter().position(|known| *known == step) else {
+            return;
+        };
+        guide.parked = false;
+        let tour = guide.tour.clone();
+        tour.update(cx, |tour, cx| tour.show(to, window, cx));
     }
 
     fn guide_ended(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -498,17 +636,40 @@ impl MainView {
         match pick {
             Pick::Tour => self.start_guide(Stage::Tour, window, cx),
             Pick::Setup => self.start_guide(Stage::Setup, window, cx),
-            Pick::Model(kind) => {
-                if let Some(guide) = &mut self.guide {
-                    guide.model = Some(kind);
+            Pick::Agent(agent) => self.guide_choose_agent(Harness::Agent(agent), window, cx),
+            Pick::Custom(at) => {
+                if let Some(custom) = self.agents.custom.agents.get(at).cloned() {
+                    self.guide_choose_agent(Harness::Custom(custom), window, cx);
                 }
-                self.guide_signal("chosen", window, cx);
             }
             Pick::Gateway(place) => {
                 if let Some(guide) = &mut self.guide {
                     guide.place = Some(place);
                 }
                 self.start_guide(Stage::SetupRest, window, cx);
+            }
+            Pick::Key(at) => {
+                let Some(guide) = &mut self.guide else {
+                    return;
+                };
+                let Some(key) = guide
+                    .keys
+                    .as_ref()
+                    .and_then(|keys| keys.as_ref().ok()?.get(at).cloned())
+                else {
+                    return;
+                };
+                guide.kind = Kind::of(&key.kind);
+                guide.key = Some(key.name);
+                // A key held already needs no signing in.
+                self.guide_show(GuideStep::NewKit, window, cx);
+            }
+            Pick::NewKey(kind) => {
+                if let Some(guide) = &mut self.guide {
+                    guide.kind = Some(kind);
+                    guide.key = None;
+                }
+                self.guide_signal("chosen", window, cx);
             }
             Pick::Docs => cx.open_url(OPENSHELL_DOCS),
             Pick::Repository => cx.open_url(OPENSHELL_REPOSITORY),
@@ -520,6 +681,13 @@ impl MainView {
         }
     }
 
+    fn guide_choose_agent(&mut self, agent: Harness, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(guide) = &mut self.guide {
+            guide.agent = Some(agent);
+        }
+        self.guide_signal("chosen", window, cx);
+    }
+
     fn guide_signal(&mut self, signal: &str, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(guide) = &self.guide {
             let tour = guide.tour.clone();
@@ -527,13 +695,18 @@ impl MainView {
         }
     }
 
-    /// Goes on from `step` if it's the one shown: the person has done what it asks.
+    /// Goes on from `step` if it's the one waiting: the person has done what it asks.
     pub(super) fn guide_done(
         &mut self,
         step: GuideStep,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if step == GuideStep::MakeSandbox
+            && let Some(guide) = &mut self.guide
+        {
+            guide.made = true;
+        }
         if self.guide.as_ref().and_then(Guide::shown) == Some(step)
             && self.guide.as_ref().is_some_and(|guide| guide.parked)
         {
@@ -541,30 +714,70 @@ impl MainView {
         }
     }
 
-    /// Looks for what the step shown waits on that the window doesn't say when it happens.
-    fn guide_look(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(step) = self.guide.as_ref().and_then(Guide::shown) else {
+    /// A key was saved, by its provider's name: the one setting up uses, when it's signing in.
+    pub(super) fn guide_key_saved(
+        &mut self,
+        name: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.guide.as_ref().and_then(Guide::shown) != Some(GuideStep::SignIn) {
             return;
+        }
+        if let Some(guide) = &mut self.guide {
+            guide.key = Some(name);
+        }
+        self.guide_done(GuideStep::SignIn, window, cx);
+    }
+
+    /// Whether what `step` waits on is done, however it was done.
+    fn guide_step_done(&self, step: GuideStep) -> bool {
+        let Some(guide) = &self.guide else {
+            return false;
         };
-        let done = match step {
+        match step {
             GuideStep::Gateway => self.guide_gateway_answers(),
+            GuideStep::SignIn => guide.key.is_some(),
             GuideStep::KitKey => self
                 .kits
                 .chosen()
                 .is_some_and(|kit| kit.model_key.is_some()),
+            GuideStep::MakeSandbox => guide.made,
             _ => false,
+        }
+    }
+
+    /// Looks for what the step shown waits on that the window doesn't say when it happens. A step come back to waits
+    /// for Next instead, since what it waits on is likely done already.
+    fn guide_look(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(guide) = &self.guide else {
+            return;
         };
-        if done {
+        let Some(step) = guide.shown() else {
+            return;
+        };
+        if guide.came_back || !matches!(step, GuideStep::Gateway | GuideStep::KitKey) {
+            // Its card may say something new, such as the gateway now answering.
+            cx.notify();
+            return;
+        }
+        if self.guide_step_done(step) {
             self.guide_done(step, window, cx);
         }
     }
 
-    /// The gateway setting up makes its sandbox on: the MicroVM one, or the one added, or Docker's, which is the one
-    /// shown unless another was chosen.
+    /// The gateway setting up makes its sandbox on: the MicroVM one, OpenShell's own on Docker, or the one added, which
+    /// is shown once it's added.
     fn guide_gateway(&self) -> Option<String> {
         match self.guide.as_ref()?.place? {
             Place::MicroVm => Some(MICROVM_GATEWAY.to_string()),
-            Place::Another | Place::Docker => self.gateway.name().map(str::to_string),
+            Place::Docker => self
+                .gateways
+                .iter()
+                .find(|gateway| gateway.is_local() && gateway.name != MICROVM_GATEWAY)
+                .map(|gateway| gateway.name.clone())
+                .or_else(|| self.gateway.name().map(str::to_string)),
+            Place::Another => self.gateway.name().map(str::to_string),
         }
     }
 
@@ -593,8 +806,15 @@ impl MainView {
     /// What a step's card says, which can follow what's been chosen and what the window shows.
     fn guide_body(&self, step: GuideStep) -> String {
         let guide = self.guide.as_ref();
-        let model = guide.and_then(|guide| guide.model);
-        let agent = agent_for(model.unwrap_or(Kind::ClaudeSubscription)).name();
+        let agent = guide.and_then(|guide| guide.agent.as_ref()).map_or_else(
+            || Agent::ALL[0].name().to_string(),
+            |agent| agent.name().to_string(),
+        );
+        let kind = guide.and_then(|guide| guide.kind);
+        let key = guide.and_then(|guide| guide.key.clone());
+        let gateway = self
+            .guide_gateway()
+            .unwrap_or_else(|| t!("the gateway").into_owned());
         match step {
             GuideStep::Welcome => t!(
                 "Playpen runs coding agents in OpenShell sandboxes, where each reaches only its model and what you allow. Set up your first sandbox now, or look around first."
@@ -621,25 +841,11 @@ impl MainView {
                 "⌘K finds any command by name, and ⌘/ shows every key. Help ▸ Set Up Playpen… brings setting up back."
             ),
             GuideStep::TourEnd => t!("Set up your first sandbox now, or later from the Help menu."),
-            GuideStep::ChooseModel => t!(
-                "Your agent reaches its model with a key OpenShell keeps for it. Which will you use?"
+            GuideStep::ChooseAgent => t!(
+                "Which coding agent will run in your sandbox? Under each are the keys it can use."
             ),
-            GuideStep::SignIn => match model {
-                Some(Kind::ClaudeSubscription) => t!(
-                    "Sign In with Claude opens Claude's sign-in in your browser and brings the token back. This goes on once it's saved."
-                ),
-                Some(Kind::ChatGptSubscription) => t!(
-                    "Sign In… gives you a code to enter at OpenAI's sign-in, in any browser. This goes on once it's saved."
-                ),
-                Some(Kind::LiteLlm) => t!(
-                    "Give your proxy's address and a virtual key from its admin, then Add Model Key. This goes on once it's saved."
-                ),
-                _ => t!(
-                    "Paste a key from openrouter.ai/keys, then Add Model Key. This goes on once it's saved."
-                ),
-            },
             GuideStep::ChooseGateway => t!(
-                "A gateway keeps sandboxes and runs them. OpenShell's own, on this Mac's Docker, is the simplest."
+                "A gateway keeps sandboxes and runs them, and holds their keys. OpenShell's own, on this Mac's Docker, is the simplest."
             ),
             GuideStep::Gateway => match guide.and_then(|guide| guide.place) {
                 Some(Place::MicroVm) => t!(
@@ -653,18 +859,56 @@ impl MainView {
                     "Start OpenShell's gateway with brew services start openshell, which needs Docker running. This goes on once it answers."
                 ),
             },
+            GuideStep::ChooseKey => match guide.and_then(|guide| guide.keys.as_ref()) {
+                None => t!(
+                    "Looking for the keys %{gateway} holds…",
+                    gateway = gateway.clone()
+                ),
+                Some(Err(_)) => t!(
+                    "%{gateway} didn't say which keys it holds. Add one for %{agent}:",
+                    gateway = gateway.clone(),
+                    agent = agent.clone()
+                ),
+                Some(Ok(_)) => t!(
+                    "%{agent} reaches its model with a key %{gateway} keeps for it. Use one it holds, or add one:",
+                    agent = agent.clone(),
+                    gateway = gateway.clone()
+                ),
+            },
+            GuideStep::SignIn => match kind {
+                Some(Kind::ClaudeSubscription) => t!(
+                    "Sign In with Claude opens Claude's sign-in in your browser and brings the token back. This goes on once it's saved."
+                ),
+                Some(Kind::ChatGptSubscription) => t!(
+                    "Sign In… gives you a code to enter at OpenAI's sign-in, in any browser. This goes on once it's saved."
+                ),
+                Some(Kind::LiteLlm) => t!(
+                    "Give your proxy's address and a virtual key from its admin, then Add Model Key. This goes on once it's saved."
+                ),
+                Some(kind) => t!(
+                    "%{source} Paste it, then Add Model Key. This goes on once it's saved.",
+                    source = kind.where_to_get_a_key()
+                ),
+                None => t!("Add the key, then save it. This goes on once it's saved."),
+            },
             GuideStep::NewKit => t!("Click + to make a kit."),
-            GuideStep::KitKey => t!(
-                "Rename it if you like, and choose the key you just saved as its model key. A sandbox made with the kit gets it."
-            ),
-            GuideStep::MakeSandbox => match model {
+            GuideStep::KitKey => match key {
+                Some(key) => t!(
+                    "Rename it if you like, and choose “%{key}” as its model key. A sandbox made with the kit gets it.",
+                    key = key
+                ),
+                None => t!(
+                    "Rename it if you like, and choose your key as its model key. A sandbox made with the kit gets it."
+                ),
+            },
+            GuideStep::MakeSandbox => match kind {
                 Some(Kind::LiteLlm) => t!(
                     "Your kit is chosen. Type the proxy's model under Model, add a folder if you like, and Make Sandbox. The first takes a few minutes, while %{agent}'s image is built.",
-                    agent = agent
+                    agent = agent.clone()
                 ),
                 _ => t!(
                     "Your kit is chosen. Add a folder for it to work on if you like, and Make Sandbox. The first takes a few minutes, while %{agent}'s image is built.",
-                    agent = agent
+                    agent = agent.clone()
                 ),
             },
             GuideStep::OpenIt => {
@@ -687,13 +931,15 @@ impl MainView {
         .into_owned()
     }
 
-    /// The card in the window's corner for a step that waits on the person: what to do, and Back and Skip.
+    /// The card in the window's corner for a step that waits on the person: what to do, Back and Skip, and Next when
+    /// the step was come back to and is done already.
     pub(super) fn guide_banner(&self, cx: &Context<Self>) -> Option<AnyElement> {
         let guide = self.guide.as_ref().filter(|guide| guide.parked)?;
         let step = guide.shown()?;
         let at = guide.at?;
         let theme = cx.theme();
         let number = guide.before + at;
+        let next = guide.came_back && self.guide_step_done(step) || step == GuideStep::OpenIt;
         Some(
             v_flex()
                 .id("guide-waiting")
@@ -748,19 +994,32 @@ impl MainView {
                             h_flex()
                                 .gap_2()
                                 .items_center()
-                                .child(
-                                    div()
-                                        .text_xs()
-                                        .text_color(theme.muted_foreground)
-                                        .child(t!("Waiting for you…").into_owned()),
-                                )
+                                .when(!next, |row| {
+                                    row.child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(theme.muted_foreground)
+                                            .child(t!("Waiting for you…").into_owned()),
+                                    )
+                                })
                                 .when(at > 0, |row| {
                                     row.child(
                                         Button::new("guide-waiting-back")
                                             .xsmall()
                                             .label(t!("Back").into_owned())
                                             .on_click(cx.listener(|this, _, window, cx| {
-                                                this.guide_resume(-1, window, cx);
+                                                this.guide_back(window, cx);
+                                            })),
+                                    )
+                                })
+                                .when(next, |row| {
+                                    row.child(
+                                        Button::new("guide-waiting-next")
+                                            .primary()
+                                            .xsmall()
+                                            .label(t!("Next").into_owned())
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.guide_resume(1, window, cx);
                                             })),
                                     )
                                 }),
@@ -768,6 +1027,11 @@ impl MainView {
                 )
                 .into_any_element(),
         )
+    }
+
+    /// Back from a step waiting in the corner: the step before.
+    fn guide_back(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.guide_resume(-1, window, cx);
     }
 
     /// Shows Providers with the form open for a provider of `kind`.
@@ -811,20 +1075,31 @@ fn guide_card(
         theme.muted_foreground,
         theme.border,
     );
-    let (hover, primary, radius) = (theme.list_hover, theme.primary, theme.radius);
-    let choices = step.choices().into_iter().map(|pick| {
+    let primary = theme.primary;
+    let picks = view.read(cx).guide_choices(step);
+    let has_choices = !picks.is_empty();
+    let words: Vec<(String, String)> = picks
+        .iter()
+        .map(|pick| view.read(cx).guide_pick_words(*pick))
+        .collect();
+    let theme = cx.theme();
+    let (hover, radius) = (theme.list_hover, theme.radius);
+    let choices = picks.into_iter().zip(words).map(|(pick, (title, detail))| {
         let main = main.clone();
         div()
-            .id(ElementId::from((ElementId::from("guide-pick"), pick.id())))
+            .id(ElementId::from((
+                ElementId::from("guide-pick"),
+                format!("{pick:?}"),
+            )))
             .px_3()
-            .py_2()
+            .py_1p5()
             .rounded(radius)
             .border_1()
             .border_color(border)
             .cursor_pointer()
             .hover(move |row| row.bg(hover))
-            .child(div().text_sm().font_medium().child(pick.title()))
-            .child(div().text_xs().text_color(muted).child(pick.detail()))
+            .child(div().text_sm().font_medium().child(title))
+            .child(div().text_xs().text_color(muted).child(detail))
             .on_click(move |_, window, cx| {
                 main.update(cx, |this, cx| this.guide_pick(pick, window, cx))
                     .ok();
@@ -905,7 +1180,7 @@ fn guide_card(
                 }),
         )
         .child(div().text_sm().child(body))
-        .when(!step.choices().is_empty(), |card| {
+        .when(has_choices, |card| {
             card.child(v_flex().gap_1p5().children(choices))
         })
         .child(div().h(px(1.)).bg(border).opacity(0.6))
@@ -944,24 +1219,10 @@ impl MainView {
 
 #[cfg(test)]
 mod tests {
-    use super::{Agent, GuideStep, Kind, Pick, Stage, agent_for};
+    use super::{GuideStep, Stage};
 
     #[test]
-    fn each_model_setting_up_offers_is_made_for_an_agent_that_takes_its_key() {
-        for kind in super::MODELS {
-            let agent = agent_for(kind);
-            assert!(
-                agent.model_kinds().contains(&kind),
-                "{kind:?} for {agent:?}"
-            );
-        }
-        assert_eq!(agent_for(Kind::ClaudeSubscription), Agent::ClaudeCode);
-        assert_eq!(agent_for(Kind::ChatGptSubscription), Agent::Codex);
-        assert_eq!(agent_for(Kind::OpenRouter), Agent::Pi);
-    }
-
-    #[test]
-    fn setting_up_goes_from_the_model_to_running_it_and_then_to_openshells_guides() {
+    fn setting_up_chooses_the_agent_and_gateway_before_the_key_it_keeps() {
         let all: Vec<GuideStep> = Stage::Setup
             .steps()
             .into_iter()
@@ -970,10 +1231,11 @@ mod tests {
         assert_eq!(
             all,
             vec![
-                GuideStep::ChooseModel,
-                GuideStep::SignIn,
+                GuideStep::ChooseAgent,
                 GuideStep::ChooseGateway,
                 GuideStep::Gateway,
+                GuideStep::ChooseKey,
+                GuideStep::SignIn,
                 GuideStep::NewKit,
                 GuideStep::KitKey,
                 GuideStep::MakeSandbox,
@@ -981,14 +1243,9 @@ mod tests {
                 GuideStep::LearnMore,
             ]
         );
-        assert!(GuideStep::ChooseModel.chooses());
+        assert!(GuideStep::ChooseAgent.chooses());
+        assert!(GuideStep::ChooseKey.chooses());
         assert!(GuideStep::SignIn.waits());
-        assert_eq!(
-            GuideStep::ChooseGateway.choices()[0],
-            Pick::Gateway(super::Place::Docker),
-            "Docker first, as the one recommended"
-        );
         assert!(!GuideStep::LearnMore.chooses(), "its links don't end it");
-        assert_eq!(GuideStep::Welcome.choices(), vec![Pick::Setup, Pick::Tour]);
     }
 }

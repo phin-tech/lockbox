@@ -5,6 +5,7 @@ mod activity;
 mod agents;
 mod bring_back;
 mod gateways;
+mod guide;
 mod images;
 mod kits;
 mod making;
@@ -41,6 +42,7 @@ use typecase::help::{HelpEvent, KeyHelp};
 use typecase::overlay;
 use typecase::palette::{CommandPalette, PaletteEvent};
 use typecase::shell::{self, Footer, Lead};
+use typecase::tour::TourTargetExt as _;
 
 use crate::commands::{self, COMMANDS};
 use crate::providers::{Providers, ProvidersEvent};
@@ -200,6 +202,8 @@ pub struct MainView {
     /// What's being done to a gateway that takes a while, which the sidebar says.
     gateway_working: Option<gateways::GatewayWork>,
     card: Option<Card>,
+    /// The welcome, the tour of the window or setting up, while one runs.
+    guide: Option<guide::Guide>,
     _watching: Option<Task<()>>,
     _appearance: Subscription,
     _bounds: Subscription,
@@ -226,7 +230,24 @@ impl MainView {
             view.give_stand_in_activity();
             return view;
         }
-        Self::watching(Watch::OpenShell, window, cx)
+        let view = Self::watching(Watch::OpenShell, window, cx);
+        // `PLAYPEN_SHOT_GUIDE=welcome|tour|setup` shows a capture the guide; otherwise a first launch welcomes.
+        let stage = if cfg!(feature = "screenshot") {
+            match std::env::var("PLAYPEN_SHOT_GUIDE").as_deref() {
+                Ok("welcome") => Some(guide::Stage::Welcome),
+                Ok("tour") => Some(guide::Stage::Tour),
+                Ok("setup") => Some(guide::Stage::Setup),
+                _ => None,
+            }
+        } else {
+            (!crate::restore::welcomed(cx)).then_some(guide::Stage::Welcome)
+        };
+        if let Some(stage) = stage {
+            cx.defer_in(window, move |this, window, cx| {
+                this.start_guide(stage, window, cx)
+            });
+        }
+        view
     }
 
     /// A view that lists OpenShell's sandboxes, or, with [`Watch::Nothing`], whatever it's given.
@@ -272,6 +293,7 @@ impl MainView {
             microvm: None,
             gateway_working: None,
             card: None,
+            guide: None,
             _watching: watching,
             _appearance: appearance,
             _bounds: bounds,
@@ -283,6 +305,9 @@ impl MainView {
         match name {
             "sandbox.new" => self.start_making(window, cx),
             "agent.new-custom" => self.edit_custom_agent(None, window, cx),
+            "help.welcome" => self.start_guide(guide::Stage::Welcome, window, cx),
+            "help.tour" => self.start_guide(guide::Stage::Tour, window, cx),
+            "help.setup" => self.start_guide(guide::Stage::Setup, window, cx),
             "sandbox.open" => self.open_session(None, What::Agent, window, cx),
             "sandbox.open-herdr" => {
                 self.open_session(Some(Place::HerdrApp), What::Agent, window, cx)
@@ -408,6 +433,9 @@ impl MainView {
                                 this.services.picker_dirty = true;
                             }
                         }
+                        ProvidersEvent::Saved => {
+                            this.guide_done(guide::GuideStep::SignIn, window, cx);
+                        }
                         ProvidersEvent::ServiceCancelled => {
                             if this.services.pending_attach.take().is_some() {
                                 this.show_page(Page::Sandboxes, window, cx);
@@ -424,7 +452,10 @@ impl MainView {
             Page::Providers => {}
         }
         self.page = page;
-        self.focus.focus(window, cx);
+        // The guide holds the keyboard while it shows a place, so Return and the arrows still go through its steps.
+        if self.guide.is_none() {
+            self.focus.focus(window, cx);
+        }
         cx.notify();
     }
 
@@ -536,7 +567,13 @@ impl MainView {
             .border_t_1()
             .border_color(theme.border)
             .child(div().flex_1().min_w_0().child(footer_left))
-            .child(h_flex().flex_none().gap_2().child(cancel).child(primary));
+            .child(
+                h_flex()
+                    .flex_none()
+                    .gap_2()
+                    .child(cancel)
+                    .child(div().child(primary).tour_target("form-primary")),
+            );
         v_flex()
             .size_full()
             .key_context(FORM_CONTEXT)
@@ -727,6 +764,7 @@ impl MainView {
             .border_r_1()
             .border_color(shell::hairline(theme))
             .children(rows)
+            .tour_target("places")
     }
 }
 
@@ -809,9 +847,21 @@ impl Render for MainView {
                 shell::columns(Lead::Sidebar)
                     .child(self.places(cx))
                     .when_some(list, |columns, list| {
-                        columns.child(div().flex_none().h_full().w(rems(LIST_WIDTH)).child(list))
+                        columns.child(
+                            div()
+                                .flex_none()
+                                .h_full()
+                                .w(rems(LIST_WIDTH))
+                                .child(list)
+                                .tour_target("list"),
+                        )
                     })
-                    .child(shell::panel(false, cx).flex_1().child(detail)),
+                    .child(
+                        shell::panel(false, cx)
+                            .flex_1()
+                            .child(detail)
+                            .tour_target("detail"),
+                    ),
             )
             // Last, so it's over everything; a click outside it closes it.
             .when_some(self.card.as_ref(), |this, card| {
@@ -822,6 +872,11 @@ impl Render for MainView {
                 this.child(
                     overlay(card).on_dismiss(cx.listener(|this, _, _, cx| this.close_card(cx))),
                 )
+            })
+            .when_some(self.guide_banner(cx), |this, banner| this.child(banner))
+            // Over everything, the card too, while the guide runs.
+            .when_some(self.guide.as_ref(), |this, guide| {
+                this.child(guide.tour.clone())
             })
     }
 }

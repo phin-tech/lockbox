@@ -13,6 +13,8 @@ use crate::files::write_atomically;
 #[serde(default)]
 pub struct State {
     pub window: Option<Frame>,
+    /// Whether the welcome has been shown, which a first launch does once.
+    pub welcomed: bool,
 }
 
 /// A window's place on the screen, in points from the top left of the main display.
@@ -90,6 +92,7 @@ mod tests {
         let path = std::env::temp_dir().join(format!("state-{}/state.toml", std::process::id()));
         let state = State {
             window: Some(frame(120.0, 80.0)),
+            welcomed: true,
         };
         state.save(&path).unwrap();
         assert_eq!(State::load(&path), state);

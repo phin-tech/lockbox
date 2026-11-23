@@ -1,6 +1,6 @@
 // Not a glob: the kit's `test` macro would shadow the `#[test]` it expands to.
 use super::sandboxes::gateway_where;
-use super::{Listing, MainView, Page, SandboxKey, Watch, agents, microvm};
+use super::{Listing, MainView, Page, SandboxKey, Watch, agents, guide, microvm};
 use crate::commands::COMMANDS;
 use crate::providers::ShownGateway;
 use crate::shortcuts::SHORTCUTS;
@@ -1339,5 +1339,66 @@ fn a_custom_agent_named_like_one_of_playpens_is_refused_in_its_form(cx: &mut Tes
     view.read_with(cx, |view, _| {
         assert!(view.agents.form.is_some(), "still open, saying why");
         assert!(view.agents.custom.agents.is_empty());
+    });
+}
+
+#[gpui_kit::test]
+fn the_welcome_offers_setting_up_which_starts_by_asking_for_the_model(cx: &mut TestAppContext) {
+    let (view, cx) = open(cx);
+    view.update_in(cx, |view, window, cx| view.run("help.welcome", window, cx));
+    cx.run_until_parked();
+    view.read_with(cx, |view, _| {
+        assert_eq!(view.guide_step_shown(), Some(guide::GuideStep::Welcome));
+    });
+    view.update_in(cx, |view, window, cx| {
+        view.pick_in_guide(guide::Pick::Setup, window, cx);
+    });
+    cx.run_until_parked();
+    view.read_with(cx, |view, _| {
+        assert_eq!(view.guide_step_shown(), Some(guide::GuideStep::ChooseModel));
+    });
+}
+
+#[gpui_kit::test]
+fn the_tour_shows_each_place_and_ends_offering_to_set_up(cx: &mut TestAppContext) {
+    let (view, cx) = open(cx);
+    view.update_in(cx, |view, window, cx| view.run("help.tour", window, cx));
+    cx.run_until_parked();
+    view.read_with(cx, |view, _| {
+        assert_eq!(view.guide_step_shown(), Some(guide::GuideStep::Places));
+    });
+    for _ in 0..4 {
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+    }
+    view.read_with(cx, |view, _| {
+        assert_eq!(view.guide_step_shown(), Some(guide::GuideStep::Kits));
+        assert_eq!(view.page, Page::Kits, "the step's place is shown");
+    });
+}
+
+#[gpui_kit::test]
+fn setting_up_on_docker_steps_aside_until_the_gateway_answers_then_asks_for_a_kit(
+    cx: &mut TestAppContext,
+) {
+    let (view, cx) = open(cx);
+    view.update_in(cx, |view, window, cx| view.run("help.setup", window, cx));
+    cx.run_until_parked();
+    view.update_in(cx, |view, window, cx| {
+        view.pick_in_guide(guide::Pick::Gateway(guide::Place::Docker), window, cx);
+    });
+    cx.run_until_parked();
+    view.read_with(cx, |view, _| {
+        assert_eq!(view.guide_step_shown(), Some(guide::GuideStep::Gateway));
+        assert!(view.guide_banner_shown(), "the step waits in the corner");
+    });
+    listed(&view, vec![sandbox("claude-patchbay", Phase::Ready)], cx);
+    cx.executor()
+        .advance_clock(std::time::Duration::from_secs(1));
+    cx.run_until_parked();
+    view.read_with(cx, |view, _| {
+        assert_eq!(view.guide_step_shown(), Some(guide::GuideStep::NewKit));
+        assert!(!view.guide_banner_shown());
+        assert_eq!(view.page, Page::Kits);
     });
 }

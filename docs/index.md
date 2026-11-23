@@ -4,6 +4,13 @@ Playpen runs your coding agents in [OpenShell](https://github.com/NVIDIA/OpenShe
 you decide what each one may reach. An agent works in a sandbox with a copy of your code; it reaches its model and the
 services you attach, and nothing else, until you say so.
 
+## Get started
+
+The first time Playpen opens, it offers to set you up or show you around. Setting up asks which model you'll use
+(Claude, ChatGPT, OpenRouter or a LiteLLM proxy), signs you in to it, checks your gateway (OpenShell's own on Docker, a
+MicroVM, or another), makes a kit with your key, then a sandbox with it, and opens its agent. **Help ▸ Set Up
+Playpen…** and **Help ▸ Tour of the Window** bring either back.
+
 ## Make a sandbox
 
 **File ▸ New Agent…** (⌘N) asks which agent (Claude Code, Codex, OpenCode, Cursor, Pi, oh-my-pi or PiG), a name, the

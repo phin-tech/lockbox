@@ -15,6 +15,9 @@ headless; `crates/app` is the GPUI front end. Read `CONTEXT.md` before naming an
 - `language.rs` and `locales/app.toml`: the language, and translations keyed by the English text.
 - `login_item.rs`: Open at login, in Settings.
 - `menu_bar.rs`: the menu bar extra and its shortcut (`hotkey` in the settings file).
+- `view/guide.rs`: the welcome at a first launch (remembered in `state.toml`), the tour of the window and setting up,
+  Typecase tours with cards of Playpen's own. A step that waits on the person steps the tour aside for a card in the
+  window's corner, and the window says when it's done (`guide_done`).
 - `about.rs`: About, and what Keys (⌘/), Typecase's sheet over the main view, lists: every key by its menu. `logging.rs`: `tracing`, to stderr and
   `~/Library/Logs/tech.phin.playpen/`; `crash.rs` writes a report there on a panic and says so at the next launch.
   `theme.rs`: the look, Typecase's themes, which follow the appearance, theme and text size set there.

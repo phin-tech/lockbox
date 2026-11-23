@@ -629,6 +629,7 @@ impl MainView {
                 Ok(()) => {
                     tracing::info!(sandbox = %name, "made a sandbox");
                     this.cancel_making(window, cx);
+                    this.guide_done(super::guide::GuideStep::MakeSandbox, window, cx);
                     this.selected = Some(SandboxKey {
                         gateway: chosen.clone(),
                         name,

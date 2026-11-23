@@ -763,7 +763,10 @@ impl MainView {
                 let _ = this.update_in(cx, |this, window, cx| {
                     this.working.remove(&key);
                     match &opened {
-                        Ok(Opened::AsAsked) => tracing::info!(sandbox = %name, "opened a session"),
+                        Ok(Opened::AsAsked) => {
+                            tracing::info!(sandbox = %name, "opened a session");
+                            this.guide_done(super::guide::GuideStep::OpenIt, window, cx);
+                        }
                         Ok(Opened::InTerminalInstead(place)) => {
                             tracing::info!(sandbox = %name, ?place, "not installed, so opened in Terminal");
                             Toast::new(
@@ -775,6 +778,7 @@ impl MainView {
                             )
                             .key("opened-fallback")
                             .show(window, cx);
+                            this.guide_done(super::guide::GuideStep::OpenIt, window, cx);
                         }
                         Err(error) => tracing::warn!(sandbox = %name, "couldn't open a session: {error}"),
                     }
@@ -829,13 +833,19 @@ impl MainView {
     pub(super) fn list_heading(&self, cx: &Context<Self>) -> Div {
         let said = self.sandboxes_said();
         heading(t!("Sandboxes").into_owned(), said, cx).child(
-            Button::new("new-agent")
-                .outline()
-                .xsmall()
-                .icon(assets::IconName::Plus)
-                .label(t!("New").into_owned())
-                .tooltip(t!("New Agent…").into_owned())
-                .on_click(cx.listener(|this, _, window, cx| this.run("sandbox.new", window, cx))),
+            div()
+                .child(
+                    Button::new("new-agent")
+                        .outline()
+                        .xsmall()
+                        .icon(assets::IconName::Plus)
+                        .label(t!("New").into_owned())
+                        .tooltip(t!("New Agent…").into_owned())
+                        .on_click(
+                            cx.listener(|this, _, window, cx| this.run("sandbox.new", window, cx)),
+                        ),
+                )
+                .tour_target("new-agent"),
         )
     }
 
@@ -1295,12 +1305,16 @@ impl MainView {
             .flex_wrap()
             .gap_2()
             .items_center()
-            .child(open_button(
-                &agent,
-                busy || !sandbox.phase.is_ready(),
-                Installed::now(),
-                cx,
-            ))
+            .child(
+                div()
+                    .child(open_button(
+                        &agent,
+                        busy || !sandbox.phase.is_ready(),
+                        Installed::now(),
+                        cx,
+                    ))
+                    .tour_target("open-session"),
+            )
             .child(if sandbox.phase.needs_restart() {
                 Button::new("restart")
                     .small()

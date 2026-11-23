@@ -146,6 +146,10 @@ pub fn menus() -> Vec<Menu> {
         menu(
             t!("Help"),
             vec![
+                run(t!("Welcome to Playpen…"), "help.welcome"),
+                run(t!("Set Up Playpen…"), "help.setup"),
+                run(t!("Tour of the Window"), "help.tour"),
+                MenuItem::separator(),
                 run(t!("Keys…"), "app.keys"),
                 run(t!("Show Logs in Finder"), "app.logs"),
             ],

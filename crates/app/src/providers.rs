@@ -31,6 +31,7 @@ use playpen_core::{
     save_in_keychain,
 };
 use rust_i18n::t;
+use typecase::tour::TourTargetExt as _;
 use typecase::{Toast, shell};
 
 use crate::shortcuts::{DismissForm, FORM_CONTEXT};
@@ -40,6 +41,8 @@ use crate::view::{choice_chip, copyable_command};
 /// that asked for it.
 #[derive(Debug, Clone)]
 pub enum ProvidersEvent {
+    /// A model key or a service was saved.
+    Saved,
     ServiceAdded(String),
     ServiceCancelled,
 }
@@ -1541,6 +1544,7 @@ impl Providers {
         match saved {
             Ok(name) => {
                 tracing::info!(provider = %name, "saved a provider");
+                cx.emit(ProvidersEvent::Saved);
                 Toast::new(t!("Saved “%{name}”", name = name).into_owned())
                     .key("provider-saved")
                     .show(window, cx);
@@ -2352,19 +2356,21 @@ impl Providers {
                             .on_click(cx.listener(|this, _, _, cx| this.cancel(cx))),
                     )
                     .child(
-                        Button::new("save-provider")
-                            .primary()
-                            .small()
-                            .loading(form.saving)
-                            .label(
-                                match (form.kind.signs_in(), adding) {
-                                    (true, _) => t!("Sign In…"),
-                                    (false, true) => t!("Add Model Key"),
-                                    (false, false) => t!("Replace Key"),
-                                }
-                                .into_owned(),
-                            )
-                            .on_click(cx.listener(|this, _, window, cx| this.save(window, cx))),
+                        div().tour_target("form-primary").child(
+                            Button::new("save-provider")
+                                .primary()
+                                .small()
+                                .loading(form.saving)
+                                .label(
+                                    match (form.kind.signs_in(), adding) {
+                                        (true, _) => t!("Sign In…"),
+                                        (false, true) => t!("Add Model Key"),
+                                        (false, false) => t!("Replace Key"),
+                                    }
+                                    .into_owned(),
+                                )
+                                .on_click(cx.listener(|this, _, window, cx| this.save(window, cx))),
+                        ),
                     ),
             );
         v_flex()

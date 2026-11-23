@@ -578,13 +578,19 @@ impl MainView {
                         ),
                 )
                 .child(
-                    Button::new("new-kit")
-                        .ghost()
-                        .small()
-                        .rounded(px(999.))
-                        .icon(assets::IconName::Plus)
-                        .tooltip(t!("New Kit").into_owned())
-                        .on_click(cx.listener(|this, _, window, cx| this.new_kit(window, cx))),
+                    div()
+                        .child(
+                            Button::new("new-kit")
+                                .ghost()
+                                .small()
+                                .rounded(px(999.))
+                                .icon(assets::IconName::Plus)
+                                .tooltip(t!("New Kit").into_owned())
+                                .on_click(
+                                    cx.listener(|this, _, window, cx| this.new_kit(window, cx)),
+                                ),
+                        )
+                        .tour_target("new-kit"),
                 ),
         )
     }
@@ -884,7 +890,11 @@ impl MainView {
         let body = v_flex()
             .gap_5()
             .p_5()
-            .child(section(t!("Model key"), cx).child(recessed_box(model_keys)))
+            .child(
+                section(t!("Model key"), cx)
+                    .child(recessed_box(model_keys))
+                    .tour_target("kit-model"),
+            )
             .child(section(t!("Services"), cx).child(recessed_box(services)))
             .child(section(t!("Setup folder"), cx).child(self.setup_folder_editor(kit, cx)))
             .child(section(t!("Variables"), cx).child(self.variables_editor(cx)))

@@ -26,8 +26,8 @@ wheels = [
 
 [[package]]
 name = "app-release"
-version = "1.10.1"
-source = { git = "https://git.phin.tech/sam/app-release?tag=v1.10.1#43b374fbf428d950da28e30a1c516d8572662505" }
+version = "1.12.0"
+source = { git = "https://git.phin.tech/sam/app-release?tag=v1.12.0#e564cf23cc7583fa3d8b6674b9652c77c90c5ca6" }
 dependencies = [
     { name = "bump-my-version" },
     { name = "cyclopts" },
@@ -186,17 +186,6 @@ wheels = [
 ]
 
 [[package]]
-name = "playpen-release"
-version = "0"
-source = { virtual = "." }
-dependencies = [
-    { name = "app-release" },
-]
-
-[package.metadata]
-requires-dist = [{ name = "app-release", git = "https://git.phin.tech/sam/app-release?tag=v1.10.1" }]
-
-[[package]]
 name = "markdown-it-py"
 version = "4.3.0"
 source = { registry = "https://pypi.org/simple" }
@@ -216,6 +205,17 @@ sdist = { url = "https://files.pythonhosted.org/packages/d6/54/cfe61301667036ec9
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b3/38/89ba8ad64ae25be8de66a6d463314cf1eb366222074cfda9ee839c56a4b4/mdurl-0.1.2-py3-none-any.whl", hash = "sha256:84008a41e51615a49fc9966191ff91509e3c40b939176e643fd50a5c2196b8f8", size = 9979, upload-time = "2022-08-14T12:40:09.779Z" },
 ]
+
+[[package]]
+name = "playpen-release"
+version = "0"
+source = { virtual = "." }
+dependencies = [
+    { name = "app-release" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "app-release", git = "https://git.phin.tech/sam/app-release?tag=v1.12.0" }]
 
 [[package]]
 name = "pluggy"

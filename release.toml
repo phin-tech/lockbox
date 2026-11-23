@@ -20,3 +20,13 @@ sparkle = "2.10.0"
 # shows the description above. allow = ["someone@gmail.com"] keeps it to those people, after signing in (Cloudflare
 # Access), but not with Sparkle, which can't sign in; pin = true lists it first.
 [downloads]
+
+# On the app's page and in its manual at docs.phin.tech. Keys: apps-site's README.
+[site]
+docs = "docs"
+exclude = ["adr", "research"]
+media = [
+  { file = "media/requests.png", caption = "A sandbox asks to reach npm and GitHub; you decide" },
+  { file = "media/new-agent.png", caption = "New Agent: a name, some folders, a kit" },
+  { file = "media/providers.png", caption = "Keys stay in OpenShell, gateway by gateway" },
+]

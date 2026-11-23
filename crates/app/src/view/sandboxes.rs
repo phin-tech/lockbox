@@ -1522,6 +1522,8 @@ impl Mark {
             Mark::Agent(Agent::Pi) => assets::IconName::Pi,
             Mark::Agent(Agent::Omp) => assets::IconName::Omega,
             Mark::Agent(Agent::Pig) => assets::IconName::PiggyBank,
+            Mark::Agent(Agent::OpenCode) => assets::IconName::Code,
+            Mark::Agent(Agent::Cursor) => assets::IconName::MousePointer2,
             Mark::Custom(_) => assets::IconName::Bot,
             Mark::Shell => assets::IconName::Box,
         }

@@ -75,6 +75,7 @@ pub fn guess(variable: &str) -> Guess {
         "OPENROUTER_API_KEY" => Guess::Model(Kind::OpenRouter),
         "FIREWORKS_API_KEY" => Guess::Model(Kind::Fireworks),
         "ZAI_API_KEY" => Guess::Model(Kind::ZAi),
+        "CURSOR_API_KEY" => Guess::Model(Kind::Cursor),
         "GITHUB_TOKEN" | "GH_TOKEN" | "GITHUB_PERSONAL_ACCESS_TOKEN" => {
             Guess::Service("api.github.com")
         }

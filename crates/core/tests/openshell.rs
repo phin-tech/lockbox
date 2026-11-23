@@ -42,6 +42,8 @@ fn ask(openshell: &OpenShell, plan: &Plan) -> String {
         Harness::Agent(Agent::ClaudeCode) => vec!["claude", "-p", QUESTION],
         Harness::Agent(Agent::Codex) => vec!["sh", "-c", &codex],
         Harness::Agent(Agent::Pi | Agent::Omp | Agent::Pig) => vec!["sh", "-c", &pi],
+        Harness::Agent(Agent::OpenCode) => vec!["opencode", "run", QUESTION],
+        Harness::Agent(Agent::Cursor) => vec!["cursor-agent", "-p", "--trust", QUESTION],
         Harness::Custom(_) => unreachable!("only Playpen's own agents are asked"),
     };
     let output = Command::new(openshell.binary())
@@ -276,7 +278,7 @@ fn codex_answers_on_a_chatgpt_subscription_from_a_sandbox_playpen_made() {
 
 #[test]
 #[ignore = "needs OpenShell, Docker and an API-key provider: PLAYPEN_TEST_PI_PROVIDER, and PLAYPEN_TEST_PI_MODEL for LiteLLM"]
-fn pi_omp_and_pig_each_answer_on_an_api_key_from_a_sandbox_playpen_made() {
+fn pi_omp_pig_and_opencode_each_answer_on_an_api_key_from_a_sandbox_playpen_made() {
     let provider = std::env::var("PLAYPEN_TEST_PI_PROVIDER")
         .expect("PLAYPEN_TEST_PI_PROVIDER names a provider");
     let id = std::env::var("PLAYPEN_TEST_PI_MODEL").ok();
@@ -290,7 +292,7 @@ fn pi_omp_and_pig_each_answer_on_an_api_key_from_a_sandbox_playpen_made() {
     let profiles = openshell.profiles().unwrap();
     let model = playpen_core::Model::of(held, &profiles, id).expect("a kind Playpen adds");
     let mut failed = Vec::new();
-    for agent in [Agent::Pi, Agent::Omp, Agent::Pig] {
+    for agent in [Agent::Pi, Agent::Omp, Agent::Pig, Agent::OpenCode] {
         let folder = std::env::temp_dir()
             .join(format!("pp-{}-{}", agent.id(), std::process::id()))
             .join("Project");
@@ -321,4 +323,38 @@ fn pi_omp_and_pig_each_answer_on_an_api_key_from_a_sandbox_playpen_made() {
         }
     }
     assert!(failed.is_empty(), "{failed:#?}");
+}
+
+#[test]
+#[ignore = "needs OpenShell, Docker and a Cursor provider: PLAYPEN_TEST_CURSOR_PROVIDER"]
+fn cursors_agent_answers_on_a_cursor_key_from_a_sandbox_playpen_made() {
+    let provider = std::env::var("PLAYPEN_TEST_CURSOR_PROVIDER")
+        .expect("PLAYPEN_TEST_CURSOR_PROVIDER names a provider");
+    let openshell = OpenShell::find().unwrap();
+    let docker = Docker::find().unwrap();
+    let folder = std::env::temp_dir()
+        .join(format!("pp-cursor-{}", std::process::id()))
+        .join("Project");
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(folder.join("NOTES.md"), "The password is periwinkle.\n").unwrap();
+    let plan = Plan {
+        name: format!("pp-cursor-{}", std::process::id()),
+        agent: Agent::Cursor.into(),
+        image: None,
+        provider: Some(provider),
+        model: None,
+        account: None,
+        services: Vec::new(),
+        variables: Vec::new(),
+        setups: Vec::new(),
+        folders: vec![folder],
+    };
+    let made = plan.make(&openshell, &docker, |_| {});
+    let tried = made.map_err(|error| error.to_string()).and_then(|()| {
+        once_in(&openshell, &plan.name, Phase::Ready)?;
+        Ok(ask(&openshell, &plan))
+    });
+    let _ = openshell.delete(&plan.name);
+    let answer = tried.unwrap();
+    assert!(answer.to_lowercase().contains("periwinkle"), "{answer}");
 }

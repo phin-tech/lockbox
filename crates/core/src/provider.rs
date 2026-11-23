@@ -24,6 +24,8 @@ pub enum Kind {
     ZAi,
     /// A LiteLLM proxy, at an address the person gives.
     LiteLlm,
+    /// Cursor's own API key, which only Cursor's agent uses, and only with Cursor's service.
+    Cursor,
     /// Codex on a ChatGPT subscription, signed in with a login of the sandboxes' own. OpenShell renews its access
     /// token with the refresh token it holds, so neither ever enters a sandbox.
     ChatGptSubscription,
@@ -79,7 +81,7 @@ pub enum ProviderError {
 }
 
 impl Kind {
-    pub const ALL: [Kind; 8] = [
+    pub const ALL: [Kind; 9] = [
         Kind::ClaudeSubscription,
         Kind::ChatGptSubscription,
         Kind::Anthropic,
@@ -88,6 +90,7 @@ impl Kind {
         Kind::Fireworks,
         Kind::ZAi,
         Kind::LiteLlm,
+        Kind::Cursor,
     ];
 
     pub fn name(self) -> &'static str {
@@ -99,6 +102,7 @@ impl Kind {
             Kind::Fireworks => "Fireworks",
             Kind::ZAi => "Z.ai",
             Kind::LiteLlm => "LiteLLM",
+            Kind::Cursor => "Cursor",
             Kind::ChatGptSubscription => "ChatGPT Subscription",
         }
     }
@@ -125,6 +129,7 @@ impl Kind {
             Kind::Fireworks => "playpen-fireworks",
             Kind::ZAi => "playpen-zai",
             Kind::LiteLlm => "playpen-litellm",
+            Kind::Cursor => "playpen-cursor",
             Kind::ChatGptSubscription => "playpen-chatgpt",
         }
     }
@@ -139,6 +144,7 @@ impl Kind {
             Kind::Fireworks => "FIREWORKS_API_KEY",
             Kind::ZAi => "ZAI_API_KEY",
             Kind::LiteLlm => "LITELLM_API_KEY",
+            Kind::Cursor => "CURSOR_API_KEY",
             Kind::ChatGptSubscription => "CHATGPT_ACCESS_TOKEN",
         }
     }
@@ -159,6 +165,7 @@ impl Kind {
             Kind::Fireworks => &["api.fireworks.ai"],
             Kind::ZAi => &["api.z.ai"],
             Kind::LiteLlm => &[],
+            Kind::Cursor => &["api2.cursor.sh"],
             Kind::ChatGptSubscription => &["chatgpt.com", "api.openai.com"],
         }
     }
@@ -185,6 +192,7 @@ impl Kind {
             Kind::Fireworks => "An API key from fireworks.ai.",
             Kind::ZAi => "An API key from z.ai.",
             Kind::LiteLlm => "A virtual key from the proxy's admin.",
+            Kind::Cursor => "A User API Key from cursor.com/dashboard, under Integrations.",
             Kind::ChatGptSubscription => {
                 "Sign In… gives a code to sign in to ChatGPT with, in any browser. This is a login of the sandboxes' own, so your Mac's Codex stays signed in."
             }
@@ -201,6 +209,7 @@ impl Kind {
             Kind::Fireworks => "fireworks",
             Kind::ZAi => "zai",
             Kind::LiteLlm => "litellm",
+            Kind::Cursor => "cursor",
             Kind::ChatGptSubscription => "chatgpt",
         }
     }

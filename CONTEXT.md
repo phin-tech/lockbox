@@ -21,7 +21,8 @@ keeps a session when it's installed, so closing the window showing it only detac
 session. The Herdr app, Ghostty or Terminal shows it.
 _Avoid_: tab, window, run
 
-**Agent**: a coding agent Playpen knows how to run in a sandbox (Claude Code, Codex, Pi, oh-my-pi, PiG), with the image
+**Agent**: a coding agent Playpen knows how to run in a sandbox (Claude Code, Codex, OpenCode, Cursor, Pi, oh-my-pi,
+PiG), with the image
 it runs in and the policy that lets it reach its model. Pi and its kin reach whichever service their key is for. A
 **custom agent** is one the person describes, in an image of their own.
 _Avoid_: client, assistant

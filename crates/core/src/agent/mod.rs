@@ -37,6 +37,19 @@ const OMP_VERSION: &str = "18.22.2";
 const OMP_SHA256_X64: &str = "80a692c5adb9c71124bb11e77bd7edb3cf8fbbab6980db3206dcb6a4cb2905b5";
 const OMP_SHA256_ARM64: &str = "82a880ba04d73f1c81a12931447f9f9ed8945581998564eae900c1238f4502e2";
 
+/// The OpenCode release its image is built with, and the digests its release published for each platform's archive.
+const OPENCODE_VERSION: &str = "1.19.6";
+const OPENCODE_SHA256_X64: &str =
+    "47734e08968b30cc22a0bffb6d9feeed76ad4aa743213a12122040392d09a057";
+const OPENCODE_SHA256_ARM64: &str =
+    "5b68c1f4c5e75b4134e664cc8f36d634d64208d4fcfe5bcf3b48bab699c2dbac";
+
+/// The Cursor agent release its image is built with, and the digests Cursor published for each platform's archive.
+const CURSOR_VERSION: &str = "2026.11.22-e9042b2";
+const CURSOR_SHA256_X64: &str = "7663b1c5d1b56e095ef8e23bef38d66df6cfd665c4873470214e0e411f0f97b3";
+const CURSOR_SHA256_ARM64: &str =
+    "7b7dd0020fb9a2a9e1e7e3f39e2f9f512d1dd9577174ecda8aa82ac31dbc9565";
+
 /// The PiG release its image is built with, and the digests its release published for each platform's archive.
 const PIG_VERSION: &str = "0.7.0";
 const PIG_SHA256_AMD64: &str = "0b5ab7cb5f680e7d3353bdaa3a1018863c3c3552f88bec730370668e5819995a";
@@ -68,12 +81,18 @@ pub enum Agent {
     Omp,
     /// PiG, Pi written again in Go.
     Pig,
+    /// OpenCode, which reaches whichever model service its key is for.
+    OpenCode,
+    /// Cursor's agent, which reaches only Cursor's service, on a Cursor key.
+    Cursor,
 }
 
 impl Agent {
-    pub const ALL: [Agent; 5] = [
+    pub const ALL: [Agent; 7] = [
         Agent::ClaudeCode,
         Agent::Codex,
+        Agent::OpenCode,
+        Agent::Cursor,
         Agent::Pi,
         Agent::Omp,
         Agent::Pig,
@@ -87,6 +106,8 @@ impl Agent {
             Agent::Pi => "pi",
             Agent::Omp => "omp",
             Agent::Pig => "pig",
+            Agent::OpenCode => "opencode",
+            Agent::Cursor => "cursor",
         }
     }
 
@@ -101,6 +122,8 @@ impl Agent {
             Agent::Pi => "Pi",
             Agent::Omp => "oh-my-pi",
             Agent::Pig => "PiG",
+            Agent::OpenCode => "OpenCode",
+            Agent::Cursor => "Cursor",
         }
     }
 
@@ -113,6 +136,8 @@ impl Agent {
             Agent::Pi => "playpen-pi",
             Agent::Omp => "playpen-omp",
             Agent::Pig => "playpen-pig",
+            Agent::OpenCode => "playpen-opencode",
+            Agent::Cursor => "playpen-cursor",
         };
         format!(
             "{name}:{}-{:08x}",
@@ -129,6 +154,8 @@ impl Agent {
             Agent::Pi => PI_VERSION,
             Agent::Omp => OMP_VERSION,
             Agent::Pig => PIG_VERSION,
+            Agent::OpenCode => OPENCODE_VERSION,
+            Agent::Cursor => CURSOR_VERSION,
         }
     }
 
@@ -153,6 +180,8 @@ impl Agent {
             Agent::Pi => include_str!("pi.Dockerfile"),
             Agent::Omp => include_str!("omp.Dockerfile"),
             Agent::Pig => include_str!("pig.Dockerfile"),
+            Agent::OpenCode => include_str!("opencode.Dockerfile"),
+            Agent::Cursor => include_str!("cursor.Dockerfile"),
         }
     }
 
@@ -171,6 +200,16 @@ impl Agent {
                 ("PIG_SHA256_AMD64", PIG_SHA256_AMD64),
                 ("PIG_SHA256_ARM64", PIG_SHA256_ARM64),
             ],
+            Agent::OpenCode => vec![
+                ("OPENCODE_VERSION", OPENCODE_VERSION),
+                ("OPENCODE_SHA256_X64", OPENCODE_SHA256_X64),
+                ("OPENCODE_SHA256_ARM64", OPENCODE_SHA256_ARM64),
+            ],
+            Agent::Cursor => vec![
+                ("CURSOR_VERSION", CURSOR_VERSION),
+                ("CURSOR_SHA256_X64", CURSOR_SHA256_X64),
+                ("CURSOR_SHA256_ARM64", CURSOR_SHA256_ARM64),
+            ],
         }
     }
 
@@ -182,6 +221,8 @@ impl Agent {
             Agent::Pi => "pi",
             Agent::Omp => "omp",
             Agent::Pig => "pig",
+            Agent::OpenCode => "opencode",
+            Agent::Cursor => "cursor",
         }
     }
 
@@ -198,6 +239,8 @@ impl Agent {
             // rather than in a home.
             Agent::Omp => "omp --allow-home",
             Agent::Pig => "pig",
+            Agent::OpenCode => "opencode",
+            Agent::Cursor => "cursor-agent",
         }
     }
 
@@ -209,6 +252,8 @@ impl Agent {
             Agent::Pi => "pi --continue",
             Agent::Omp => "omp --allow-home --continue",
             Agent::Pig => "pig --continue",
+            Agent::OpenCode => "opencode --continue",
+            Agent::Cursor => "cursor-agent --continue",
         }
     }
 
@@ -225,6 +270,9 @@ impl Agent {
             Agent::Pi => "/usr/local/bin/node",
             Agent::Omp => "/usr/local/bin/omp",
             Agent::Pig => "/usr/local/bin/pig",
+            Agent::OpenCode => "/usr/local/bin/opencode",
+            // Cursor's own Node, which its launcher runs.
+            Agent::Cursor => "/opt/cursor-agent/node",
         }
     }
 
@@ -241,12 +289,13 @@ impl Agent {
         match self {
             Agent::ClaudeCode => &[Kind::ClaudeSubscription, Kind::Anthropic],
             Agent::Codex => &[Kind::ChatGptSubscription, Kind::OpenAi],
-            Agent::Pi | Agent::Omp | Agent::Pig => &[
+            Agent::Pi | Agent::Omp | Agent::Pig | Agent::OpenCode => &[
                 Kind::OpenRouter,
                 Kind::Anthropic,
                 Kind::OpenAi,
                 Kind::LiteLlm,
             ],
+            Agent::Cursor => &[Kind::Cursor],
         }
     }
 
@@ -260,7 +309,7 @@ impl Agent {
     /// Whether the person says which model it starts with, since it reaches several services. It's needed for a
     /// LiteLLM proxy, whose models only the proxy knows.
     pub fn chooses_a_model(self) -> bool {
-        matches!(self, Agent::Pi | Agent::Omp | Agent::Pig)
+        matches!(self, Agent::Pi | Agent::Omp | Agent::Pig | Agent::OpenCode)
     }
 
     /// The hosts it needs whatever its key: its model's API, and, for Claude Code, the service it checks for when it
@@ -269,7 +318,9 @@ impl Agent {
         match self {
             Agent::ClaudeCode => &["api.anthropic.com", "platform.claude.com"],
             Agent::Codex => &["chatgpt.com", "api.openai.com"],
-            Agent::Pi | Agent::Omp | Agent::Pig => &[],
+            Agent::Pi | Agent::Omp | Agent::Pig | Agent::OpenCode => &[],
+            // Only Cursor's API, which every request goes to. Its metrics, error reports and updates are denied.
+            Agent::Cursor => &["api2.cursor.sh"],
         }
     }
 
@@ -295,6 +346,12 @@ impl Agent {
                 ("PI_SKIP_VERSION_CHECK", "1"),
                 ("PI_TELEMETRY", "0"),
             ],
+            Agent::OpenCode => &[
+                ("OPENCODE_DISABLE_MODELS_FETCH", "1"),
+                ("OPENCODE_DISABLE_AUTOUPDATE", "1"),
+                ("OPENCODE_DISABLE_LSP_DOWNLOAD", "1"),
+            ],
+            Agent::Cursor => &[],
         }
     }
 
@@ -462,6 +519,7 @@ impl Model {
             Kind::Fireworks => "fireworks",
             Kind::ZAi => "zai",
             Kind::LiteLlm => "litellm",
+            Kind::Cursor => "cursor",
         }
     }
 
@@ -831,6 +889,47 @@ impl Plan {
         };
         match *agent {
             Agent::ClaudeCode | Agent::Codex => Vec::new(),
+            // Its agent over HTTP/1.1, which goes through OpenShell's proxy where HTTP/2 streams may not, and no
+            // updates, which the sandbox would deny. Cursor keeps whatever else it sets beside these.
+            Agent::Cursor => vec![(
+                "/sandbox/.cursor/cli-config.json".to_string(),
+                pretty(&serde_json::json!({
+                    "channel": "static",
+                    "network": { "useHttp1ForAgent": true },
+                    "version": 1,
+                })),
+            )],
+            Agent::OpenCode => {
+                // In the order serde_json sorts them, so the file's the same with or without its `preserve_order`.
+                let mut config = serde_json::Map::new();
+                config.insert("$schema".into(), "https://opencode.ai/config.json".into());
+                config.insert("autoupdate".into(), false.into());
+                if let Some(qualified) = model.and_then(Model::qualified) {
+                    config.insert("model".into(), qualified.into());
+                }
+                if let Some(model) = litellm {
+                    let id = model.id.clone().unwrap_or_default();
+                    config.insert(
+                        "provider".into(),
+                        serde_json::json!({
+                            "litellm": {
+                                "models": { id.clone(): { "name": id } },
+                                "name": "LiteLLM",
+                                "npm": "@ai-sdk/openai-compatible",
+                                "options": {
+                                    "apiKey": format!("{{env:{}}}", Kind::LiteLlm.variable()),
+                                    "baseURL": model.base_url(),
+                                },
+                            }
+                        }),
+                    );
+                }
+                config.insert("share".into(), "disabled".into());
+                vec![(
+                    "/sandbox/.config/opencode/opencode.json".to_string(),
+                    pretty(&serde_json::Value::Object(config)),
+                )]
+            }
             Agent::Pi | Agent::Pig => {
                 let home = if *agent == Agent::Pi {
                     "/sandbox/.pi/agent"
@@ -898,7 +997,14 @@ impl Plan {
     fn setup(&self) -> Option<serde_json::Value> {
         match self.agent {
             Harness::Custom(_)
-            | Harness::Agent(Agent::ClaudeCode | Agent::Pi | Agent::Omp | Agent::Pig) => None,
+            | Harness::Agent(
+                Agent::ClaudeCode
+                | Agent::Pi
+                | Agent::Omp
+                | Agent::Pig
+                | Agent::OpenCode
+                | Agent::Cursor,
+            ) => None,
             Harness::Agent(Agent::Codex) => Some(serde_json::json!({
                 "config": "# Written by Playpen.\nsandbox_mode = \"danger-full-access\"\ncheck_for_update_on_startup = false\n",
                 "account": self.account,
@@ -1458,6 +1564,40 @@ mod tests {
     }
 
     #[test]
+    fn opencode_is_told_its_model_and_a_litellm_proxy_and_checks_for_nothing() {
+        let files = pi_plan(Agent::OpenCode, litellm(Some("gpt-5"))).settings_files();
+        let shown: Vec<String> = files
+            .iter()
+            .map(|(path, contents)| format!("{path}\n{contents}"))
+            .collect();
+        insta::assert_snapshot!(shown.join("\n"));
+        assert!(
+            pi_plan(Agent::OpenCode, openrouter())
+                .policy(Platform::Arm64)
+                .contains("host: openrouter.ai")
+        );
+    }
+
+    #[test]
+    fn cursor_reaches_only_cursors_api_from_its_own_node_on_a_cursor_key() {
+        let cursor = Plan {
+            agent: Agent::Cursor.into(),
+            ..plan()
+        };
+        insta::assert_snapshot!(cursor.policy(Platform::Arm64));
+        assert!(Agent::Cursor.takes("playpen-cursor"));
+        assert!(!Agent::Cursor.takes("playpen-openrouter"));
+        assert!(
+            !Agent::Pi.takes("playpen-cursor"),
+            "a Cursor key is Cursor's alone"
+        );
+        assert_eq!(
+            cursor.settings_files()[0].0,
+            "/sandbox/.cursor/cli-config.json"
+        );
+    }
+
+    #[test]
     fn claude_code_and_codex_have_no_settings_files_written() {
         assert!(plan().settings_files().is_empty());
     }
@@ -1469,7 +1609,8 @@ mod tests {
         assert_eq!(Agent::from_id("pi"), Some(Agent::Pi));
         assert_eq!(Agent::from_id("omp"), Some(Agent::Omp));
         assert_eq!(Agent::from_id("pig"), Some(Agent::Pig));
-        assert_eq!(Agent::from_id("cursor"), None);
+        assert_eq!(Agent::from_id("cursor"), Some(Agent::Cursor));
+        assert_eq!(Agent::from_id("aider"), None);
     }
 
     #[test]

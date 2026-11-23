@@ -1,0 +1,26 @@
+---
+source: crates/core/src/agent/mod.rs
+expression: "shown.join(\"\\n\")"
+---
+/sandbox/.config/opencode/opencode.json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "autoupdate": false,
+  "model": "litellm/gpt-5",
+  "provider": {
+    "litellm": {
+      "models": {
+        "gpt-5": {
+          "name": "gpt-5"
+        }
+      },
+      "name": "LiteLLM",
+      "npm": "@ai-sdk/openai-compatible",
+      "options": {
+        "apiKey": "{env:LITELLM_API_KEY}",
+        "baseURL": "http://litellm.example.com:4000/v1"
+      }
+    }
+  },
+  "share": "disabled"
+}

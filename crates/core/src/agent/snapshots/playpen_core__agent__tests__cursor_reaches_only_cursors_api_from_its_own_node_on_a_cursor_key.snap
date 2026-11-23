@@ -1,0 +1,16 @@
+---
+source: crates/core/src/agent/mod.rs
+expression: "cursor.policy(Platform::Arm64)"
+---
+# Written by Playpen. Everything this doesn't allow is denied.
+version: 1
+network_policies:
+  cursor:
+    endpoints:
+      - host: api2.cursor.sh
+        port: 443
+        protocol: rest
+        access: read-write
+        enforcement: enforce
+    binaries:
+      - path: /opt/cursor-agent/node

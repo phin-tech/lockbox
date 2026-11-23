@@ -13,7 +13,7 @@ use std::collections::BTreeSet;
 
 use gpui_kit::component::checkbox::Checkbox;
 use playpen_core::{
-    Docker, Kit, Model, Plan, Profile, Provider, Service, SetupFolder, Step, Variable,
+    Docker, Harness, Kit, Model, Plan, Profile, Provider, Service, SetupFolder, Step, Variable,
     VariableValue, suggested_name,
 };
 
@@ -21,16 +21,16 @@ use super::*;
 
 /// An agent, as the Agent menu lists it.
 #[derive(Clone)]
-struct AgentChoice(Agent);
+struct AgentChoice(Harness);
 
 impl SelectItem for AgentChoice {
-    type Value = Agent;
+    type Value = Harness;
 
     fn title(&self) -> SharedString {
-        self.0.name().into()
+        self.0.name().to_string().into()
     }
 
-    fn value(&self) -> &Agent {
+    fn value(&self) -> &Harness {
         &self.0
     }
 }
@@ -39,7 +39,7 @@ impl SelectItem for AgentChoice {
 pub struct Making {
     /// The gateway the sandbox is made on, by its name: its providers are the ones offered.
     gateway: String,
-    agent: Agent,
+    agent: Harness,
     /// The Agent menu, searchable, since there may be more agents than fit in a row.
     agents: Entity<SelectState<SearchableVec<AgentChoice>>>,
     name: Entity<InputState>,
@@ -83,8 +83,8 @@ impl MainView {
     pub(super) fn start_making(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // From Agents, for the agent chosen there.
         let agent = match self.page {
-            Page::Agents => self.agents.selected,
-            Page::Sandboxes | Page::Kits | Page::Providers => Agent::ALL[0],
+            Page::Agents => self.selected_harness(),
+            Page::Sandboxes | Page::Kits | Page::Providers => Agent::ALL[0].into(),
         };
         self.start_making_for(agent, window, cx);
     }
@@ -92,7 +92,7 @@ impl MainView {
     /// New Agent…, with `agent` chosen, over the Sandboxes place.
     pub(super) fn start_making_for(
         &mut self,
-        agent: Agent,
+        agent: Harness,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -104,7 +104,7 @@ impl MainView {
         self.adding = None;
         self.imaging = None;
         self.microvm = None;
-        let suggested = suggested_name(agent, &[]);
+        let suggested = suggested_name(&agent, &[]);
         let name = cx.new(|cx| {
             let mut state = InputState::new(window, cx).placeholder(suggested.clone());
             state.set_value(suggested.clone(), window, cx);
@@ -115,10 +115,11 @@ impl MainView {
                 this.make(window, cx);
             }
         });
-        let chosen = Agent::ALL.iter().position(|known| *known == agent);
+        let harnesses = self.harnesses();
+        let chosen = harnesses.iter().position(|known| *known == agent);
         let agents = cx.new(|cx| {
             SelectState::new(
-                SearchableVec::new(Agent::ALL.map(AgentChoice).to_vec()),
+                SearchableVec::new(harnesses.into_iter().map(AgentChoice).collect::<Vec<_>>()),
                 chosen.map(IndexPath::new),
                 window,
                 cx,
@@ -132,7 +133,7 @@ impl MainView {
                 let SelectEvent::Confirm(Some(agent)) = event else {
                     return;
                 };
-                this.choose_agent(*agent, window, cx);
+                this.choose_agent(agent.clone(), window, cx);
             },
         );
         let model = cx.new(|cx| InputState::new(window, cx).placeholder(t!("Its own choice")));
@@ -266,7 +267,7 @@ impl MainView {
     /// Chooses the agent, which may change the name Playpen suggests and the providers it can use.
     pub(super) fn choose_agent(
         &mut self,
-        agent: Agent,
+        agent: Harness,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -276,7 +277,7 @@ impl MainView {
         if making.agent == agent {
             return;
         }
-        making.agent = agent;
+        making.agent = agent.clone();
         making.suggest_name(window, cx);
         // The menu shows the agent however it was chosen, from the menu or not.
         making.agents.update(cx, |agents, cx| {
@@ -574,7 +575,12 @@ impl MainView {
         };
         let plan = Plan {
             name: making.name.read(cx).value().trim().to_string(),
-            agent: making.agent,
+            agent: making.agent.clone(),
+            // One of Playpen's agents starts from the person's own image when they gave one.
+            image: match &making.agent {
+                Harness::Agent(agent) => settings.agent_image(*agent),
+                Harness::Custom(_) => None,
+            },
             provider: making.provider.clone(),
             model: making.model(cx),
             account,
@@ -598,7 +604,8 @@ impl MainView {
         let name = plan.name.clone();
         let made = cx.background_spawn(async move {
             let openshell = openshell?;
-            let images = settings.image_source(&gateway, Docker::find)?;
+            let images =
+                settings.image_source_for(&gateway, plan.names_its_image(), Docker::find)?;
             plan.make(&openshell, images.as_ref(), |step| {
                 let _ = steps.unbounded_send(step);
             })?;
@@ -685,7 +692,7 @@ impl MainView {
                         ),
                 ),
             );
-        let agent = making.agent;
+        let agent = making.agent.name().to_string();
         let providers = match making.usable() {
             None => hint(t!("Asking OpenShell…"), cx),
             Some(Err(error)) => div()
@@ -699,7 +706,7 @@ impl MainView {
                     t!(
                         "The %{gateway} gateway has no provider with a key for %{agent}. Choose another gateway, or add one in Providers.",
                         gateway = making.gateway.clone(),
-                        agent = agent.name()
+                        agent = agent.clone()
                     ),
                     cx,
                 ))
@@ -864,7 +871,7 @@ impl Making {
     fn suggest_name(&mut self, window: &mut Window, cx: &mut App) {
         let typed = self.name.read(cx).value().trim().to_string();
         if typed == self.suggested || typed.is_empty() {
-            let suggested = suggested_name(self.agent, &self.folders);
+            let suggested = suggested_name(&self.agent, &self.folders);
             self.name
                 .update(cx, |name, cx| name.set_value(suggested.clone(), window, cx));
             self.suggested = suggested;

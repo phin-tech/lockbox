@@ -263,7 +263,7 @@ impl MainView {
             ports,
             bring_back: bring_back::BringBack::default(),
             page: Page::Sandboxes,
-            agents: agents::AgentsPage::new(),
+            agents: agents::AgentsPage::new(watch),
             kits: kits::KitsPage::new(watch),
             kits_asking: None,
             providers: None,
@@ -282,6 +282,7 @@ impl MainView {
     fn run(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
         match name {
             "sandbox.new" => self.start_making(window, cx),
+            "agent.new-custom" => self.edit_custom_agent(None, window, cx),
             "sandbox.open" => self.open_session(None, What::Agent, window, cx),
             "sandbox.open-herdr" => {
                 self.open_session(Some(Place::HerdrApp), What::Agent, window, cx)
@@ -304,12 +305,12 @@ impl MainView {
             "sandbox.stop" => self.act_on_selected(sandboxes::Act::Stop, window, cx),
             "sandbox.delete" => self.confirm_delete(window, cx),
             "sandbox.next" => match self.page {
-                Page::Agents => self.select_next_agent(1, cx),
+                Page::Agents => self.select_next_agent(1, window, cx),
                 Page::Kits => self.select_next_kit(1, window, cx),
                 Page::Sandboxes | Page::Providers => self.select_next(1, cx),
             },
             "sandbox.previous" => match self.page {
-                Page::Agents => self.select_next_agent(-1, cx),
+                Page::Agents => self.select_next_agent(-1, window, cx),
                 Page::Kits => self.select_next_kit(-1, window, cx),
                 Page::Sandboxes | Page::Providers => self.select_next(-1, cx),
             },
@@ -434,7 +435,9 @@ impl MainView {
 
     /// Dismisses whichever inline form is open in the detail panel, if it isn't mid-operation.
     fn dismiss_active_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.microvm.is_some() {
+        if self.page == Page::Agents && self.agents.form.is_some() {
+            self.cancel_custom_form(window, cx);
+        } else if self.microvm.is_some() {
             self.cancel_microvm(window, cx);
         } else if self.imaging.is_some() {
             self.cancel_images(window, cx);
@@ -671,7 +674,7 @@ impl MainView {
             let shown = self.page == page;
             let count = match page {
                 Page::Sandboxes => Some(self.listed_sandboxes().len()),
-                Page::Agents => Some(Agent::ALL.len()),
+                Page::Agents => Some(self.agents.count()),
                 Page::Kits => Some(self.kits.kits.kits.len()),
                 Page::Providers => self
                     .providers

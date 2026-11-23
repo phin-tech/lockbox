@@ -42,7 +42,8 @@ fn folders_go_in_side_by_side_when_its_made_and_while_it_runs() {
     let notes = root.join("notes");
     let plan = Plan {
         name: format!("pp-folders-{}", std::process::id()),
-        agent: Agent::ClaudeCode,
+        agent: Agent::ClaudeCode.into(),
+        image: None,
         provider: None,
         model: None,
         account: None,

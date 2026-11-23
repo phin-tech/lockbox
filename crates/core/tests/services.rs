@@ -67,7 +67,8 @@ fn exec(openshell: &OpenShell, name: &str, command: &[&str]) -> String {
 fn plan(name: String, services: Vec<Service>) -> Plan {
     Plan {
         name,
-        agent: Agent::ClaudeCode,
+        agent: Agent::ClaudeCode.into(),
+        image: None,
         provider: None,
         model: None,
         account: None,

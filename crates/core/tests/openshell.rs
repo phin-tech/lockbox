@@ -8,7 +8,7 @@
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-use playpen_core::{Agent, Docker, OpenShell, Phase, Plan, Sandbox};
+use playpen_core::{Agent, Docker, Harness, OpenShell, Phase, Plan, Sandbox};
 
 /// The sandbox `name` once it's in `phase`, waiting up to five minutes for it, since a cluster pulls images first.
 fn once_in(openshell: &OpenShell, name: &str, phase: Phase) -> Result<Sandbox, String> {
@@ -34,10 +34,15 @@ fn ask(openshell: &OpenShell, plan: &Plan) -> String {
     let codex = format!(
         "node /sandbox/.codex/playpen-sign-in.js; exec codex exec --skip-git-repo-check '{QUESTION}'"
     );
-    let command: Vec<&str> = match plan.agent {
-        Agent::ClaudeCode => vec!["claude", "-p", QUESTION],
-        Agent::Codex => vec!["sh", "-c", &codex],
-        Agent::Pi | Agent::Omp | Agent::Pig => vec![plan.agent.command(), "-p", QUESTION],
+    let pi = match &plan.agent {
+        Harness::Agent(agent) => format!("exec {} -p '{QUESTION}'", agent.command()),
+        Harness::Custom(_) => String::new(),
+    };
+    let command: Vec<&str> = match &plan.agent {
+        Harness::Agent(Agent::ClaudeCode) => vec!["claude", "-p", QUESTION],
+        Harness::Agent(Agent::Codex) => vec!["sh", "-c", &codex],
+        Harness::Agent(Agent::Pi | Agent::Omp | Agent::Pig) => vec!["sh", "-c", &pi],
+        Harness::Custom(_) => unreachable!("only Playpen's own agents are asked"),
     };
     let output = Command::new(openshell.binary())
         .args([
@@ -74,7 +79,8 @@ fn claude_code_answers_from_a_sandbox_playpen_made() {
     std::fs::write(folder.join("NOTES.md"), "The password is periwinkle.\n").unwrap();
     let plan = Plan {
         name: format!("playpen-test-{}", std::process::id()),
-        agent: Agent::ClaudeCode,
+        agent: Agent::ClaudeCode.into(),
+        image: None,
         provider: Some(provider),
         model: None,
         account: None,
@@ -158,7 +164,8 @@ fn a_sandbox_is_made_on_a_named_gateway_and_is_not_on_the_other() {
     let plan = Plan {
         // Short, since a Kubernetes gateway takes names of up to 19 characters where a Docker one takes 63.
         name: format!("pp-gw-{}", std::process::id()),
-        agent: Agent::ClaudeCode,
+        agent: Agent::ClaudeCode.into(),
+        image: None,
         provider: None,
         model: None,
         account: None,
@@ -232,7 +239,8 @@ fn codex_answers_on_a_chatgpt_subscription_from_a_sandbox_playpen_made() {
     std::fs::write(folder.join("NOTES.md"), "The password is periwinkle.\n").unwrap();
     let plan = Plan {
         name: format!("pp-codex-{}", std::process::id()),
-        agent: Agent::Codex,
+        agent: Agent::Codex.into(),
+        image: None,
         provider: Some(provider),
         model: None,
         account: Some(account),
@@ -290,7 +298,8 @@ fn pi_omp_and_pig_each_answer_on_an_api_key_from_a_sandbox_playpen_made() {
         std::fs::write(folder.join("NOTES.md"), "The password is periwinkle.\n").unwrap();
         let plan = Plan {
             name: format!("pp-{}-{}", agent.id(), std::process::id()),
-            agent,
+            agent: agent.into(),
+            image: None,
             provider: Some(provider.clone()),
             model: Some(model.clone()),
             account: None,

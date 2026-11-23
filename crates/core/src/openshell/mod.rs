@@ -38,6 +38,12 @@ pub const AGENT_LABEL: &str = "playpen.agent";
 /// The annotation holding the folders on the Mac that were copied into a sandbox, one a line.
 pub const FOLDER_ANNOTATION: &str = "playpen.folder";
 
+/// The annotations holding a custom agent's name, and the commands that start it and carry on its conversation, which
+/// its sandbox keeps so it opens however the agent is later changed.
+pub const CUSTOM_NAME_ANNOTATION: &str = "playpen.custom-agent";
+pub const COMMAND_ANNOTATION: &str = "playpen.command";
+pub const CONTINUE_ANNOTATION: &str = "playpen.continue";
+
 /// The annotation holding where the agent works in a sandbox: the copied folder, under `/sandbox`.
 pub const WORKDIR_ANNOTATION: &str = "playpen.workdir";
 
@@ -73,6 +79,16 @@ pub struct Sandbox {
     pub folders: Vec<String>,
     /// Where its agent works in it.
     pub workdir: Option<String>,
+    /// The custom agent it runs, as it was when the sandbox was made.
+    pub custom: Option<CustomRun>,
+}
+
+/// A custom agent, as its sandbox keeps it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CustomRun {
+    pub name: String,
+    pub command: String,
+    pub continue_command: Option<String>,
 }
 
 /// Where a sandbox is in its life. OpenShell may add phases, which are kept by name.
@@ -206,6 +222,17 @@ pub fn parse_sandboxes(json: &str) -> Result<Vec<Sandbox>, OpenShellError> {
                 .map(|folders| folders.lines().map(str::to_string).collect())
                 .unwrap_or_default(),
             workdir: listed.annotations.remove(WORKDIR_ANNOTATION),
+            custom: match (
+                listed.annotations.remove(CUSTOM_NAME_ANNOTATION),
+                listed.annotations.remove(COMMAND_ANNOTATION),
+            ) {
+                (Some(name), Some(command)) => Some(CustomRun {
+                    name,
+                    command,
+                    continue_command: listed.annotations.remove(CONTINUE_ANNOTATION),
+                }),
+                _ => None,
+            },
             name: listed.name,
         })
         .collect();

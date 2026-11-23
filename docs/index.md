@@ -8,7 +8,9 @@ services you attach, and nothing else, until you say so.
 
 **File ▸ New Agent…** (⌘N) asks which agent (Claude Code, Codex, Pi, oh-my-pi or PiG), a name, the folders to copy
 in, any kits, and the model key to use. Pi, oh-my-pi and PiG take an API key for OpenRouter, Anthropic, OpenAI or a
-LiteLLM proxy, and the model to start with, which a LiteLLM proxy needs. Folders are copied into `/sandbox` with their git history, respecting `.gitignore`. Open the agent
+LiteLLM proxy, and the model to start with, which a LiteLLM proxy needs. **File ▸ New Custom Agent…** describes a
+harness of your own: the image it runs in, the command that starts it, the program that reaches its model and the keys
+it reads. In **Agents**, any of Playpen's agents can start from an image of yours instead of the one Playpen builds. Folders are copied into `/sandbox` with their git history, respecting `.gitignore`. Open the agent
 in a Herdr terminal, Ghostty or Terminal from the sandbox's **Open** button. A sandbox outlives its sessions:
 close the window and the agent keeps going when Herdr is installed.
 

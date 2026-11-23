@@ -28,7 +28,8 @@ mod state;
 
 pub use added::{AddError, AddedFolders};
 pub use agent::{
-    Agent, MakeError, Model, Plan, Step, is_sandbox_name, open_command, suggested_name,
+    Agent, CUSTOM_LABEL, CustomAgent, CustomAgentError, CustomAgents, Harness, MakeError, Model,
+    Plan, Step, is_sandbox_name, open_command, suggested_name,
 };
 pub use bring_back::{
     BringBackError, Brought, Repo, branch as bring_back_branch, bring_back, seed,
@@ -42,18 +43,18 @@ pub use dotenv::{
 };
 pub use files::write_atomically;
 pub use herdr::{AgentState, HerdrApp, HerdrCore, HerdrError};
-pub use image::{Image, ImageSource, Platform, Provided, Registry};
+pub use image::{Image, ImageSource, Named, Platform, Provided, Registry};
 pub use key_homes::{
     KeyHome, KeyHomeError, KeyHomes, Vault, forget_keychain, keychain_service, save_in_1password,
     save_in_keychain, vaults,
 };
-pub use kit_setup::SetupFolder;
+pub use kit_setup::{Base, SetupFolder};
 pub use kits::{Kit, Kits, Variable, VariableValue};
 pub use links::{link_target, path_from_file_url};
 pub use locale::best_locale;
 pub use new_service::{Access, KeySource, NewService, ServiceAuth, find_op, patchbay_port};
 pub use openshell::{
-    Activity, Forgotten, Forward, Forwards, GATEWAY_VARIABLE, Gateway, GatewayInfo, Key,
+    Activity, CustomRun, Forgotten, Forward, Forwards, GATEWAY_VARIABLE, Gateway, GatewayInfo, Key,
     ListedForward, MICROVM_GATEWAY, MicroVm, MicroVmError, MicroVmPlaces, MicroVmSize, Missing,
     NetworkRequest, NewGateway, NewGatewayError, Oidc, OpenShell, OpenShellError, Phase, Profile,
     ProfileEndpoint, Provider, Reach, Reached, RequestStatus, Sandbox, Service, SetUpStep,
@@ -67,8 +68,8 @@ pub use service_catalog::{
 };
 pub use session::{Installed, Keep, Opened, Place, SessionError, ShowIn, What};
 pub use settings::{
-    Appearance, GatewaySettings, ImageSourceError, ImagesFrom, KeepKeysIn, Settings, TEXT_SCALES,
-    step_text_scale,
+    AgentSettings, Appearance, GatewaySettings, ImageSourceError, ImagesFrom, KeepKeysIn, Settings,
+    TEXT_SCALES, step_text_scale,
 };
 pub use state::{Frame, Screen, State};
 

@@ -22,12 +22,17 @@ session. The Herdr app, Ghostty or Terminal shows it.
 _Avoid_: tab, window, run
 
 **Agent**: a coding agent Playpen knows how to run in a sandbox (Claude Code, Codex, Pi, oh-my-pi, PiG), with the image
-it runs in and the policy that lets it reach its model. Pi and its kin reach whichever service their key is for.
+it runs in and the policy that lets it reach its model. Pi and its kin reach whichever service their key is for. A
+**custom agent** is one the person describes, in an image of their own.
 _Avoid_: client, assistant
 
 **Provider**: OpenShell's name for a credential it keeps, of a type (`claude-code-oauth`) saying what it's for. Its key
 never enters the sandbox; OpenShell adds it to the agent's requests to its model.
 _Avoid_: key, secret, account
+
+**Service**: an outside API, such as GitHub, that a sandbox reaches with a key OpenShell holds as a Provider, so the
+agent sees only a stand-in. A person attaches one to a sandbox, and it opens the service's hosts in the sandbox's Policy.
+_Avoid_: integration, connection, and OpenShell's `service`, which is a Gateway link
 
 **Policy**: what a sandbox may reach, by host, port and the program connecting. Everything it doesn't allow is denied.
 _Avoid_: rules, firewall
@@ -39,6 +44,10 @@ _Avoid_: request, suggestion
 Kubernetes in a cluster. Playpen can use several, and a sandbox is on the one that made it. Every `openshell` call names
 one.
 _Avoid_: place, runtime, host, cluster
+
+**Gateway link**: a port inside a sandbox that its Gateway serves at a URL of its own, for as long as the sandbox runs,
+with nothing running on this Mac. A forwarded port, by contrast, opens on this Mac's loopback.
+_Avoid_: service, which OpenShell calls it; exposed port
 
 **Cloud**: what a Gateway extension is for, such as AWS or Google Cloud, offering several kinds of Gateway on it (`ec2`,
 `eks`). Its Capabilities are named by it, and its credentials and Grant belong to it.

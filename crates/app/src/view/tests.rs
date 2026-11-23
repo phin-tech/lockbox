@@ -1,6 +1,6 @@
 // Not a glob: the kit's `test` macro would shadow the `#[test]` it expands to.
 use super::sandboxes::gateway_where;
-use super::{Listing, MainView, Page, SandboxKey, Watch, microvm};
+use super::{Listing, MainView, Page, SandboxKey, Watch, agents, microvm};
 use crate::commands::COMMANDS;
 use crate::providers::ShownGateway;
 use crate::shortcuts::SHORTCUTS;
@@ -39,6 +39,7 @@ fn sandbox(name: &str, phase: Phase) -> Sandbox {
         agent: Some("claude-code".to_string()),
         folders: vec!["/Users/sam/src/Patchbay".to_string()],
         workdir: Some("/sandbox/Patchbay".to_string()),
+        custom: None,
     }
 }
 
@@ -182,7 +183,7 @@ fn choosing_codex_renames_the_sandbox_and_chooses_a_chatgpt_provider(cx: &mut Te
             cx,
         );
         view.folders_added(vec!["/Users/sam/src/Patchbay".into()], window, cx);
-        view.choose_agent(Agent::Codex, window, cx);
+        view.choose_agent(Agent::Codex.into(), window, cx);
     });
     view.read_with(cx, |view, cx| {
         let making = view.making.as_ref().expect("New Agent… is showing");
@@ -212,7 +213,7 @@ fn choosing_pi_offers_only_api_keys_and_carries_the_model_typed_to_the_sandbox(
             ]),
             cx,
         );
-        view.choose_agent(Agent::Pi, window, cx);
+        view.choose_agent(Agent::Pi.into(), window, cx);
         view.type_model("anthropic/claude-sonnet-4.5", window, cx);
     });
     view.read_with(cx, |view, cx| {
@@ -399,7 +400,7 @@ fn new_agent_from_agents_chooses_the_agent_shown_there_and_goes_back_to_sandboxe
     cx.simulate_keystrokes("cmd-2 down");
     view.read_with(cx, |view, _| {
         assert_eq!(view.page, Page::Agents);
-        assert_eq!(view.agents.selected, Agent::Codex);
+        assert_eq!(view.agents.selected, agents::Chosen::Agent(Agent::Codex));
     });
     cx.simulate_keystrokes("cmd-n");
     cx.run_until_parked();
@@ -1266,5 +1267,77 @@ fn attach_autocomplete_lists_unattached_services_kits_and_new_service(cx: &mut T
                 "+ New Service…",
             ]
         );
+    });
+}
+
+#[gpui_kit::test]
+fn a_custom_agent_is_added_from_its_form_and_new_agent_offers_only_the_keys_it_reads(
+    cx: &mut TestAppContext,
+) {
+    let (view, cx) = open(cx);
+    view.update_in(cx, |view, window, cx| {
+        view.run("agent.new-custom", window, cx);
+        view.fill_custom_agent(
+            [
+                "aider",
+                "ghcr.io/me/aider:1.2",
+                "aider",
+                "",
+                "/usr/local/bin/python3.12",
+            ],
+            window,
+            cx,
+        );
+        view.run_save_custom_agent(window, cx);
+    });
+    view.read_with(cx, |view, _| {
+        assert!(view.agents.form.is_none(), "saved and closed");
+        assert_eq!(
+            view.agents.selected,
+            agents::Chosen::Custom("aider".to_string())
+        );
+        assert!(view.agents.custom.find("aider").is_some());
+    });
+    cx.simulate_keystrokes("cmd-n");
+    cx.run_until_parked();
+    view.update_in(cx, |view, window, cx| {
+        view.providers_listed(
+            Ok(vec![
+                Provider {
+                    name: "claude-sub".to_string(),
+                    kind: "claude-code-oauth".to_string(),
+                },
+                Provider {
+                    name: "openrouter".to_string(),
+                    kind: "playpen-openrouter".to_string(),
+                },
+            ]),
+            cx,
+        );
+        let aider = view.harnesses().pop().expect("the custom agent is offered");
+        view.choose_agent(aider, window, cx);
+    });
+    view.read_with(cx, |view, cx| {
+        let making = view.making.as_ref().expect("New Agent… is showing");
+        assert_eq!(making.chosen_provider(), Some("openrouter"));
+        assert_eq!(making.name_typed(cx), "aider");
+    });
+}
+
+#[gpui_kit::test]
+fn a_custom_agent_named_like_one_of_playpens_is_refused_in_its_form(cx: &mut TestAppContext) {
+    let (view, cx) = open(cx);
+    view.update_in(cx, |view, window, cx| {
+        view.run("agent.new-custom", window, cx);
+        view.fill_custom_agent(
+            ["pi", "ghcr.io/me/pi:1", "pi", "", "/usr/local/bin/node"],
+            window,
+            cx,
+        );
+        view.run_save_custom_agent(window, cx);
+    });
+    view.read_with(cx, |view, _| {
+        assert!(view.agents.form.is_some(), "still open, saying why");
+        assert!(view.agents.custom.agents.is_empty());
     });
 }

@@ -78,7 +78,8 @@ fn work_comes_back_as_a_branch_without_the_persons_own_edits_and_touching_nothin
     let name = format!("pp-back-{pid}");
     let plan = Plan {
         name: name.clone(),
-        agent: Agent::ClaudeCode,
+        agent: Agent::ClaudeCode.into(),
+        image: None,
         provider: None,
         model: None,
         account: None,

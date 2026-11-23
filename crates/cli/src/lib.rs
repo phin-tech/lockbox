@@ -493,7 +493,7 @@ impl Command {
                                 vec![
                                     sandbox.name.clone(),
                                     phase_name(&sandbox.phase),
-                                    sandbox.agent.clone().unwrap_or_default(),
+                                    agent_of(sandbox),
                                     sandbox.created.clone(),
                                 ]
                             })
@@ -651,6 +651,14 @@ fn phase_name(phase: &Phase) -> String {
     }
 }
 
+/// The agent a sandbox runs, as a table shows it: a custom agent by its own name.
+fn agent_of(sandbox: &Sandbox) -> String {
+    match &sandbox.custom {
+        Some(custom) => custom.name.clone(),
+        None => sandbox.agent.clone().unwrap_or_default(),
+    }
+}
+
 fn sandboxes_json(sandboxes: &[Sandbox]) -> Value {
     Value::Array(
         sandboxes
@@ -661,6 +669,7 @@ fn sandboxes_json(sandboxes: &[Sandbox]) -> Value {
                     "phase": phase_name(&sandbox.phase),
                     "created": sandbox.created,
                     "agent": sandbox.agent,
+                    "custom_agent": sandbox.custom.as_ref().map(|custom| &custom.name),
                     "folders": sandbox.folders,
                     "workdir": sandbox.workdir,
                 })
@@ -1094,6 +1103,7 @@ mod tests {
             agent: Some("claude".into()),
             folders: vec!["/a".into()],
             workdir: None,
+            custom: None,
         };
         let listed = sandboxes_json(&[sandbox]);
         assert_eq!(listed[0]["phase"], "odd");

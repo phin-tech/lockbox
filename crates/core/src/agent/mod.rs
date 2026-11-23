@@ -1,18 +1,23 @@
 //! The agents Playpen runs in a sandbox, and making a sandbox for one: its image, the policy that lets it reach its
 //! model and nothing else, and the folder it works on.
 
+mod custom;
+
 use std::path::{Path, PathBuf};
+
+pub use custom::{CustomAgent, CustomAgentError, CustomAgents};
 
 use crate::bring_back::Repo;
 use crate::chatgpt::Account;
 use crate::docker::{Docker, DockerError};
 use crate::image::{Image, ImageSource, Platform};
-use crate::kit_setup::{SetupFolder, image_name, link_dotfiles};
+use crate::kit_setup::{Base, SetupFolder, image_name, link_dotfiles};
 use crate::kits::{Variable, VariableValue};
 use crate::new_service::find_op;
 use crate::openshell::{
-    AGENT_LABEL, FOLDER_ANNOTATION, GATEWAY_VARIABLE, Gateway, OpenShell, OpenShellError, Profile,
-    Provider, Sandbox, Service, WORKDIR_ANNOTATION,
+    AGENT_LABEL, COMMAND_ANNOTATION, CONTINUE_ANNOTATION, CUSTOM_NAME_ANNOTATION,
+    FOLDER_ANNOTATION, GATEWAY_VARIABLE, Gateway, OpenShell, OpenShellError, Profile, Provider,
+    Sandbox, Service, WORKDIR_ANNOTATION,
 };
 use crate::provider::{Endpoint, Kind};
 use crate::secrets::Secret;
@@ -223,6 +228,12 @@ impl Agent {
         }
     }
 
+    /// The program the policy lets reach its model, in an image for this Mac's platform, which an image of the
+    /// person's own has to have.
+    pub fn program(self) -> &'static str {
+        self.binary(Platform::host())
+    }
+
     /// The kinds of provider Playpen adds that hold a key it can use, the one to suggest first. Pi and its kin take
     /// API keys only: OpenShell gives a sandbox a stand-in for a key, and they tell a subscription's token by what's in
     /// it, which a stand-in doesn't show.
@@ -296,28 +307,106 @@ impl Agent {
 
     /// Its policy, reaching `model` too: the hosts its key is for, when it reaches whichever service that is.
     fn policy_reaching(self, platform: Platform, model: &[Endpoint]) -> String {
-        let mut policy = format!(
-            "# Written by Playpen. Everything this doesn't allow is denied.\n\
-             version: 1\n\
-             network_policies:\n\
-             \x20 {id}:\n\
-             \x20   endpoints:\n",
-            id = self.id(),
-        );
         let fixed = self.hosts().iter().map(|host| ((*host).to_string(), 443));
         let keyed = model
             .iter()
             .map(|endpoint| (endpoint.host.clone(), endpoint.port));
-        for (host, port) in fixed.chain(keyed) {
-            policy.push_str(&format!(
-                "      - host: {host}\n        port: {port}\n        protocol: rest\n        access: read-write\n        enforcement: enforce\n"
-            ));
-        }
+        policy_text(self.id(), fixed.chain(keyed), self.binary(platform))
+    }
+}
+
+/// A policy letting `binary` reach each host and port under the rule `rule`, and nothing else.
+fn policy_text(rule: &str, hosts: impl Iterator<Item = (String, u16)>, binary: &str) -> String {
+    let mut policy = format!(
+        "# Written by Playpen. Everything this doesn't allow is denied.\n\
+         version: 1\n\
+         network_policies:\n\
+         \x20 {rule}:\n\
+         \x20   endpoints:\n",
+    );
+    for (host, port) in hosts {
         policy.push_str(&format!(
-            "    binaries:\n      - path: {}\n",
-            self.binary(platform)
+            "      - host: {host}\n        port: {port}\n        protocol: rest\n        access: read-write\n        enforcement: enforce\n"
         ));
-        policy
+    }
+    policy.push_str(&format!("    binaries:\n      - path: {binary}\n"));
+    policy
+}
+
+/// The label a sandbox for a custom agent has, whose own name and commands are in its annotations.
+pub const CUSTOM_LABEL: &str = "custom";
+
+/// What a sandbox runs: one of Playpen's agents, or one of the person's own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Harness {
+    Agent(Agent),
+    Custom(CustomAgent),
+}
+
+impl From<Agent> for Harness {
+    fn from(agent: Agent) -> Harness {
+        Harness::Agent(agent)
+    }
+}
+
+impl Harness {
+    /// Its sandboxes' label.
+    pub fn label(&self) -> &str {
+        match self {
+            Harness::Agent(agent) => agent.id(),
+            Harness::Custom(_) => CUSTOM_LABEL,
+        }
+    }
+
+    pub fn name(&self) -> &str {
+        match self {
+            Harness::Agent(agent) => agent.name(),
+            Harness::Custom(custom) => &custom.name,
+        }
+    }
+
+    /// Whether a provider OpenShell lists with the type `kind` holds a key it can use.
+    pub fn takes(&self, kind: &str) -> bool {
+        match self {
+            Harness::Agent(agent) => agent.takes(kind),
+            Harness::Custom(custom) => custom.takes(kind),
+        }
+    }
+
+    /// Whether it reaches whichever service its key is for, so the key's hosts are opened for it.
+    pub fn chooses_a_model(&self) -> bool {
+        match self {
+            Harness::Agent(agent) => agent.chooses_a_model(),
+            Harness::Custom(_) => true,
+        }
+    }
+
+    fn policy_reaching(&self, platform: Platform, model: &[Endpoint]) -> String {
+        match self {
+            Harness::Agent(agent) => agent.policy_reaching(platform, model),
+            Harness::Custom(custom) => policy_text(
+                &custom.name,
+                model
+                    .iter()
+                    .map(|endpoint| (endpoint.host.clone(), endpoint.port)),
+                &custom.program,
+            ),
+        }
+    }
+
+    fn env(&self) -> &'static [(&'static str, &'static str)] {
+        match self {
+            Harness::Agent(agent) => agent.env(),
+            Harness::Custom(_) => &[],
+        }
+    }
+
+    /// What its sandboxes are named after.
+    fn name_stem(&self) -> &str {
+        match self {
+            Harness::Agent(agent) => agent.name_stem(),
+            Harness::Custom(custom) => &custom.name,
+        }
     }
 }
 
@@ -399,7 +488,10 @@ impl Model {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Plan {
     pub name: String,
-    pub agent: Agent,
+    pub agent: Harness,
+    /// An image to start one of Playpen's agents from instead of the one Playpen builds for it: the person's, which
+    /// has the agent where Playpen's does, and node for its settings. A custom agent always names its own.
+    pub image: Option<String>,
     /// The provider holding its model's key, by name.
     pub provider: Option<String>,
     /// What the agent needs to know of its key, when it reaches whichever service that's for.
@@ -451,11 +543,11 @@ pub enum MakeError {
     )]
     SameFolderName(String),
     #[error("Say which of the LiteLLM proxy's models {0} starts with: only the proxy knows them.")]
-    NoModel(&'static str),
+    NoModel(String),
     #[error(
         "Playpen couldn't tell which hosts the model key is for, so {0} couldn't reach its model. Try again once OpenShell lists the gateway's providers."
     )]
-    NoModelHosts(&'static str),
+    NoModelHosts(String),
     #[error(
         "A kit that installs software is built into an image with this Mac's Docker, which a gateway that pulls from a registry can't use yet. Use a gateway that shares this Mac's Docker, or leave that kit out."
     )]
@@ -465,7 +557,34 @@ pub enum MakeError {
 impl Plan {
     /// The image it's made from: its agent's, with its kits' `install.sh`s run over it when they have any.
     pub fn image(&self) -> String {
-        image_name(self.agent, &self.setups)
+        image_name(&self.base(), &self.setups)
+    }
+
+    /// The image its kits are run over, or that it starts from when there are none.
+    fn base(&self) -> Base {
+        match (&self.agent, &self.image) {
+            (Harness::Agent(agent), None) => Base {
+                id: agent.id().to_string(),
+                image: agent.image(),
+                builds: Some(*agent),
+            },
+            (Harness::Agent(agent), Some(image)) => Base {
+                id: agent.id().to_string(),
+                image: image.clone(),
+                builds: None,
+            },
+            (Harness::Custom(custom), _) => Base {
+                id: format!("custom-{}", custom.name),
+                image: custom.image.clone(),
+                builds: None,
+            },
+        }
+    }
+
+    /// Whether it starts from an image named in full, which nothing builds or pushes, so the gateway needn't say where
+    /// its images come from.
+    pub fn names_its_image(&self) -> bool {
+        self.image.is_some() || matches!(self.agent, Harness::Custom(_))
     }
 
     /// The sandbox's policy: its agent reaching its model from its program in an image for `platform`, and each
@@ -516,12 +635,28 @@ impl Plan {
             "--approval-mode",
             "manual",
             "--label",
-            &format!("{AGENT_LABEL}={}", self.agent.id()),
+            &format!("{AGENT_LABEL}={}", self.agent.label()),
             "--annotation",
             &format!("{WORKDIR_ANNOTATION}={}", self.workdir()),
         ]
         .map(String::from)
         .into();
+        // A custom agent's sandbox carries its own name and commands, so it can be opened however the agent is later
+        // changed, or if it's deleted.
+        if let Harness::Custom(custom) = &self.agent {
+            args.extend([
+                "--annotation".to_string(),
+                format!("{CUSTOM_NAME_ANNOTATION}={}", custom.name),
+                "--annotation".to_string(),
+                format!("{COMMAND_ANNOTATION}={}", custom.command),
+            ]);
+            if let Some(continuing) = &custom.continue_command {
+                args.extend([
+                    "--annotation".to_string(),
+                    format!("{CONTINUE_ANNOTATION}={continuing}"),
+                ]);
+            }
+        }
         for (name, value) in self.agent.env() {
             args.extend(["--env".to_string(), format!("{name}={value}")]);
         }
@@ -575,10 +710,10 @@ impl Plan {
             && let Some(model) = &self.model
         {
             if model.kind == Kind::LiteLlm && model.id.is_none() {
-                return Err(MakeError::NoModel(self.agent.name()));
+                return Err(MakeError::NoModel(self.agent.name().to_string()));
             }
             if model.endpoints.is_empty() {
-                return Err(MakeError::NoModelHosts(self.agent.name()));
+                return Err(MakeError::NoModelHosts(self.agent.name().to_string()));
             }
         }
         let image = if self.setups.iter().any(SetupFolder::installs) {
@@ -588,11 +723,18 @@ impl Plan {
             let image = self.image();
             if !docker.has_image(&image)? {
                 step(Step::Building);
-                crate::kit_setup::build(self.agent, &self.setups, docker)?;
+                crate::kit_setup::build(&self.base(), &self.setups, docker)?;
             }
             image
         } else {
-            images.ready(&self.agent.build(), &step)?
+            match self.base() {
+                Base {
+                    builds: Some(agent),
+                    ..
+                } => images.ready(&agent.build(), &step)?,
+                // Named in full, for the gateway to pull.
+                Base { image, .. } => image,
+            }
         };
         step(Step::Creating);
         let policy = std::env::temp_dir().join(format!(
@@ -684,10 +826,13 @@ impl Plan {
     pub fn settings_files(&self) -> Vec<(String, String)> {
         let model = self.model.as_ref();
         let litellm = model.filter(|model| model.kind == Kind::LiteLlm);
-        match self.agent {
+        let Harness::Agent(agent) = &self.agent else {
+            return Vec::new();
+        };
+        match *agent {
             Agent::ClaudeCode | Agent::Codex => Vec::new(),
             Agent::Pi | Agent::Pig => {
-                let home = if self.agent == Agent::Pi {
+                let home = if *agent == Agent::Pi {
                     "/sandbox/.pi/agent"
                 } else {
                     "/sandbox/.pig/agent"
@@ -752,8 +897,9 @@ impl Plan {
     /// tries to renew the login itself, which it couldn't: the sandbox can't reach OpenAI's sign-in.
     fn setup(&self) -> Option<serde_json::Value> {
         match self.agent {
-            Agent::ClaudeCode | Agent::Pi | Agent::Omp | Agent::Pig => None,
-            Agent::Codex => Some(serde_json::json!({
+            Harness::Custom(_)
+            | Harness::Agent(Agent::ClaudeCode | Agent::Pi | Agent::Omp | Agent::Pig) => None,
+            Harness::Agent(Agent::Codex) => Some(serde_json::json!({
                 "config": "# Written by Playpen.\nsandbox_mode = \"danger-full-access\"\ncheck_for_update_on_startup = false\n",
                 "account": self.account,
                 "sign_in": SIGN_IN_SCRIPT,
@@ -852,7 +998,7 @@ pub fn is_sandbox_name(name: &str) -> bool {
 /// A sandbox name made from the folders' names, for `agent`: `claude-patchbay` for a folder `Patchbay`, and
 /// `claude-app-web` for `app` and `web`. Since OpenShell's names are short, it takes as many whole folder names as
 /// fit, cutting the first short only when even that doesn't.
-pub fn suggested_name(agent: Agent, folders: &[PathBuf]) -> String {
+pub fn suggested_name(agent: &Harness, folders: &[PathBuf]) -> String {
     let mut name = agent.name_stem().to_string();
     for folder in folders.iter().filter_map(|folder| folder.file_name()) {
         let mut part = String::new();
@@ -895,6 +1041,23 @@ pub fn open_command(openshell: &Path, gateway: &Gateway, sandbox: &Sandbox, what
         None => quote(&openshell.to_string_lossy()),
     };
     let name = quote(&sandbox.name);
+    let workdir = quote(sandbox.workdir.as_deref().unwrap_or(SANDBOX_HOME));
+    // A custom agent's commands come from the sandbox, which anyone on a shared gateway can change, so they're given to
+    // the sandbox's shell whole and quoted, never to the Mac's.
+    if let Some(custom) = &sandbox.custom {
+        let run = match what {
+            What::Agent => Some(custom.command.as_str()),
+            What::Continue => custom.continue_command.as_deref(),
+            What::Shell => None,
+        }
+        .map_or_else(
+            || "bash -l".to_string(),
+            |run| format!("sh -c {}", quote(run)),
+        );
+        return format!(
+            "{openshell} sandbox exec --name {name} --tty --workdir {workdir} -- {run}"
+        );
+    }
     let Some(agent) = sandbox.agent.as_deref().and_then(Agent::from_id) else {
         return format!("{openshell} sandbox connect {name}");
     };
@@ -913,10 +1076,7 @@ pub fn open_command(openshell: &Path, gateway: &Gateway, sandbox: &Sandbox, what
         ),
         _ => run,
     };
-    format!(
-        "{openshell} sandbox exec --name {name} --tty --workdir {workdir} -- {run}",
-        workdir = quote(sandbox.workdir.as_deref().unwrap_or(SANDBOX_HOME)),
-    )
+    format!("{openshell} sandbox exec --name {name} --tty --workdir {workdir} -- {run}")
 }
 
 /// A short hash of `bytes` that's the same in every build, unlike the standard library's, so an image's tag only
@@ -945,7 +1105,8 @@ mod tests {
     fn plan() -> Plan {
         Plan {
             name: "claude-patchbay".to_string(),
-            agent: Agent::ClaudeCode,
+            agent: Agent::ClaudeCode.into(),
+            image: None,
             provider: Some("claude-sub".to_string()),
             model: None,
             account: None,
@@ -987,7 +1148,7 @@ mod tests {
     #[test]
     fn codex_on_a_chatgpt_subscription_is_set_up_with_the_account_and_its_sandbox_off() {
         let codex = Plan {
-            agent: Agent::Codex,
+            agent: Agent::Codex.into(),
             account: Some(crate::chatgpt::Account {
                 account_id: "acct-1".to_string(),
                 id_token: "x.y.".to_string(),
@@ -1072,13 +1233,14 @@ mod tests {
 
     #[test]
     fn a_folders_name_becomes_a_sandboxs() {
-        let named = |folder: &str| suggested_name(Agent::ClaudeCode, &[PathBuf::from(folder)]);
+        let named =
+            |folder: &str| suggested_name(&Agent::ClaudeCode.into(), &[PathBuf::from(folder)]);
         assert_eq!(named("/src/Patchbay"), "claude-patchbay");
         assert_eq!(named("/src/my app (2)"), "claude-my-app-2");
-        assert_eq!(suggested_name(Agent::ClaudeCode, &[]), "claude");
+        assert_eq!(suggested_name(&Agent::ClaudeCode.into(), &[]), "claude");
         let several = |folders: &[&str]| {
             let folders: Vec<PathBuf> = folders.iter().map(PathBuf::from).collect();
-            suggested_name(Agent::ClaudeCode, &folders)
+            suggested_name(&Agent::ClaudeCode.into(), &folders)
         };
         assert_eq!(several(&["/src/app", "/src/web"]), "claude-app-web");
         assert_eq!(
@@ -1107,6 +1269,7 @@ mod tests {
             agent: Some("claude-code".to_string()),
             folders: Vec::new(),
             workdir: Some("/sandbox/Sam's App".to_string()),
+            custom: None,
         };
         let openshell = Path::new("/opt/homebrew/bin/openshell");
         let active = Gateway::Active;
@@ -1135,6 +1298,7 @@ mod tests {
             agent: Some("codex".to_string()),
             folders: Vec::new(),
             workdir: Some("/sandbox/Patchbay".to_string()),
+            custom: None,
         };
         let openshell = Path::new("/opt/homebrew/bin/openshell");
         let active = Gateway::Active;
@@ -1151,6 +1315,7 @@ mod tests {
             agent: Some("claude-code".to_string()),
             folders: Vec::new(),
             workdir: None,
+            custom: None,
         };
         let openshell = Path::new("/opt/homebrew/bin/openshell");
         let line = open_command(
@@ -1176,7 +1341,8 @@ mod tests {
     fn pi_plan(agent: Agent, model: Model) -> Plan {
         Plan {
             name: "pi-patchbay".to_string(),
-            agent,
+            agent: agent.into(),
+            image: None,
             provider: Some("work".to_string()),
             model: Some(model),
             ..plan()

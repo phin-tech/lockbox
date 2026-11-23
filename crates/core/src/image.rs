@@ -151,6 +151,29 @@ impl ImageSource for Provided {
     }
 }
 
+/// No source: the sandbox names its image in full, its own, for the gateway to pull, so nothing is built or pushed. Its
+/// platform is taken as this Mac's, which only Codex's policy depends on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Named {
+    platform: Platform,
+}
+
+impl Named {
+    pub fn new(platform: Platform) -> Named {
+        Named { platform }
+    }
+}
+
+impl ImageSource for Named {
+    fn platform(&self) -> Platform {
+        self.platform
+    }
+
+    fn ready(&self, image: &Image, _step: &dyn Fn(Step)) -> Result<String, DockerError> {
+        Ok(image.tag.clone())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;

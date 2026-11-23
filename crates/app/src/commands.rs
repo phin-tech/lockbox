@@ -11,6 +11,7 @@ use rust_i18n::t;
 
 /// Every Command, by name. Menus and shortcuts name these, and a test holds them to this list.
 pub const COMMANDS: &[&str] = &[
+    "agent.new-custom",
     "app.about",
     "app.check-updates",
     "app.hide",

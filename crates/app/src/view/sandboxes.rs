@@ -1104,7 +1104,7 @@ impl MainView {
             && self.imaging.is_none()
             && self.microvm.is_none();
         let busy = self.working.contains_key(&key);
-        let agent = sandbox.agent.as_deref().and_then(Agent::from_id);
+        let agent = Mark::of(sandbox);
         let state = self.agent_states.get(&self.label_of(&key)).copied();
         let resting = !is_running(&sandbox.phase);
         // Two gateways can each have a sandbox of one name, so the element's id has the gateway in it too.
@@ -1156,7 +1156,7 @@ impl MainView {
             .when(chosen, |row| row.bg(theme.list_active))
             .when(!chosen, |row| row.hover(move |row| row.bg(hover)))
             .child(agent_tile(
-                agent,
+                &agent,
                 state_colour(&sandbox.phase, state, cx),
                 rems(28. / 13.),
                 cx,
@@ -1185,7 +1185,7 @@ impl MainView {
                             .child(
                                 t!(
                                     "%{agent} · %{state}",
-                                    agent = agent_name(agent),
+                                    agent = agent.name(),
                                     state = waiting
                                         .clone()
                                         .unwrap_or_else(|| state_words(&sandbox.phase, state))
@@ -1214,14 +1214,14 @@ impl MainView {
         };
         let theme = cx.theme();
         let busy = self.working.contains_key(key);
-        let agent = sandbox.agent.as_deref().and_then(Agent::from_id);
+        let agent = Mark::of(sandbox);
         let state = self.agent_states.get(&self.label_of(key)).copied();
         let status_badge = status_tag(&sandbox.phase, state);
         let hero = h_flex()
             .gap_3()
             .items_center()
             .child(agent_tile(
-                agent,
+                &agent,
                 state_colour(&sandbox.phase, state, cx),
                 rems(42. / 13.),
                 cx,
@@ -1252,9 +1252,9 @@ impl MainView {
                             .text_sm()
                             .text_color(theme.muted_foreground)
                             .child(if self.gateways.len() > 1 && !key.gateway.is_empty() {
-                                format!("{} · {}", agent_name(agent), key.gateway)
+                                format!("{} · {}", agent.name(), key.gateway)
                             } else {
-                                agent_name(agent)
+                                agent.name()
                             }),
                     ),
             );
@@ -1296,7 +1296,7 @@ impl MainView {
             .gap_2()
             .items_center()
             .child(open_button(
-                agent,
+                &agent,
                 busy || !sandbox.phase.is_ready(),
                 Installed::now(),
                 cx,
@@ -1471,6 +1471,7 @@ pub(super) fn stand_ins() -> Vec<Sandbox> {
             .map(|_| vec!["/Users/sam/src/Patchbay".to_string()])
             .unwrap_or_default(),
         workdir: agent.map(|_| "/sandbox".to_string()),
+        custom: None,
     };
     vec![
         sandbox("claude-patchbay", Phase::Ready, Some("claude-code")),
@@ -1486,29 +1487,50 @@ pub(super) fn is_running(phase: &Phase) -> bool {
     !matches!(phase, Phase::Stopped | Phase::Suspended | Phase::Completed)
 }
 
-/// An agent's name, or what a sandbox Playpen didn't make offers instead.
-fn agent_name(agent: Option<Agent>) -> String {
-    match agent {
-        Some(agent) => agent.name().to_string(),
-        None => t!("Shell").into_owned(),
-    }
+/// What a sandbox runs, as the window shows it: one of Playpen's agents, one of the person's own by the name its sandbox
+/// keeps, or a shell, for a sandbox Playpen didn't make.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum Mark {
+    Agent(Agent),
+    Custom(String),
+    Shell,
 }
 
-/// The mark for an agent, or a plain box for a sandbox Playpen didn't make.
-fn agent_icon(agent: Option<Agent>) -> assets::IconName {
-    match agent {
-        Some(Agent::ClaudeCode) => assets::IconName::Asterisk,
-        Some(Agent::Codex) => assets::IconName::SquareTerminal,
-        Some(Agent::Pi) => assets::IconName::Pi,
-        Some(Agent::Omp) => assets::IconName::Omega,
-        Some(Agent::Pig) => assets::IconName::PiggyBank,
-        None => assets::IconName::Box,
+impl Mark {
+    pub(super) fn of(sandbox: &Sandbox) -> Mark {
+        if let Some(custom) = &sandbox.custom {
+            return Mark::Custom(custom.name.clone());
+        }
+        match sandbox.agent.as_deref().and_then(Agent::from_id) {
+            Some(agent) => Mark::Agent(agent),
+            None => Mark::Shell,
+        }
+    }
+
+    pub(super) fn name(&self) -> String {
+        match self {
+            Mark::Agent(agent) => agent.name().to_string(),
+            Mark::Custom(name) => name.clone(),
+            Mark::Shell => t!("Shell").into_owned(),
+        }
+    }
+
+    fn icon(&self) -> assets::IconName {
+        match self {
+            Mark::Agent(Agent::ClaudeCode) => assets::IconName::Asterisk,
+            Mark::Agent(Agent::Codex) => assets::IconName::SquareTerminal,
+            Mark::Agent(Agent::Pi) => assets::IconName::Pi,
+            Mark::Agent(Agent::Omp) => assets::IconName::Omega,
+            Mark::Agent(Agent::Pig) => assets::IconName::PiggyBank,
+            Mark::Custom(_) => assets::IconName::Bot,
+            Mark::Shell => assets::IconName::Box,
+        }
     }
 }
 
 /// A rounded square holding an agent's mark, tinted with the colour of its sandbox's state, so the list says at a
 /// glance which are running, which want the person, and which failed.
-pub(super) fn agent_tile(agent: Option<Agent>, colour: Hsla, size: Rems, cx: &App) -> Div {
+pub(super) fn agent_tile(agent: &Mark, colour: Hsla, size: Rems, cx: &App) -> Div {
     let theme = cx.theme();
     div()
         .flex_none()
@@ -1521,7 +1543,7 @@ pub(super) fn agent_tile(agent: Option<Agent>, colour: Hsla, size: Rems, cx: &Ap
         .border_1()
         .border_color(colour.opacity(0.3))
         .text_color(colour)
-        .child(Icon::new(agent_icon(agent)).size(size * 0.55))
+        .child(Icon::new(agent.icon()).size(size * 0.55))
 }
 
 /// The colour of a sandbox's state: what its agent's doing while it runs, or its phase.
@@ -1697,15 +1719,16 @@ fn run(name: &'static str) -> Box<dyn Action> {
 /// Open, which opens a session where the settings say, with the rest of the choices for one session under its arrow.
 /// A place that isn't installed is there, but can't be chosen.
 fn open_button(
-    agent: Option<Agent>,
+    agent: &Mark,
     disabled: bool,
     installed: Installed,
     cx: &Context<MainView>,
 ) -> DropdownButton {
     let label = match agent {
-        Some(agent) => t!("Open %{agent}", agent = agent.name()).into_owned(),
-        None => t!("Open Shell").into_owned(),
+        Mark::Shell => t!("Open Shell").into_owned(),
+        agent => t!("Open %{agent}", agent = agent.name()).into_owned(),
     };
+    let runs_an_agent = *agent != Mark::Shell;
     DropdownButton::new("open")
         .primary()
         .small()
@@ -1716,7 +1739,7 @@ fn open_button(
                 .on_click(cx.listener(|this, _, window, cx| this.run("sandbox.open", window, cx))),
         )
         .dropdown_menu(move |menu, _, _| {
-            let menu = if agent.is_some() {
+            let menu = if runs_an_agent {
                 menu.menu(
                     t!("Continue Last Conversation").into_owned(),
                     run("sandbox.continue"),

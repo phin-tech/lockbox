@@ -160,6 +160,7 @@ mod tests {
             agent: Some("claude-code".to_string()),
             folders: vec!["/src/Patchbay".to_string()],
             workdir: Some("/sandbox".to_string()),
+            custom: None,
         }
     }
 

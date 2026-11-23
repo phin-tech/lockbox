@@ -1,0 +1,14 @@
+---
+source: crates/core/src/agent/custom.rs
+expression: text
+---
+[[agent]]
+name = "aider"
+image = "ghcr.io/me/aider:1.2"
+command = "aider"
+continue_command = "aider --restore-chat-history"
+program = "/usr/local/bin/python3.12"
+takes = [
+    "OpenRouter",
+    "LiteLLM",
+]

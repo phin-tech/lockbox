@@ -8,9 +8,10 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+use crate::agent::Agent;
 use crate::docker::{Docker, DockerError};
 use crate::files::write_atomically;
-use crate::image::{ImageSource, Platform, Provided, Registry};
+use crate::image::{ImageSource, Named, Platform, Provided, Registry};
 use crate::openshell::GatewayInfo;
 use crate::session::ShowIn;
 
@@ -39,6 +40,15 @@ pub struct GatewaySettings {
     /// an image that won't start.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub platform: Option<Platform>,
+}
+
+/// What a person has set for one of Playpen's agents, in an `[agents.<id>]` section of the settings file.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AgentSettings {
+    /// An image of their own to start it from instead of the one Playpen builds, which every gateway pulls.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
 }
 
 /// Why a gateway has no image source to make a sandbox from.
@@ -95,6 +105,9 @@ pub struct Settings {
     /// What's set for each gateway, by the name OpenShell gives it.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub gateways: BTreeMap<String, GatewaySettings>,
+    /// What's set for each of Playpen's agents, by its id.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub agents: BTreeMap<String, AgentSettings>,
     /// Where a pasted key is kept besides OpenShell, which the forms start with.
     pub keep_keys_in: KeepKeysIn,
     /// The 1Password vault keys are saved in, by its id.
@@ -125,6 +138,7 @@ impl Default for Settings {
             show_in: ShowIn::default(),
             keep_sessions: true,
             gateways: BTreeMap::new(),
+            agents: BTreeMap::new(),
             keep_keys_in: KeepKeysIn::default(),
             vault: None,
         }
@@ -147,6 +161,49 @@ pub fn step_text_scale(current: f32, steps: isize) -> f32 {
 }
 
 impl Settings {
+    /// The image of the person's own that `agent` starts from, if they gave one.
+    pub fn agent_image(&self, agent: Agent) -> Option<String> {
+        self.agents
+            .get(agent.id())
+            .and_then(|set| set.image.as_deref())
+            .map(str::trim)
+            .filter(|image| !image.is_empty())
+            .map(str::to_string)
+    }
+
+    /// Starts `agent` from `image`, or from Playpen's own again with none.
+    pub fn set_agent_image(&mut self, agent: Agent, image: Option<String>) {
+        let image = image
+            .map(|image| image.trim().to_string())
+            .filter(|image| !image.is_empty());
+        match image {
+            Some(image) => {
+                self.agents.entry(agent.id().to_string()).or_default().image = Some(image);
+            }
+            None => {
+                self.agents.remove(agent.id());
+            }
+        }
+    }
+
+    /// Where `gateway` gets a sandbox's image, when the sandbox may name its own: then a gateway that hasn't said
+    /// where its images come from still makes it, since nothing is built or pushed.
+    pub fn image_source_for(
+        &self,
+        gateway: &GatewayInfo,
+        names_its_image: bool,
+        docker: impl FnOnce() -> Result<Docker, DockerError>,
+    ) -> Result<Box<dyn ImageSource>, ImageSourceError> {
+        match self.image_source(gateway, docker) {
+            Err(
+                ImageSourceError::NotSet(_)
+                | ImageSourceError::NoRegistry(_)
+                | ImageSourceError::NoPlatform(_),
+            ) if names_its_image => Ok(Box::new(Named::new(Platform::host()))),
+            source => source,
+        }
+    }
+
     /// Where `gateway` gets its agents' images. One on this Mac shares its Docker, so it needs nothing said; any other
     /// has to say, since there's no telling what it can pull from. `docker` finds Docker, which only some sources use.
     pub fn image_source(
@@ -198,6 +255,9 @@ impl Settings {
         if self.gateways.is_empty() {
             table.remove("gateways");
         }
+        if self.agents.is_empty() {
+            table.remove("agents");
+        }
         let text = toml::to_string(&table).map_err(io::Error::other)?;
         write_atomically(path, text.as_bytes())
     }
@@ -206,8 +266,8 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::{
-        Appearance, GatewaySettings, ImageSourceError, ImagesFrom, KeepKeysIn, Settings,
-        TEXT_SCALES, step_text_scale,
+        AgentSettings, Appearance, GatewaySettings, ImageSourceError, ImagesFrom, KeepKeysIn,
+        Settings, TEXT_SCALES, step_text_scale,
     };
     use crate::agent::Agent;
     use crate::docker::{Docker, DockerError};
@@ -365,11 +425,45 @@ mod tests {
                     platform: Some(Platform::Amd64),
                 },
             )]),
+            agents: BTreeMap::from([(
+                "pi".to_string(),
+                AgentSettings {
+                    image: Some("ghcr.io/me/pi-tools:1".to_string()),
+                },
+            )]),
             keep_keys_in: KeepKeysIn::OnePassword,
             vault: Some("vault-id".to_string()),
         };
         settings.save(&path).unwrap();
         assert_eq!(Settings::load(&path), settings);
+    }
+
+    #[test]
+    fn an_agent_starts_from_the_persons_image_until_it_is_cleared() {
+        let mut settings = Settings::default();
+        assert_eq!(settings.agent_image(Agent::Pi), None);
+        settings.set_agent_image(Agent::Pi, Some(" ghcr.io/me/pi-tools:1 ".to_string()));
+        assert_eq!(
+            settings.agent_image(Agent::Pi).as_deref(),
+            Some("ghcr.io/me/pi-tools:1")
+        );
+        settings.set_agent_image(Agent::Pi, Some(String::new()));
+        assert_eq!(settings.agent_image(Agent::Pi), None);
+        assert!(settings.agents.is_empty(), "nothing left behind");
+    }
+
+    #[test]
+    fn a_sandbox_naming_its_image_is_made_on_a_gateway_that_hasnt_said_where_images_come_from() {
+        let cluster = gateway("k8s", "remote", true);
+        let settings = Settings::default();
+        assert!(matches!(
+            settings.image_source_for(&cluster, false, no_docker),
+            Err(ImageSourceError::NotSet(_))
+        ));
+        let named = settings
+            .image_source_for(&cluster, true, no_docker)
+            .unwrap();
+        assert_eq!(named.platform(), Platform::host());
     }
 
     #[test]
@@ -384,6 +478,7 @@ mod tests {
             show_in: crate::session::ShowIn::Automatic,
             keep_sessions: true,
             gateways: BTreeMap::new(),
+            agents: BTreeMap::new(),
             keep_keys_in: KeepKeysIn::Nowhere,
             vault: None,
         };

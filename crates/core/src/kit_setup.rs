@@ -74,15 +74,26 @@ fn files(folder: &Path) -> Vec<PathBuf> {
     found
 }
 
-/// The image for `agent` with the setup folders' `install.sh`s run over it, in order, or the agent's own when none
-/// installs anything. A folder whose files changed makes another.
-pub fn image_name(agent: Agent, setups: &[SetupFolder]) -> String {
+/// The image kits' `install.sh`s are run over: Playpen's own for an agent, which it builds when it's missing, or one
+/// the person named, which Docker pulls.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Base {
+    /// What images made over it are named after: the agent's id.
+    pub id: String,
+    pub image: String,
+    /// The agent whose image it is, when Playpen builds it.
+    pub builds: Option<Agent>,
+}
+
+/// The image `base` is with the setup folders' `install.sh`s run over it, in order, or `base` itself when none installs
+/// anything. A folder whose files changed, or another base, makes another.
+pub fn image_name(base: &Base, setups: &[SetupFolder]) -> String {
     let installing: Vec<&SetupFolder> = setups.iter().filter(|setup| setup.installs()).collect();
     if installing.is_empty() {
-        return agent.image();
+        return base.image.clone();
     }
     let mut hasher = DefaultHasher::new();
-    agent.image().hash(&mut hasher);
+    base.image.hash(&mut hasher);
     for setup in &installing {
         setup.slug().hash(&mut hasher);
         for file in files(&setup.folder) {
@@ -92,14 +103,14 @@ pub fn image_name(agent: Agent, setups: &[SetupFolder]) -> String {
             std::fs::read(&file).unwrap_or_default().hash(&mut hasher);
         }
     }
-    format!("playpen-{}-kits:{:016x}", agent.id(), hasher.finish())
+    format!("playpen-{}-kits:{:016x}", base.id, hasher.finish())
 }
 
-/// The Dockerfile that runs each folder's `install.sh` over the agent's image.
-fn dockerfile(agent: Agent, setups: &[&SetupFolder]) -> String {
+/// The Dockerfile that runs each folder's `install.sh` over the base image.
+fn dockerfile(base: &Base, setups: &[&SetupFolder]) -> String {
     let mut text = format!(
         "# Written by Playpen: kits' install.sh, run over {image}.\nFROM {image}\n",
-        image = agent.image()
+        image = base.image
     );
     for (at, setup) in setups.iter().enumerate() {
         let into = format!("/opt/playpen/kits/{}", setup.slug());
@@ -110,16 +121,19 @@ fn dockerfile(agent: Agent, setups: &[&SetupFolder]) -> String {
     text
 }
 
-/// Builds the image [`image_name`] names, if it isn't built yet: the agent's own, then the folders' `install.sh`s.
-pub fn build(agent: Agent, setups: &[SetupFolder], docker: &Docker) -> Result<String, DockerError> {
-    let image = image_name(agent, setups);
+/// Builds the image [`image_name`] names, if it isn't built yet: the agent's own when Playpen builds the base, then
+/// the folders' `install.sh`s.
+pub fn build(base: &Base, setups: &[SetupFolder], docker: &Docker) -> Result<String, DockerError> {
+    let image = image_name(base, setups);
     if docker.has_image(&image)? {
         return Ok(image);
     }
-    if !docker.has_image(&agent.image())? {
+    if let Some(agent) = base.builds
+        && !docker.has_image(&base.image)?
+    {
         agent.build_image(docker)?;
     }
-    if image == agent.image() {
+    if image == base.image {
         return Ok(image);
     }
     let installing: Vec<&SetupFolder> = setups.iter().filter(|setup| setup.installs()).collect();
@@ -137,7 +151,7 @@ pub fn build(agent: Agent, setups: &[SetupFolder], docker: &Docker) -> Result<St
                 std::fs::copy(&file, &target)?;
             }
         }
-        std::fs::write(context.join("Dockerfile"), dockerfile(agent, &installing))
+        std::fs::write(context.join("Dockerfile"), dockerfile(base, &installing))
     })();
     let built = copied
         .map_err(|error| DockerError::Build(image.clone(), error.to_string()))
@@ -200,8 +214,16 @@ pub fn link_dotfiles(
 
 #[cfg(test)]
 mod tests {
-    use super::{SetupFolder, dockerfile, image_name};
+    use super::{Base, SetupFolder, dockerfile, image_name};
     use crate::agent::Agent;
+
+    fn claude() -> Base {
+        Base {
+            id: "claude-code".to_string(),
+            image: Agent::ClaudeCode.image(),
+            builds: Some(Agent::ClaudeCode),
+        }
+    }
 
     #[test]
     fn a_kits_install_sh_makes_an_image_named_by_what_went_into_it() {
@@ -217,25 +239,36 @@ mod tests {
             folder: folder.to_path_buf(),
         };
         assert_eq!(
-            image_name(Agent::ClaudeCode, &[setup("plain", &plain)]),
+            image_name(&claude(), &[setup("plain", &plain)]),
             Agent::ClaudeCode.image(),
             "nothing to install, so the agent's own"
         );
-        let first = image_name(Agent::ClaudeCode, &[setup("work", &tools)]);
+        let first = image_name(&claude(), &[setup("work", &tools)]);
         assert!(first.starts_with("playpen-claude-code-kits:"), "{first}");
         assert_eq!(
             first,
-            image_name(Agent::ClaudeCode, &[setup("work", &tools)]),
+            image_name(&claude(), &[setup("work", &tools)]),
             "the same again"
         );
         std::fs::write(tools.join("install.sh"), "apt-get install -y jq vim\n").unwrap();
         assert_ne!(
             first,
-            image_name(Agent::ClaudeCode, &[setup("work", &tools)]),
+            image_name(&claude(), &[setup("work", &tools)]),
             "changed"
         );
         let work = setup("work", &tools);
-        insta::assert_snapshot!(dockerfile(Agent::ClaudeCode, &[&work]));
+        insta::assert_snapshot!(dockerfile(&claude(), &[&work]));
+        let theirs = Base {
+            image: "ghcr.io/me/claude-tools:1".to_string(),
+            builds: None,
+            ..claude()
+        };
+        assert_ne!(
+            image_name(&theirs, &[setup("work", &tools)]),
+            first,
+            "another base, another image"
+        );
+        assert!(dockerfile(&theirs, &[&work]).contains("FROM ghcr.io/me/claude-tools:1\n"));
         let _ = std::fs::remove_dir_all(&root);
     }
 }

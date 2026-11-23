@@ -50,6 +50,7 @@ pub fn menus() -> Vec<Menu> {
             t!("File"),
             vec![
                 run(t!("New Agent…"), "sandbox.new"),
+                run(t!("New Custom Agent…"), "agent.new-custom"),
                 run(t!("New Window"), "file.new"),
                 MenuItem::separator(),
                 run(t!("Close Window"), "file.close"),

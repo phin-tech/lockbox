@@ -106,6 +106,11 @@ fn save(settings: &Settings, path: &Path) {
     }
 }
 
+/// Starts `agent` from the person's own `image`, or from Playpen's again with `None`.
+pub fn set_agent_image(agent: playpen_core::Agent, image: Option<String>, cx: &mut App) {
+    change(cx, |settings| settings.set_agent_image(agent, image));
+}
+
 /// Sets what's chosen for the gateway `name`, or takes its entry out of the settings with `None`.
 pub fn set_gateway(name: &str, set: Option<playpen_core::GatewaySettings>, cx: &mut App) {
     change(cx, |settings| match set {

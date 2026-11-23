@@ -27,7 +27,8 @@ fn a_kits_install_sh_and_dotfiles_reach_the_sandbox_but_not_its_secrets() {
     .unwrap();
     let plan = Plan {
         name: format!("pp-kit-{pid}"),
-        agent: Agent::ClaudeCode,
+        agent: Agent::ClaudeCode.into(),
+        image: None,
         provider: None,
         model: None,
         account: None,

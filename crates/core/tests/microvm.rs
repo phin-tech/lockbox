@@ -33,7 +33,8 @@ fn a_microvm_gateway_is_set_up_runs_an_agents_sandbox_and_is_removed() {
     let on_it = openshell.clone().on(Gateway::named(MICROVM_GATEWAY));
     let plan = Plan {
         name: format!("pp-microvm-{}", std::process::id()),
-        agent: Agent::ClaudeCode,
+        agent: Agent::ClaudeCode.into(),
+        image: None,
         provider: None,
         model: None,
         account: None,
@@ -167,7 +168,8 @@ fn a_codex_sandbox_on_the_microvm_gateway_is_set_up_there_and_kept() {
         .join("Library/Application Support/tech.phin.playpen/chatgpt");
     let plan = Plan {
         name: format!("pp-codex-{}", std::process::id()),
-        agent: Agent::Codex,
+        agent: Agent::Codex.into(),
+        image: None,
         provider: Some("chatgpt".to_string()),
         model: None,
         account: Some(playpen_core::Account::load(&accounts, "chatgpt").unwrap()),

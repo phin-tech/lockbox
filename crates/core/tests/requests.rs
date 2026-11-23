@@ -44,7 +44,8 @@ fn a_blocked_connection_waits_as_a_request_and_gets_through_once_approved() {
     let openshell = OpenShell::find().unwrap();
     let plan = Plan {
         name: format!("pp-requests-{}", std::process::id()),
-        agent: Agent::Codex,
+        agent: Agent::Codex.into(),
+        image: None,
         provider: None,
         model: None,
         account: None,

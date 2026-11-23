@@ -2520,7 +2520,7 @@ dependencies = [
 [[package]]
 name = "gpui-base"
 version = "0.9.1"
-source = "git+https://git.phin.tech/sam/typecase.git?tag=v0.30.0#96a07195efd296d4f19e5faac343ec9faf9fb1e0"
+source = "git+https://git.phin.tech/sam/typecase.git?tag=v0.30.1#693bc392121b669b7ad8161961f5ed8bf65856fa"
 dependencies = [
  "aho-corasick",
  "anyhow",
@@ -8240,8 +8240,8 @@ dependencies = [
 
 [[package]]
 name = "typecase"
-version = "0.30.0"
-source = "git+https://git.phin.tech/sam/typecase.git?tag=v0.30.0#96a07195efd296d4f19e5faac343ec9faf9fb1e0"
+version = "0.30.1"
+source = "git+https://git.phin.tech/sam/typecase.git?tag=v0.30.1#693bc392121b669b7ad8161961f5ed8bf65856fa"
 dependencies = [
  "futures",
  "gpui-kit",
@@ -8253,8 +8253,8 @@ dependencies = [
 
 [[package]]
 name = "typecase-agent"
-version = "0.30.0"
-source = "git+https://git.phin.tech/sam/typecase.git?tag=v0.30.0#96a07195efd296d4f19e5faac343ec9faf9fb1e0"
+version = "0.30.1"
+source = "git+https://git.phin.tech/sam/typecase.git?tag=v0.30.1#693bc392121b669b7ad8161961f5ed8bf65856fa"
 dependencies = [
  "agent-client-protocol-schema",
  "serde",
@@ -8263,18 +8263,18 @@ dependencies = [
 
 [[package]]
 name = "typecase-dates"
-version = "0.30.0"
-source = "git+https://git.phin.tech/sam/typecase.git?tag=v0.30.0#96a07195efd296d4f19e5faac343ec9faf9fb1e0"
+version = "0.30.1"
+source = "git+https://git.phin.tech/sam/typecase.git?tag=v0.30.1#693bc392121b669b7ad8161961f5ed8bf65856fa"
 
 [[package]]
 name = "typecase-leader"
-version = "0.30.0"
-source = "git+https://git.phin.tech/sam/typecase.git?tag=v0.30.0#96a07195efd296d4f19e5faac343ec9faf9fb1e0"
+version = "0.30.1"
+source = "git+https://git.phin.tech/sam/typecase.git?tag=v0.30.1#693bc392121b669b7ad8161961f5ed8bf65856fa"
 
 [[package]]
 name = "typecase-query"
-version = "0.30.0"
-source = "git+https://git.phin.tech/sam/typecase.git?tag=v0.30.0#96a07195efd296d4f19e5faac343ec9faf9fb1e0"
+version = "0.30.1"
+source = "git+https://git.phin.tech/sam/typecase.git?tag=v0.30.1#693bc392121b669b7ad8161961f5ed8bf65856fa"
 dependencies = [
  "typecase-dates",
 ]

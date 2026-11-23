@@ -456,7 +456,7 @@ impl MainView {
         if !self
             .guide
             .as_ref()
-            .is_some_and(|guide| guide.tour_shows_a_card())
+            .is_some_and(|guide| guide.tour_holds_the_keyboard(cx))
         {
             self.focus.focus(window, cx);
         }
@@ -877,7 +877,6 @@ impl Render for MainView {
                     overlay(card).on_dismiss(cx.listener(|this, _, _, cx| this.close_card(cx))),
                 )
             })
-            .when_some(self.guide_banner(cx), |this, banner| this.child(banner))
             // Over everything, the card too, while the guide runs.
             .when_some(self.guide.as_ref(), |this, guide| {
                 this.child(guide.tour.clone())

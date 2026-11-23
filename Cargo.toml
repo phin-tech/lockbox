@@ -27,7 +27,7 @@ security-framework = "3.7"
 gpui-kit = "=0.9.1"
 # Phin Tech's shared GPUI parts, on the same gpui-kit: the palette, Keys, the Settings window and the themes. Bump it
 # with gpui-kit, and the patch below with it. Next to a checkout, `path = "../typecase"` changes both at once.
-typecase = { git = "https://git.phin.tech/sam/typecase.git", tag = "v0.30.0" }
+typecase = { git = "https://git.phin.tech/sam/typecase.git", tag = "v0.30.1" }
 
 # The build number, which app-release bumps along with the version above.
 [workspace.metadata.release]
@@ -36,7 +36,7 @@ build = "2"
 # Typecase's patched gpui-base, from the same tag as Typecase. It changes nothing the app doesn't ask for; see
 # vendor/README.md there.
 [patch.crates-io]
-gpui-base = { git = "https://git.phin.tech/sam/typecase.git", tag = "v0.30.0" }
+gpui-base = { git = "https://git.phin.tech/sam/typecase.git", tag = "v0.30.1" }
 
 # GPUI is slow unoptimised, so a debug build still optimises it, and only it.
 [profile.dev]

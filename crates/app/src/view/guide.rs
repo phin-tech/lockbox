@@ -6,7 +6,7 @@
 use std::time::Duration;
 
 use gpui_kit::base::Placement;
-use typecase::tour::{Advance, Card, Step, Tour, TourEvent};
+use typecase::tour::{Advance, Card, Step, Tour, TourEvent, TourStyle};
 
 use playpen_core::{Harness, Kind, MICROVM_GATEWAY, Provider};
 
@@ -90,9 +90,6 @@ pub(super) struct Guide {
     /// How many steps of setting up came before these, and how many there are in all, which the cards count by.
     before: usize,
     all: usize,
-    /// Whether the tour has stepped aside for a step that waits on the person, which a card in the window's corner
-    /// says instead, leaving the window theirs to use.
-    parked: bool,
     agent: Option<Harness>,
     place: Option<Place>,
     /// The keys the chosen gateway holds, once listed.
@@ -111,9 +108,11 @@ pub(super) struct Guide {
 }
 
 impl Guide {
-    /// Whether the tour shows a card, which holds the keyboard; not while it's stepped aside for a step that waits.
-    pub(super) fn tour_shows_a_card(&self) -> bool {
-        !self.parked
+    /// Whether the tour shows a card over the window, which holds the keyboard; not for a step aside, which waits on
+    /// the person.
+    pub(super) fn tour_holds_the_keyboard(&self, cx: &App) -> bool {
+        let tour = self.tour.read(cx);
+        tour.is_running() && !tour.is_aside()
     }
 
     fn shown(&self) -> Option<GuideStep> {
@@ -242,7 +241,8 @@ impl GuideStep {
         } else if self.chooses() {
             step.until("chosen")
         } else if self.waits() {
-            step.until("done")
+            // Beside the window, so the whole of it is the person's to use while they do what the step asks.
+            step.until("done").aside()
         } else {
             step
         }
@@ -400,6 +400,8 @@ impl MainView {
         let main = cx.entity().downgrade();
         let tour = cx.new(|cx| {
             Tour::new(steps.iter().map(|step| step.step()).collect(), cx)
+                // A step aside sits above a form's buttons, not over them.
+                .with_style(TourStyle::default().aside_inset(px(24.), px(64.)))
                 .with_card(move |card, window, cx| guide_card(&main, card, window, cx))
         });
         let events = cx.subscribe_in(&tour, window, |this, _, event, window, cx| match event {
@@ -427,7 +429,6 @@ impl MainView {
             came_back: false,
             before,
             all,
-            parked: false,
             agent,
             place,
             keys: None,
@@ -532,14 +533,7 @@ impl MainView {
             | GuideStep::ChooseGateway
             | GuideStep::LearnMore => {}
         }
-        if step.waits()
-            && let Some(guide) = &mut self.guide
-        {
-            guide.parked = true;
-            let tour = guide.tour.clone();
-            cx.defer_in(window, move |_, _, cx| {
-                tour.update(cx, |tour, cx| tour.stop(cx))
-            });
+        if step.waits() {
             // A step with a form leaves the keyboard in it; the rest give it back to the window.
             let opens_a_form = match step {
                 GuideStep::SignIn | GuideStep::MakeSandbox => true,
@@ -583,23 +577,6 @@ impl MainView {
         }
     }
 
-    /// Brings the tour back at the step `step` places from the one waiting: the next once it's done, or the one before.
-    fn guide_resume(&mut self, step: isize, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(guide) = &mut self.guide else {
-            return;
-        };
-        let Some(at) = guide.at else {
-            return;
-        };
-        guide.parked = false;
-        let tour = guide.tour.clone();
-        let to = at.saturating_add_signed(step);
-        if !tour.update(cx, |tour, cx| tour.show(to, window, cx)) {
-            self.guide = None;
-        }
-        cx.notify();
-    }
-
     /// Shows the step `step`, wherever the tour is.
     fn guide_show(&mut self, step: GuideStep, window: &mut Window, cx: &mut Context<Self>) {
         let Some(guide) = &mut self.guide else {
@@ -608,16 +585,11 @@ impl MainView {
         let Some(to) = guide.steps.iter().position(|known| *known == step) else {
             return;
         };
-        guide.parked = false;
         let tour = guide.tour.clone();
         tour.update(cx, |tour, cx| tour.show(to, window, cx));
     }
 
     fn guide_ended(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        // Stepping aside for a step that waits leaves the keyboard where the step put it, such as a form's first field.
-        if self.guide.as_ref().is_some_and(|guide| guide.parked) {
-            return;
-        }
         // A choice that starts another stage has made its guide already; this one's ending is that one's beginning.
         if self
             .guide
@@ -707,10 +679,8 @@ impl MainView {
         {
             guide.made = true;
         }
-        if self.guide.as_ref().and_then(Guide::shown) == Some(step)
-            && self.guide.as_ref().is_some_and(|guide| guide.parked)
-        {
-            self.guide_resume(1, window, cx);
+        if self.guide.as_ref().and_then(Guide::shown) == Some(step) {
+            self.guide_signal("done", window, cx);
         }
     }
 
@@ -931,109 +901,6 @@ impl MainView {
         .into_owned()
     }
 
-    /// The card in the window's corner for a step that waits on the person: what to do, Back and Skip, and Next when
-    /// the step was come back to and is done already.
-    pub(super) fn guide_banner(&self, cx: &Context<Self>) -> Option<AnyElement> {
-        let guide = self.guide.as_ref().filter(|guide| guide.parked)?;
-        let step = guide.shown()?;
-        let at = guide.at?;
-        let theme = cx.theme();
-        let number = guide.before + at;
-        let next = guide.came_back && self.guide_step_done(step) || step == GuideStep::OpenIt;
-        Some(
-            v_flex()
-                .id("guide-waiting")
-                .absolute()
-                .right(rems(24. / 13.))
-                .bottom(rems(64. / 13.))
-                .w(rems(280. / 13.))
-                .p_4()
-                .gap_2()
-                .rounded(theme.radius * 1.5)
-                .border_1()
-                .border_color(theme.primary.opacity(0.6))
-                .bg(theme.popover)
-                .text_color(theme.popover_foreground)
-                .shadow_lg()
-                // Clicks on it stay on it, not the form under it.
-                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .child(
-                    h_flex()
-                        .gap_2()
-                        .justify_between()
-                        .child(div().font_semibold().child(step.title()))
-                        .child(
-                            div()
-                                .flex_none()
-                                .text_xs()
-                                .text_color(theme.muted_foreground)
-                                .child(
-                                    t!("%{at} of %{count}", at = number + 1, count = guide.all)
-                                        .into_owned(),
-                                ),
-                        ),
-                )
-                .child(div().text_sm().child(self.guide_body(step)))
-                .child(
-                    h_flex()
-                        .gap_2()
-                        .justify_between()
-                        .items_center()
-                        .child(
-                            Button::new("guide-waiting-skip")
-                                .ghost()
-                                .xsmall()
-                                .label(t!("Skip Setup").into_owned())
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.guide = None;
-                                    this.focus.focus(window, cx);
-                                    cx.notify();
-                                })),
-                        )
-                        .child(
-                            h_flex()
-                                .gap_2()
-                                .items_center()
-                                .when(!next, |row| {
-                                    row.child(
-                                        div()
-                                            .text_xs()
-                                            .text_color(theme.muted_foreground)
-                                            .child(t!("Waiting for you…").into_owned()),
-                                    )
-                                })
-                                .when(at > 0, |row| {
-                                    row.child(
-                                        Button::new("guide-waiting-back")
-                                            .xsmall()
-                                            .label(t!("Back").into_owned())
-                                            .on_click(cx.listener(|this, _, window, cx| {
-                                                this.guide_back(window, cx);
-                                            })),
-                                    )
-                                })
-                                .when(next, |row| {
-                                    row.child(
-                                        Button::new("guide-waiting-next")
-                                            .primary()
-                                            .xsmall()
-                                            .label(t!("Next").into_owned())
-                                            .on_click(cx.listener(|this, _, window, cx| {
-                                                this.guide_resume(1, window, cx);
-                                            })),
-                                    )
-                                }),
-                        ),
-                )
-                .into_any_element(),
-        )
-    }
-
-    /// Back from a step waiting in the corner: the step before.
-    fn guide_back(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.guide_resume(-1, window, cx);
-    }
-
     /// Shows Providers with the form open for a provider of `kind`.
     fn add_provider_of(&mut self, kind: Kind, window: &mut Window, cx: &mut Context<Self>) {
         self.show_page(Page::Providers, window, cx);
@@ -1107,8 +974,17 @@ fn guide_card(
     });
     let (next, back, skip) = (card.clone(), card.clone(), card.clone());
     let last = number + 1 == count;
-    let goes_on = card.advance == Advance::Next;
-    let waiting = step.waits();
+    // A step aside goes on by itself once it's done, unless it was come back to and is done already, when it waits for
+    // Next; and Run It can be left for later.
+    let came_back = view
+        .read(cx)
+        .guide
+        .as_ref()
+        .is_some_and(|guide| guide.came_back);
+    let done = view.read(cx).guide_step_done(step);
+    let goes_on = card.advance == Advance::Next
+        || (card.aside && (came_back && done || step == GuideStep::OpenIt));
+    let waiting = card.aside && !goes_on;
     let footer = h_flex()
         .gap_2()
         .justify_between()
@@ -1119,6 +995,8 @@ fn guide_card(
                 .xsmall()
                 .label(if last || stage == Stage::Welcome {
                     t!("Close").into_owned()
+                } else if card.aside {
+                    t!("Skip Setup").into_owned()
                 } else {
                     t!("Skip").into_owned()
                 })
@@ -1159,7 +1037,12 @@ fn guide_card(
                 }),
         );
     v_flex()
-        .w(rems(340. / 13.))
+        // Smaller in the corner, beside the window rather than over it.
+        .w(if card.aside {
+            rems(280. / 13.)
+        } else {
+            rems(340. / 13.)
+        })
         .p_4()
         .gap_3()
         .rounded(radius * 1.5)
@@ -1203,8 +1086,10 @@ impl MainView {
         self.guide.as_ref().and_then(Guide::shown)
     }
 
-    pub(super) fn guide_banner_shown(&self) -> bool {
-        self.guide.as_ref().is_some_and(|guide| guide.parked)
+    pub(super) fn guide_waits_aside(&self, cx: &App) -> bool {
+        self.guide
+            .as_ref()
+            .is_some_and(|guide| guide.tour.read(cx).is_aside())
     }
 
     pub(super) fn pick_in_guide(

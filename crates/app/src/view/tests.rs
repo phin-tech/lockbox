@@ -1388,16 +1388,16 @@ fn setting_up_on_docker_steps_aside_until_the_gateway_answers_then_asks_for_its_
         view.pick_in_guide(guide::Pick::Gateway(guide::Place::Docker), window, cx);
     });
     cx.run_until_parked();
-    view.read_with(cx, |view, _| {
+    view.read_with(cx, |view, cx| {
         assert_eq!(view.guide_step_shown(), Some(guide::GuideStep::Gateway));
-        assert!(view.guide_banner_shown(), "the step waits in the corner");
+        assert!(view.guide_waits_aside(cx), "the step waits in the corner");
     });
     listed(&view, vec![sandbox("claude-patchbay", Phase::Ready)], cx);
     cx.executor()
         .advance_clock(std::time::Duration::from_secs(1));
     cx.run_until_parked();
-    view.read_with(cx, |view, _| {
+    view.read_with(cx, |view, cx| {
         assert_eq!(view.guide_step_shown(), Some(guide::GuideStep::ChooseKey));
-        assert!(!view.guide_banner_shown());
+        assert!(!view.guide_waits_aside(cx));
     });
 }

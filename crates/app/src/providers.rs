@@ -31,7 +31,20 @@ use playpen_core::{
     save_in_keychain,
 };
 use rust_i18n::t;
-use typecase::shell;
+use typecase::{Toast, shell};
+
+use crate::shortcuts::{DismissForm, FORM_CONTEXT};
+use crate::view::{choice_chip, copyable_command};
+
+/// Events `Providers` emits to the main view, e.g. when a new service is added so it can be attached to the sandbox
+/// that asked for it.
+#[derive(Debug, Clone)]
+pub enum ProvidersEvent {
+    ServiceAdded(String),
+    ServiceCancelled,
+}
+
+impl EventEmitter<ProvidersEvent> for Providers {}
 
 /// The gateway the main window shows, which a provider is for: OpenShell keeps each in the gateway that holds it, so
 /// Settings acts on the one whose sandboxes are in front of the person.
@@ -116,6 +129,8 @@ struct ServiceForm {
     category: Option<ServiceCategory>,
     /// The preset currently applied, if any.
     chosen_preset: Option<String>,
+    /// Whether the advanced endpoint/header/access fields are expanded when a preset is active.
+    customize: bool,
     name: Entity<InputState>,
     address: Entity<InputState>,
     extra_endpoints: Vec<Endpoint>,
@@ -134,6 +149,8 @@ struct ServiceForm {
     help: Option<String>,
     /// Extra guidance for the chosen preset (e.g. Patchbay, GCP, AWS Bedrock, Datadog).
     preset_note: Option<String>,
+    /// If opened from a specific sandbox's Services row, that sandbox's name so Playpen attaches it only there.
+    for_sandbox: Option<String>,
     saving: bool,
     _subscriptions: Vec<Subscription>,
 }
@@ -177,6 +194,47 @@ impl Providers {
         };
         this.refresh(window, cx);
         this
+    }
+
+    /// Total number of listed providers across gateways, once loaded.
+    pub fn total_count(&self) -> Option<usize> {
+        let listings = self.listings.as_ref().ok()?;
+        let mut loaded = false;
+        let mut total = 0;
+        for (_, listing) in listings {
+            if let Listing::Listed(providers) = listing {
+                loaded = true;
+                total += providers.len();
+            }
+        }
+        loaded.then_some(total)
+    }
+
+    /// Dismisses the active Add Provider or Add Service form on Escape when not mid-save.
+    fn dismiss_form(&mut self, cx: &mut Context<Self>) {
+        if let Some(form) = &self.form {
+            if !form.saving || form.signing_in {
+                self.cancel(cx);
+            }
+        } else if let Some(service) = &self.service
+            && !service.saving
+        {
+            self.cancel_service(cx);
+        }
+    }
+
+    fn cancel_service(&mut self, cx: &mut Context<Self>) {
+        let had_target = self
+            .service
+            .as_ref()
+            .and_then(|service| service.for_sandbox.as_ref())
+            .is_some();
+        self.service = None;
+        self.failed = None;
+        if had_target {
+            cx.emit(ProvidersEvent::ServiceCancelled);
+        }
+        cx.notify();
     }
 
     /// Asks OpenShell for its providers again.
@@ -281,6 +339,21 @@ impl Providers {
 
     /// Opens the form for a new service, with the bundled common services catalog ready to pick from.
     pub(crate) fn start_adding_service(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.start_adding_service_for(None, window, cx);
+    }
+
+    /// Opens the form for a new service, optionally scoped to attach to one sandbox once created.
+    pub(crate) fn start_adding_service_for(
+        &mut self,
+        for_sandbox: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(shown) = cx.try_global::<ShownGateway>()
+            && shown.0.name().is_some()
+        {
+            self.gateway = shown.0.clone();
+        }
         let field = |placeholder: &str, window: &mut Window, cx: &mut Context<Self>| {
             let placeholder = placeholder.to_string();
             cx.new(|cx| InputState::new(window, cx).placeholder(placeholder))
@@ -317,6 +390,7 @@ impl Providers {
             search,
             category: None,
             chosen_preset: None,
+            customize: true,
             name: field("github", window, cx),
             address: field("api.github.com", window, cx),
             extra_endpoints: Vec::new(),
@@ -336,6 +410,7 @@ impl Providers {
             keychain_account: None,
             help: None,
             preset_note: None,
+            for_sandbox,
             saving: false,
             _subscriptions: subscriptions,
         });
@@ -354,6 +429,7 @@ impl Providers {
         let auth = preset.service_auth();
         let extra = preset.extra_endpoints();
         form.chosen_preset = Some(preset.id.clone());
+        form.customize = false;
         form.name.update(cx, |field, cx| {
             field.set_value(preset.id.clone(), window, cx)
         });
@@ -531,8 +607,18 @@ impl Providers {
                 match saved {
                     Ok(name) => {
                         tracing::info!(service = %name, "added a service");
+                        let for_sandbox = this
+                            .service
+                            .as_ref()
+                            .and_then(|service| service.for_sandbox.clone());
+                        if for_sandbox.is_none() {
+                            Toast::new(t!("Added service “%{name}”", name = name).into_owned())
+                                .key("provider-saved")
+                                .show(window, cx);
+                        }
                         this.service = None;
                         this.refresh(window, cx);
+                        cx.emit(ProvidersEvent::ServiceAdded(name));
                     }
                     Err(error) => {
                         tracing::warn!("couldn't add a service: {error:#}");
@@ -548,25 +634,24 @@ impl Providers {
         cx.notify();
     }
 
-    fn service_form(&self, form: &ServiceForm, cx: &Context<Self>) -> Div {
+    fn service_form(&self, form: &ServiceForm, cx: &Context<Self>) -> AnyElement {
         let theme = cx.theme();
         let has_op = find_op().is_some();
         let query = form.search.read(cx).value().trim().to_string();
         let presets = form.catalog.filter(&query, form.category);
         let category_chip =
             |id: &'static str, label: String, active: bool, category: Option<ServiceCategory>| {
-                let button = Button::new(id).xsmall().label(label).disabled(form.saving);
-                let button = if active {
-                    button.outline()
-                } else {
-                    button.ghost()
-                };
-                button.on_click(cx.listener(move |this, _, _, cx| {
-                    if let Some(form) = &mut this.service {
-                        form.category = category;
-                        cx.notify();
-                    }
-                }))
+                choice_chip(active, cx)
+                    .id(id)
+                    .child(label)
+                    .when(!form.saving, |chip| {
+                        chip.on_click(cx.listener(move |this, _, _, cx| {
+                            if let Some(form) = &mut this.service {
+                                form.category = category;
+                                cx.notify();
+                            }
+                        }))
+                    })
             };
         let auth_choice = |custom: bool, label: std::borrow::Cow<str>, id: &'static str| {
             Radio::new(id)
@@ -611,18 +696,18 @@ impl Providers {
             From::Reference => (
                 &form.reference,
                 t!(
-                    "In 1Password, a field's menu has Copy Secret Reference. `op` reads it and hands it to OpenShell."
+                    "In 1Password, open a field's menu and choose Copy Secret Reference. The 1Password CLI reads it and hands it to OpenShell."
                 ),
             ),
             From::Keychain => (
                 &form.keychain,
                 match &form.keychain_account {
                     Some(account) => t!(
-                        "Reads the Keychain item for account “%{account}”. macOS asks once whether `security` may read it.",
+                        "Reads the Keychain item for account “%{account}”. macOS asks once whether reading it is allowed.",
                         account = account
                     ),
                     None => t!(
-                        "The item's name, as Keychain Access shows it under Where. macOS asks once whether `security` may read it."
+                        "The item's name, as Keychain Access shows it under Where. macOS asks once whether reading it is allowed."
                     ),
                 },
             ),
@@ -646,7 +731,7 @@ impl Providers {
             .child(small_field(&form.search))
             .child(
                 h_flex()
-                    .gap_1()
+                    .gap_1p5()
                     .flex_wrap()
                     .child(category_chip(
                         "svc-cat-all",
@@ -677,9 +762,10 @@ impl Providers {
                     .id("service-presets")
                     .max_h(rems(13.))
                     .overflow_y_scroll()
-                    .rounded(theme.radius)
+                    .rounded(theme.radius * 1.5)
                     .border_1()
                     .border_color(theme.border)
+                    .bg(shell::recessed_colour(theme))
                     .p_1p5()
                     .child(
                         v_flex()
@@ -733,6 +819,7 @@ impl Providers {
                                                     .flex_wrap()
                                                     .child(
                                                         div()
+                                                            .text_sm()
                                                             .font_medium()
                                                             .child(preset.name.clone()),
                                                     )
@@ -749,7 +836,7 @@ impl Providers {
                                             )
                                             .child(
                                                 div()
-                                                    .text_sm()
+                                                    .text_xs()
                                                     .text_color(theme.muted_foreground)
                                                     .truncate()
                                                     .child(preset.summary.clone()),
@@ -764,114 +851,158 @@ impl Providers {
                     ),
             );
 
-        v_flex()
-            .gap_3()
-            .p_3()
-            .rounded(theme.radius)
-            .border_1()
+        let selected_summary = form.chosen_preset.as_ref().map(|_| {
+            let name = form.name.read(cx).value().to_string();
+            let host = form.address.read(cx).value().to_string();
+            let var = form.variable.read(cx).value().to_string();
+            let access_words = match form.access {
+                Access::ReadOnly => t!("Read only"),
+                Access::ReadWrite => t!("Read and write"),
+            };
+            h_flex()
+                .justify_between()
+                .items_center()
+                .gap_2()
+                .px_3()
+                .py_2()
+                .rounded(theme.radius * 1.5)
+                .border_1()
+                .border_color(theme.border)
+                .bg(shell::recessed_colour(theme))
+                .child(
+                    h_flex()
+                        .flex_wrap()
+                        .gap_1p5()
+                        .items_center()
+                        .min_w_0()
+                        .child(div().text_sm().font_medium().child(name))
+                        .child(shell::code_chip(host, cx))
+                        .child(shell::code_chip(var, cx))
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(theme.muted_foreground)
+                                .child(access_words.into_owned()),
+                        ),
+                )
+                .child(
+                    Button::new("toggle-customize-service")
+                        .ghost()
+                        .xsmall()
+                        .label(if form.customize {
+                            t!("Hide Details").into_owned()
+                        } else {
+                            t!("Customize").into_owned()
+                        })
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            if let Some(form) = &mut this.service {
+                                form.customize = !form.customize;
+                                cx.notify();
+                            }
+                        })),
+                )
+        });
+
+        let gateway_label = self
+            .gateway
+            .name()
+            .map(|gw| t!("Add a Service · %{gateway}", gateway = gw).into_owned())
+            .unwrap_or_else(|| t!("Add a Service").into_owned());
+        let header = h_flex()
+            .flex_none()
+            .justify_between()
+            .items_center()
+            .gap_2()
+            .px_4()
+            .h(rems(38. / 13.))
+            .border_b_1()
             .border_color(theme.border)
             .child(
                 h_flex()
-                    .justify_between()
-                    .items_center()
                     .gap_2()
-                    .child(div().font_semibold().child(t!("Add a Service").into_owned()))
+                    .items_center()
+                    .min_w_0()
                     .child(
-                        h_flex()
-                            .gap_1()
-                            .child(
-                                Button::new("import-services-json")
-                                    .ghost()
-                                    .xsmall()
-                                    .disabled(form.saving)
-                                    .label(t!("Load JSON…").into_owned())
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.import_service_catalog(window, cx);
-                                    })),
-                            )
-                            .child(
-                                Button::new("export-services-json")
-                                    .ghost()
-                                    .xsmall()
-                                    .disabled(form.saving)
-                                    .label(t!("Export JSON…").into_owned())
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.export_service_catalog(window, cx);
-                                    })),
-                            ),
-                    ),
+                        Button::new("back-from-service")
+                            .ghost()
+                            .xsmall()
+                            .disabled(form.saving)
+                            .icon(assets::IconName::ArrowLeft)
+                            .tooltip(t!("Back").into_owned())
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.cancel_service(cx);
+                            })),
+                    )
+                    .child(div().truncate().font_semibold().child(gateway_label)),
             )
+            .child(
+                h_flex()
+                    .gap_1()
+                    .child(
+                        Button::new("import-services-json")
+                            .ghost()
+                            .xsmall()
+                            .disabled(form.saving)
+                            .label(t!("Load JSON…").into_owned())
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.import_service_catalog(window, cx);
+                            })),
+                    )
+                    .child(
+                        Button::new("export-services-json")
+                            .ghost()
+                            .xsmall()
+                            .disabled(form.saving)
+                            .label(t!("Export JSON…").into_owned())
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.export_service_catalog(window, cx);
+                            })),
+                    ),
+            );
+
+        let body = v_flex()
+            .gap_4()
+            .p_4()
+            .when_some(form.for_sandbox.clone(), |this, sandbox| {
+                this.child(
+                    h_flex()
+                        .gap_2()
+                        .items_center()
+                        .px_3()
+                        .py_2()
+                        .rounded(theme.radius)
+                        .border_1()
+                        .border_color(theme.info.opacity(0.4))
+                        .bg(shell::recessed_colour(theme))
+                        .child(
+                            Icon::new(assets::IconName::Box)
+                                .small()
+                                .flex_none()
+                                .text_color(theme.info),
+                        )
+                        .child(note(
+                            t!(
+                                "Once added, this service will be attached only to “%{sandbox}” — other sandboxes on this gateway won't have access.",
+                                sandbox = sandbox
+                            ),
+                            cx,
+                        )),
+                )
+            })
             .child(field(t!("Common services"), preset_list, cx))
+            .when_some(selected_summary, |this, summary| this.child(summary))
             .when_some(form.preset_note.clone(), |this, text| {
                 this.child(
                     div()
-                        .p_2()
+                        .max_w(rems(42.))
+                        .p_2p5()
                         .rounded(theme.radius)
-                        .bg(theme.group_box)
+                        .bg(shell::recessed_colour(theme))
+                        .border_1()
+                        .border_color(shell::hairline(theme))
                         .child(note(text.into(), cx)),
                 )
             })
-            .child(field(
-                t!("Name"),
-                div().w(rems(16.)).child(small_field(&form.name)),
-                cx,
-            ))
-            .child(field(
-                t!("Host"),
-                v_flex()
-                    .gap_1()
-                    .child(div().w(rems(20.)).child(small_field(&form.address)))
-                    .when(!form.extra_endpoints.is_empty(), |col| {
-                        col.child(
-                            h_flex().gap_1().flex_wrap().children(
-                                form.extra_endpoints.iter().map(|endpoint| {
-                                    shell::code_chip(endpoint.host.clone(), cx)
-                                }),
-                            ),
-                        )
-                    })
-                    .child(note(
-                        if form.extra_endpoints.is_empty() {
-                            t!("The only host its key is sent to.")
-                        } else {
-                            t!("The only hosts its key is sent to.")
-                        },
-                        cx,
-                    )),
-                cx,
-            ))
-            .child(field(
-                t!("Variable"),
-                v_flex()
-                    .gap_1()
-                    .child(div().w(rems(16.)).child(small_field(&form.variable)))
-                    .child(
-                        h_flex()
-                            .gap_4()
-                            .child(auth_choice(false, t!("Bearer token"), "auth-bearer"))
-                            .child(auth_choice(true, t!("Custom header"), "auth-header")),
-                    )
-                    .when(form.auth_header, |col| {
-                        col.child(div().w(rems(16.)).child(small_field(&form.header)))
-                    })
-                    .child(note(
-                        if form.auth_header {
-                            t!("Where programs in the sandbox find its stand-in, sent in the header named above.")
-                        } else {
-                            t!("Where programs in the sandbox find its stand-in, sent as a bearer token.")
-                        },
-                        cx,
-                    )),
-                cx,
-            ))
-            .child(field(
-                t!("Access"),
-                h_flex()
-                    .gap_4()
-                    .child(access(Access::ReadOnly, t!("Read only"), "access-read"))
-                    .child(access(Access::ReadWrite, t!("Read and write"), "access-write")),
-                cx,
-            ))
             .child(field(
                 t!("Key from"),
                 v_flex()
@@ -880,7 +1011,11 @@ impl Providers {
                         h_flex()
                             .flex_wrap()
                             .gap_4()
-                            .child(from(From::Reference, t!("1Password reference"), "from-reference"))
+                            .child(from(
+                                From::Reference,
+                                t!("1Password reference"),
+                                "from-reference",
+                            ))
                             .child(from(
                                 From::Environment,
                                 t!("1Password Environment"),
@@ -893,7 +1028,7 @@ impl Providers {
                         h_flex()
                             .gap_2()
                             .items_center()
-                            .child(div().w(rems(20.)).child(small_field(key_field)))
+                            .child(div().w(rems(22.)).child(small_field(key_field)))
                             .when_some(form.help.clone(), |row, url| {
                                 row.child(
                                     Button::new("service-help")
@@ -906,17 +1041,123 @@ impl Providers {
                     )
                     .child(note(key_note, cx))
                     .when(!has_op, |this| {
-                        this.child(note(
-                            t!("Install 1Password's command line, `brew install 1password-cli`, to take keys from 1Password."),
-                            cx,
-                        ))
+                        this.child(
+                            v_flex()
+                                .gap_1()
+                                .items_start()
+                                .child(note(
+                                    t!("Install the 1Password CLI to take keys from 1Password:"),
+                                    cx,
+                                ))
+                                .child(copyable_command(
+                                    "copy-op-install-service",
+                                    "brew install 1password-cli",
+                                    cx,
+                                )),
+                        )
                     }),
                 cx,
             ))
+            .when(form.customize, |this| {
+                this.child(
+                    v_flex()
+                        .gap_4()
+                        .pt_3()
+                        .border_t_1()
+                        .border_color(shell::hairline(theme))
+                        .child(
+                            h_flex()
+                                .flex_wrap()
+                                .gap_4()
+                                .items_start()
+                                .child(field(
+                                    t!("Name"),
+                                    div().w(rems(15.)).child(small_field(&form.name)),
+                                    cx,
+                                ))
+                                .child(field(
+                                    t!("Host"),
+                                    v_flex()
+                                        .gap_1()
+                                        .child(div().w(rems(20.)).child(small_field(&form.address)))
+                                        .when(!form.extra_endpoints.is_empty(), |col| {
+                                            col.child(h_flex().gap_1().flex_wrap().children(
+                                                form.extra_endpoints.iter().map(|endpoint| {
+                                                    shell::code_chip(endpoint.host.clone(), cx)
+                                                }),
+                                            ))
+                                        })
+                                        .child(note(
+                                            if form.extra_endpoints.is_empty() {
+                                                t!("The only host its key is sent to.")
+                                            } else {
+                                                t!("The only hosts its key is sent to.")
+                                            },
+                                            cx,
+                                        )),
+                                    cx,
+                                )),
+                        )
+                        .child(field(
+                            t!("Variable"),
+                            v_flex()
+                                .gap_1()
+                                .child(div().w(rems(16.)).child(small_field(&form.variable)))
+                                .child(
+                                    h_flex()
+                                        .gap_4()
+                                        .child(auth_choice(false, t!("Bearer token"), "auth-bearer"))
+                                        .child(auth_choice(true, t!("Custom header"), "auth-header")),
+                                )
+                                .when(form.auth_header, |col| {
+                                    col.child(div().w(rems(16.)).child(small_field(&form.header)))
+                                })
+                                .child(note(
+                                    if form.auth_header {
+                                        t!("Where programs in the sandbox find its stand-in, sent in the header named above.")
+                                    } else {
+                                        t!("Where programs in the sandbox find its stand-in, sent as a bearer token.")
+                                    },
+                                    cx,
+                                )),
+                            cx,
+                        ))
+                        .child(field(
+                            t!("Access"),
+                            h_flex()
+                                .gap_4()
+                                .child(access(Access::ReadOnly, t!("Read only"), "access-read"))
+                                .child(access(
+                                    Access::ReadWrite,
+                                    t!("Read and write"),
+                                    "access-write",
+                                )),
+                            cx,
+                        )),
+                )
+            });
+
+        let footer = h_flex()
+            .flex_none()
+            .justify_between()
+            .items_center()
+            .gap_3()
+            .px_4()
+            .py_2p5()
+            .border_t_1()
+            .border_color(theme.border)
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .when_some(self.failed.clone(), |slot, failed| {
+                        slot.child(div().text_sm().text_color(theme.danger).child(failed))
+                    }),
+            )
             .child(
                 h_flex()
+                    .flex_none()
                     .gap_2()
-                    .justify_end()
                     .child(
                         Button::new("cancel-service")
                             .ghost()
@@ -924,8 +1165,7 @@ impl Providers {
                             .disabled(form.saving)
                             .label(t!("Cancel").into_owned())
                             .on_click(cx.listener(|this, _, _, cx| {
-                                this.service = None;
-                                cx.notify();
+                                this.cancel_service(cx);
                             })),
                     )
                     .child(
@@ -933,12 +1173,33 @@ impl Providers {
                             .primary()
                             .small()
                             .loading(form.saving)
-                            .label(t!("Add Service").into_owned())
+                            .label(if form.for_sandbox.is_some() {
+                                t!("Add and Attach").into_owned()
+                            } else {
+                                t!("Add Service").into_owned()
+                            })
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.save_service(window, cx);
                             })),
                     ),
+            );
+
+        v_flex()
+            .size_full()
+            .key_context(FORM_CONTEXT)
+            .on_action(cx.listener(|this, _: &DismissForm, _, cx| {
+                this.dismiss_form(cx);
+            }))
+            .child(header)
+            .child(
+                div()
+                    .id("service-form-scroll")
+                    .flex_1()
+                    .overflow_y_scroll()
+                    .child(body),
             )
+            .child(footer)
+            .into_any_element()
     }
 
     fn start_adding(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1280,6 +1541,9 @@ impl Providers {
         match saved {
             Ok(name) => {
                 tracing::info!(provider = %name, "saved a provider");
+                Toast::new(t!("Saved “%{name}”", name = name).into_owned())
+                    .key("provider-saved")
+                    .show(window, cx);
                 self.form = None;
                 self.refresh(window, cx);
             }
@@ -1329,6 +1593,9 @@ impl Providers {
                 match deleted {
                     Ok(()) => {
                         tracing::info!(provider = %name, "deleted a provider");
+                        Toast::new(t!("Deleted “%{name}”", name = name).into_owned())
+                            .key("provider-deleted")
+                            .show(window, cx);
                         this.failed = None;
                     }
                     Err(error) => {
@@ -1342,7 +1609,7 @@ impl Providers {
         }));
     }
 
-    /// Every gateway's providers, under its name, with the form under the group it's for.
+    /// Every gateway's providers, each in a recessed card matching the rest of Playpen.
     fn groups(&self, cx: &Context<Self>) -> Div {
         let listings = match &self.listings {
             Ok(listings) => listings,
@@ -1357,23 +1624,33 @@ impl Providers {
             return note(t!("Asking OpenShell…"), cx);
         }
         v_flex()
-            .gap_6()
+            .gap_5()
             .children(listings.iter().map(|(gateway, listing)| {
                 let here = self.gateway.name() == Some(gateway.as_str());
-                let busy = self.form.is_some() || self.service.is_some();
                 let failed = matches!(listing, Listing::Failed(_));
                 let adding = gateway.clone();
                 let adding_service = gateway.clone();
+                let count = match listing {
+                    Listing::Listed(providers) => Some(providers.len()),
+                    _ => None,
+                };
                 v_flex()
-                    .gap_3()
+                    .gap_2()
                     .child(
                         h_flex()
                             .gap_2()
                             .items_center()
-                            .pb_1()
-                            .border_b_1()
-                            .border_color(cx.theme().border)
-                            .child(div().flex_1().font_semibold().child(gateway.clone()))
+                            .child(
+                                h_flex()
+                                    .flex_1()
+                                    .gap_2()
+                                    .items_center()
+                                    .min_w_0()
+                                    .child(div().font_semibold().child(gateway.clone()))
+                                    .when_some(count.filter(|count| *count > 0), |row, count| {
+                                        row.child(shell::count(count, cx))
+                                    }),
+                            )
                             .child(
                                 Button::new(ElementId::from((
                                     ElementId::from("add-provider"),
@@ -1381,8 +1658,9 @@ impl Providers {
                                 )))
                                 .xsmall()
                                 .outline()
-                                .label(t!("Add Model Key…").into_owned())
-                                .disabled(busy || failed)
+                                .icon(assets::IconName::Plus)
+                                .label(t!("Model Key…").into_owned())
+                                .disabled(failed)
                                 .on_click(cx.listener(
                                     move |this, _, window, cx| {
                                         this.gateway = Gateway::named(adding.clone());
@@ -1397,8 +1675,9 @@ impl Providers {
                                 )))
                                 .xsmall()
                                 .outline()
-                                .label(t!("Add Service…").into_owned())
-                                .disabled(busy || failed)
+                                .icon(assets::IconName::Plus)
+                                .label(t!("Service…").into_owned())
+                                .disabled(failed)
                                 .on_click(cx.listener(
                                     move |this, _, window, cx| {
                                         this.gateway = Gateway::named(adding_service.clone());
@@ -1409,149 +1688,190 @@ impl Providers {
                     )
                     .child(self.list(gateway, listing, cx))
                     .when(here, |group| {
-                        group
-                            .when_some(self.failed.clone(), |group, failed| {
-                                group.when(self.form.is_none(), |group| {
-                                    group.child(
-                                        div().text_sm().text_color(cx.theme().danger).child(failed),
-                                    )
-                                })
-                            })
-                            .when_some(self.form.as_ref(), |group, form| {
-                                group.child(self.form(form, cx))
-                            })
-                            .when_some(self.service.as_ref(), |group, service| {
-                                group.child(self.service_form(service, cx))
-                            })
+                        group.when_some(self.failed.clone(), |group, failed| {
+                            group.child(div().text_sm().text_color(cx.theme().danger).child(failed))
+                        })
                     })
             }))
     }
 
-    /// One gateway's providers, each with what can be done to it there.
+    /// One gateway's providers inside a recessed card, with a compact action menu instead of a wall of buttons.
     fn list(&self, gateway: &str, listing: &Listing, cx: &Context<Self>) -> Div {
-        let muted = cx.theme().muted_foreground;
+        let theme = cx.theme();
+        let muted = theme.muted_foreground;
         let providers = match listing {
             Listing::Loading => return note(t!("Asking OpenShell…"), cx),
             Listing::Failed(error) => {
                 return div()
                     .text_sm()
-                    .text_color(cx.theme().danger)
+                    .text_color(theme.danger)
                     .child(error.clone());
             }
             Listing::Listed(providers) if providers.is_empty() => {
-                return note(
-                    t!("None yet. Add one for each model service whose key your agents use."),
-                    cx,
-                );
+                return div()
+                    .px_3()
+                    .py_3()
+                    .rounded(theme.radius * 1.5)
+                    .border_1()
+                    .border_color(theme.border)
+                    .bg(shell::recessed_colour(theme))
+                    .child(note(
+                        t!("None yet. Add a model key or service for sandboxes on this gateway."),
+                        cx,
+                    ));
             }
             Listing::Listed(providers) => providers,
         };
-        v_flex().gap_2().children(providers.iter().map(|provider| {
-            let kind = match provider.playpen_kind() {
-                Some(kind) => kind.name().to_string(),
-                None if provider.kind.starts_with("playpen-service-") => t!("Service").into_owned(),
-                None => provider.kind.clone(),
-            };
-            let replace = provider.clone();
-            let delete = provider.clone();
-            let id = |what: &'static str| {
-                ElementId::from((
-                    ElementId::from(what),
-                    format!("{gateway}/{}", provider.name),
-                ))
-            };
-            let on = gateway.to_string();
-            h_flex()
-                .gap_2()
-                .items_center()
-                .child(
-                    v_flex()
-                        .flex_1()
-                        .min_w_0()
-                        .child(div().child(provider.name.clone()))
-                        .child(div().text_sm().text_color(muted).child(
-                            match self.homes.homes.get(&provider.name) {
-                                Some(KeyHome::OnePassword { .. }) => {
-                                    t!("%{kind} · key in 1Password", kind = kind).into_owned()
-                                }
-                                Some(KeyHome::Keychain { .. }) => {
-                                    t!("%{kind} · key in the Keychain", kind = kind).into_owned()
-                                }
-                                None => kind,
-                            },
-                        )),
-                )
-                .child(
-                    Button::new(id("replace-key"))
-                        .xsmall()
-                        .outline()
-                        .label(
-                            if provider.playpen_kind() == Some(Kind::ChatGptSubscription) {
-                                t!("Sign In Again…")
-                            } else {
-                                t!("Replace Key…")
-                            }
-                            .into_owned(),
+        let count = providers.len();
+        v_flex()
+            .rounded(theme.radius * 1.5)
+            .border_1()
+            .border_color(theme.border)
+            .bg(shell::recessed_colour(theme))
+            .children(providers.iter().enumerate().map(|(at, provider)| {
+                let is_service = provider.kind.starts_with("playpen-service-");
+                let kind = match provider.playpen_kind() {
+                    Some(kind) => kind.name().to_string(),
+                    None if is_service => t!("Service").into_owned(),
+                    None => provider.kind.clone(),
+                };
+                let replace = provider.clone();
+                let delete = provider.clone();
+                let can_replace = provider.playpen_kind().is_some();
+                let id = |what: &'static str| {
+                    ElementId::from((
+                        ElementId::from(what),
+                        format!("{gateway}/{}", provider.name),
+                    ))
+                };
+                let on = gateway.to_string();
+                let home_badge = match self.homes.homes.get(&provider.name) {
+                    Some(KeyHome::OnePassword { .. }) => Some(t!("1Password").into_owned()),
+                    Some(KeyHome::Keychain { .. }) => Some(t!("Keychain").into_owned()),
+                    None => None,
+                };
+                let others: Vec<String> = self
+                    .gateways
+                    .iter()
+                    .filter(|other| other.as_str() != gateway)
+                    .cloned()
+                    .collect();
+                let view = cx.entity().downgrade();
+                let copying = provider.clone();
+                let from_gw = on.clone();
+                let delete_on = on.clone();
+                let more = Button::new(id("provider-more"))
+                    .xsmall()
+                    .ghost()
+                    .icon(assets::IconName::Ellipsis)
+                    .tooltip(t!("More Actions").into_owned())
+                    .dropdown_menu(move |mut menu, _, _| {
+                        for target in &others {
+                            let view = view.clone();
+                            let provider = copying.clone();
+                            let from = from_gw.clone();
+                            let to = Gateway::named(target.clone());
+                            menu = menu.item(
+                                PopupMenuItem::new(
+                                    t!("Copy to %{gateway}", gateway = target).into_owned(),
+                                )
+                                .icon(assets::IconName::Copy)
+                                .on_click(move |_, window, cx| {
+                                    let _ = view.update(cx, |this, cx| {
+                                        this.gateway = Gateway::named(from.clone());
+                                        this.add_to_gateway(
+                                            provider.clone(),
+                                            to.clone(),
+                                            window,
+                                            cx,
+                                        );
+                                    });
+                                }),
+                            );
+                        }
+                        if !others.is_empty() {
+                            menu = menu.separator();
+                        }
+                        let view = view.clone();
+                        let delete = delete.clone();
+                        let on = delete_on.clone();
+                        menu.item(
+                            PopupMenuItem::new(t!("Delete…").into_owned())
+                                .icon(assets::IconName::Trash)
+                                .on_click(move |_, window, cx| {
+                                    let _ = view.update(cx, |this, cx| {
+                                        this.gateway = Gateway::named(on.clone());
+                                        this.delete(delete.clone(), window, cx);
+                                    });
+                                }),
                         )
-                        .disabled(provider.playpen_kind().is_none() || self.form.is_some())
-                        .on_click(cx.listener({
-                            let on = on.clone();
-                            move |this, _, window, cx| {
-                                this.gateway = Gateway::named(on.clone());
-                                this.start_replacing(replace.clone(), window, cx);
-                            }
-                        })),
-                )
-                .child({
-                    let others: Vec<String> = self
-                        .gateways
-                        .iter()
-                        .filter(|other| other.as_str() != gateway)
-                        .cloned()
-                        .collect();
-                    let view = cx.entity().downgrade();
-                    let copying = provider.clone();
-                    let from = on.clone();
-                    Button::new(id("add-to-gateway"))
-                        .xsmall()
-                        .outline()
-                        .label(t!("Add to Gateway…").into_owned())
-                        .disabled(self.form.is_some() || others.is_empty())
-                        .dropdown_menu(move |mut menu, _, _| {
-                            for gateway in &others {
-                                let view = view.clone();
-                                let provider = copying.clone();
-                                let from = from.clone();
-                                let to = Gateway::named(gateway.clone());
-                                menu = menu.item(PopupMenuItem::new(gateway.clone()).on_click(
-                                    move |_, window, cx| {
-                                        let _ = view.update(cx, |this, cx| {
-                                            this.gateway = Gateway::named(from.clone());
-                                            this.add_to_gateway(
-                                                provider.clone(),
-                                                to.clone(),
-                                                window,
-                                                cx,
-                                            );
-                                        });
-                                    },
-                                ));
-                            }
-                            menu
+                    });
+                h_flex()
+                    .gap_2p5()
+                    .px_3()
+                    .py_2()
+                    .items_center()
+                    .when(at + 1 < count, |row| {
+                        row.border_b_1().border_color(shell::hairline(theme))
+                    })
+                    .child(
+                        Icon::new(if is_service {
+                            assets::IconName::Globe
+                        } else {
+                            assets::IconName::KeyRound
                         })
-                })
-                .child(
-                    Button::new(id("delete-provider"))
-                        .xsmall()
-                        .outline()
-                        .label(t!("Delete…").into_owned())
-                        .disabled(self.form.is_some())
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.gateway = Gateway::named(on.clone());
-                            this.delete(delete.clone(), window, cx);
-                        })),
-                )
-        }))
+                        .small()
+                        .flex_none()
+                        .text_color(muted),
+                    )
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .child(
+                                h_flex()
+                                    .gap_2()
+                                    .items_center()
+                                    .min_w_0()
+                                    .child(
+                                        div()
+                                            .truncate()
+                                            .text_sm()
+                                            .font_medium()
+                                            .child(provider.name.clone()),
+                                    )
+                                    .when_some(home_badge, |row, badge| {
+                                        row.child(
+                                            shell::badge(Tag::secondary()).xsmall().child(badge),
+                                        )
+                                    }),
+                            )
+                            .child(div().text_xs().text_color(muted).child(kind)),
+                    )
+                    .when(can_replace, |row| {
+                        row.child(
+                            Button::new(id("replace-key"))
+                                .xsmall()
+                                .outline()
+                                .label(
+                                    if provider.playpen_kind() == Some(Kind::ChatGptSubscription) {
+                                        t!("Sign In Again…")
+                                    } else {
+                                        t!("Replace Key…")
+                                    }
+                                    .into_owned(),
+                                )
+                                .on_click(cx.listener({
+                                    let on = on.clone();
+                                    move |this, _, window, cx| {
+                                        this.gateway = Gateway::named(on.clone());
+                                        this.start_replacing(replace.clone(), window, cx);
+                                    }
+                                })),
+                        )
+                    })
+                    .child(more)
+            }))
     }
 
     /// Where the key comes from, pasted or a 1Password reference, and where a pasted one is kept besides OpenShell.
@@ -1606,7 +1926,7 @@ impl Providers {
                         .gap_1()
                         .child(div().w(rems(20.)).child(small_field(&form.reference)))
                         .child(note(
-                            t!("In 1Password, a field's menu has Copy Secret Reference. `op` gives the key to OpenShell, and it's taken from there for other gateways too."),
+                            t!("In 1Password, open a field's menu and choose Copy Secret Reference. The 1Password CLI hands the key to OpenShell and reuses it for other gateways."),
                             cx,
                         )),
                     cx,
@@ -1827,9 +2147,12 @@ impl Providers {
                             .small()
                             .label(t!("Copy Link").into_owned())
                             .disabled(link.is_none())
-                            .on_click(move |_, _, cx| {
+                            .on_click(move |_, window, cx| {
                                 if let Some(link) = &link {
                                     cx.write_to_clipboard(ClipboardItem::new_string(link.clone()));
+                                    Toast::new(t!("Copied sign-in link").into_owned())
+                                        .key("copy-link")
+                                        .show(window, cx);
                                 }
                             }),
                     ),
@@ -1907,11 +2230,12 @@ impl Providers {
         cx.notify();
     }
 
-    fn form(&self, form: &Form, cx: &Context<Self>) -> Div {
+    fn form(&self, form: &Form, cx: &Context<Self>) -> AnyElement {
+        let theme = cx.theme();
         let adding = form.replacing.is_none() && form.copying.is_none();
         let title = match (&form.copying, &form.replacing) {
             (Some((provider, to)), _) => t!(
-                "Add “%{name}” to the %{gateway} gateway",
+                "Add “%{name}” to %{gateway}",
                 name = provider.name,
                 gateway = to.name().unwrap_or("active")
             ),
@@ -1919,7 +2243,10 @@ impl Providers {
                 t!("Sign “%{name}” In Again", name = provider.name)
             }
             (None, Some(provider)) => t!("New Key for “%{name}”", name = provider.name),
-            (None, None) => t!("Add a Provider"),
+            (None, None) => match self.gateway.name() {
+                Some(gw) => t!("Add a Model Key · %{gateway}", gateway = gw),
+                None => t!("Add a Model Key"),
+            },
         };
         let kinds = div().w(rems(16.)).child(
             Select::new(&form.kinds)
@@ -1927,19 +2254,47 @@ impl Providers {
                 .search_placeholder(t!("Search").into_owned())
                 .disabled(form.saving),
         );
-        v_flex()
-            .gap_3()
-            .p_3()
-            .rounded(cx.theme().radius)
-            .border_1()
-            .border_color(cx.theme().border)
-            .child(div().font_semibold().child(title.into_owned()))
+        let header = h_flex()
+            .flex_none()
+            .justify_between()
+            .items_center()
+            .gap_2()
+            .px_4()
+            .h(rems(38. / 13.))
+            .border_b_1()
+            .border_color(theme.border)
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .min_w_0()
+                    .child(
+                        Button::new("back-from-provider")
+                            .ghost()
+                            .xsmall()
+                            .disabled(form.saving && !form.signing_in)
+                            .icon(assets::IconName::ArrowLeft)
+                            .tooltip(t!("Back to Providers").into_owned())
+                            .on_click(cx.listener(|this, _, _, cx| this.cancel(cx))),
+                    )
+                    .child(div().truncate().font_semibold().child(title.into_owned())),
+            );
+        let body = v_flex()
+            .gap_4()
+            .p_4()
             .when(adding, |this| {
-                this.child(field(t!("Kind"), kinds, cx)).child(field(
-                    t!("Name"),
-                    div().w(rems(16.)).child(small_field(&form.name)),
-                    cx,
-                ))
+                this.child(
+                    h_flex()
+                        .flex_wrap()
+                        .gap_4()
+                        .items_start()
+                        .child(field(t!("Kind"), kinds, cx))
+                        .child(field(
+                            t!("Name"),
+                            div().w(rems(16.)).child(small_field(&form.name)),
+                            cx,
+                        )),
+                )
             })
             .when(adding && form.kind.needs_address(), |this| {
                 this.child(field(
@@ -1966,15 +2321,28 @@ impl Providers {
                 } else {
                     this.child(self.key_fields(form, cx))
                 }
-            })
-            // Why saving failed, beside the buttons that try again.
-            .when_some(self.failed.clone(), |this, failed| {
-                this.child(div().text_sm().text_color(cx.theme().danger).child(failed))
-            })
+            });
+        let footer = h_flex()
+            .flex_none()
+            .justify_between()
+            .items_center()
+            .gap_3()
+            .px_4()
+            .py_2p5()
+            .border_t_1()
+            .border_color(theme.border)
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .when_some(self.failed.clone(), |slot, failed| {
+                        slot.child(div().text_sm().text_color(theme.danger).child(failed))
+                    }),
+            )
             .child(
                 h_flex()
+                    .flex_none()
                     .gap_2()
-                    .justify_end()
                     .child(
                         Button::new("cancel-provider")
                             .ghost()
@@ -1991,14 +2359,30 @@ impl Providers {
                             .label(
                                 match (form.kind.signs_in(), adding) {
                                     (true, _) => t!("Sign In…"),
-                                    (false, true) => t!("Add"),
+                                    (false, true) => t!("Add Model Key"),
                                     (false, false) => t!("Replace Key"),
                                 }
                                 .into_owned(),
                             )
                             .on_click(cx.listener(|this, _, window, cx| this.save(window, cx))),
                     ),
+            );
+        v_flex()
+            .size_full()
+            .key_context(FORM_CONTEXT)
+            .on_action(cx.listener(|this, _: &DismissForm, _, cx| {
+                this.dismiss_form(cx);
+            }))
+            .child(header)
+            .child(
+                div()
+                    .id("provider-form-scroll")
+                    .flex_1()
+                    .overflow_y_scroll()
+                    .child(body),
             )
+            .child(footer)
+            .into_any_element()
     }
 }
 
@@ -2027,16 +2411,29 @@ impl Job {
 
 impl Render for Providers {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        v_flex()
-            .p_4()
-            .gap_4()
-            .child(note(
-                t!(
-                    "OpenShell holds each key, on each gateway its own. A sandbox's agent sees only a stand-in, which OpenShell swaps for the key on requests to that service, so one provider serves every sandbox on its gateway you attach it to."
-                ),
-                cx,
-            ))
-            .child(self.groups(cx))
+        if let Some(form) = &self.form {
+            return self.form(form, cx);
+        }
+        if let Some(service) = &self.service {
+            return self.service_form(service, cx);
+        }
+        div()
+            .id("providers")
+            .size_full()
+            .overflow_y_scroll()
+            .child(
+                v_flex()
+                    .p_5()
+                    .gap_5()
+                    .child(note(
+                        t!(
+                            "OpenShell holds each key on its gateway. Adding a service here does not grant access to any sandbox until you attach it."
+                        ),
+                        cx,
+                    ))
+                    .child(self.groups(cx)),
+            )
+            .into_any_element()
     }
 }
 
@@ -2069,8 +2466,11 @@ fn device_code(device: &DeviceCode, cx: &App) -> Div {
                     Button::new("copy-device-code")
                         .small()
                         .label(t!("Copy Code").into_owned())
-                        .on_click(move |_, _, cx| {
+                        .on_click(move |_, window, cx| {
                             cx.write_to_clipboard(ClipboardItem::new_string(code.clone()));
+                            Toast::new(t!("Copied sign-in code").into_owned())
+                                .key("copy-code")
+                                .show(window, cx);
                         }),
                 )
                 .child(
@@ -2100,6 +2500,7 @@ fn field(label: std::borrow::Cow<str>, body: impl IntoElement, cx: &App) -> Div 
 
 fn note(text: std::borrow::Cow<str>, cx: &App) -> Div {
     div()
+        .max_w(rems(42.))
         .text_sm()
         .text_color(cx.theme().muted_foreground)
         .child(text.into_owned())

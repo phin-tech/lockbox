@@ -297,14 +297,20 @@ impl MainView {
                         let was_shown = this.gateway.name() == Some(name.as_str());
                         this.gateways_listed(Ok(gateways));
                         if let Forgotten::Left(folder) = forgotten {
-                            this.failed = Some(
+                            Toast::new(
                                 t!(
-                                    "“%{name}” is removed. Its certificates are still in %{folder}.",
+                                    "Removed “%{name}” (certificates kept in %{folder})",
                                     name = name,
                                     folder = folder.display().to_string()
                                 )
                                 .into_owned(),
-                            );
+                            )
+                            .key("gateway-removed")
+                            .show(window, cx);
+                        } else {
+                            Toast::new(t!("Removed “%{name}”", name = name).into_owned())
+                                .key("gateway-removed")
+                                .show(window, cx);
                         }
                         if was_shown {
                             // Another gateway is in focus in its place, which `gateways_listed` chose; what was kept
@@ -378,28 +384,6 @@ impl MainView {
         let theme = cx.theme();
         let working = matches!(adding.state, AddState::Working);
         let typed = adding.address.read(cx).value().to_string();
-        let header = Self::panel_header(t!("Add Gateway"), cx).child(
-            h_flex()
-                .gap_1()
-                .child(
-                    Button::new("cancel-adding")
-                        .ghost()
-                        .xsmall()
-                        .disabled(working)
-                        .label(t!("Cancel").into_owned())
-                        .on_click(
-                            cx.listener(|this, _, window, cx| this.cancel_adding(window, cx)),
-                        ),
-                )
-                .child(
-                    Button::new("add-gateway")
-                        .primary()
-                        .xsmall()
-                        .disabled(working || typed.trim().is_empty())
-                        .label(t!("Add").into_owned())
-                        .on_click(cx.listener(|this, _, window, cx| this.add_gateway(window, cx))),
-                ),
-        );
         // What the address says about how the gateway is reached, as it's typed.
         let how = match NewGateway::new(&typed, "").map(|new| new.reach()) {
             Ok(Reach::Browser) => hint(
@@ -418,32 +402,29 @@ impl MainView {
             ),
             Err(_) => hint(t!("An address starting https://, ssh:// or http://."), cx),
         };
-        let state = match &adding.state {
-            AddState::Choosing => div(),
-            AddState::Working => hint(t!("Adding it…"), cx),
+        let footer_left = match &adding.state {
+            AddState::Choosing => div().into_any_element(),
+            AddState::Working => h_flex()
+                .gap_2()
+                .items_center()
+                .child(Spinner::new().xsmall())
+                .child(hint(t!("Adding gateway…"), cx))
+                .into_any_element(),
             AddState::Failed(error) => div()
                 .text_sm()
                 .text_color(theme.danger)
-                .child(error.clone()),
+                .child(error.clone())
+                .into_any_element(),
         };
         // Only an https:// gateway has a sign-in to choose.
         let browser = NewGateway::new(&typed, "").is_ok_and(|new| new.reach() == Reach::Browser);
         let body = v_flex()
             .gap_5()
             .p_4()
-            .child(section(t!("Address"), cx).child(div().w(rems(28.)).child(small_field(&adding.address))).child(how))
             .child(
-                v_flex()
-                    .gap_2()
-                    .items_start()
-                    .child(hint(t!("Or run sandboxes as microVMs on this Mac, with a gateway Playpen sets up."), cx))
-                    .child(
-                        Button::new("adding-microvm")
-                            .xsmall()
-                            .disabled(working)
-                            .label(t!("Set Up MicroVM Gateway…").into_owned())
-                            .on_click(cx.listener(|this, _, window, cx| this.start_microvm_form(window, cx))),
-                    ),
+                section(t!("Address"), cx)
+                    .child(div().w(rems(28.)).child(small_field(&adding.address)))
+                    .child(how),
             )
             .when(browser, |body| {
                 let field = |title: String, state: &Entity<InputState>| {
@@ -456,7 +437,9 @@ impl MainView {
                                 .label(t!("Sign in through an OIDC issuer").into_owned())
                                 .checked(adding.oidc)
                                 .disabled(working)
-                                .on_click(cx.listener(|this, on: &bool, _, cx| this.set_oidc(*on, cx))),
+                                .on_click(
+                                    cx.listener(|this, on: &bool, _, cx| this.set_oidc(*on, cx)),
+                                ),
                         )
                         .child(hint(
                             if adding.oidc {
@@ -469,8 +452,14 @@ impl MainView {
                 )
                 .when(adding.oidc, |body| {
                     body.child(field(t!("Issuer").into_owned(), &adding.sign_in.issuer))
-                        .child(field(t!("Client ID").into_owned(), &adding.sign_in.client_id))
-                        .child(field(t!("Audience").into_owned(), &adding.sign_in.audience))
+                        .child(field(
+                            t!("Client ID").into_owned(),
+                            &adding.sign_in.client_id,
+                        ))
+                        .child(field(
+                            t!("Audience").into_owned(),
+                            &adding.sign_in.audience,
+                        ))
                         .child(field(t!("Scopes").into_owned(), &adding.sign_in.scopes))
                 })
             })
@@ -482,12 +471,59 @@ impl MainView {
                         cx,
                     )),
             )
-            .child(state);
-        v_flex()
-            .size_full()
-            .child(header)
-            .child(div().id("adding").flex_1().overflow_y_scroll().child(body))
-            .into_any_element()
+            .child(
+                v_flex()
+                    .gap_2p5()
+                    .pt_4()
+                    .border_t_1()
+                    .border_color(shell::hairline(theme))
+                    .items_start()
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_semibold()
+                            .text_color(theme.muted_foreground)
+                            .child(t!("Or run locally as microVMs").into_owned()),
+                    )
+                    .child(hint(
+                        t!("Set up a local gateway on this Mac that runs each sandbox in its own lightweight Linux microVM."),
+                        cx,
+                    ))
+                    .child(
+                        Button::new("adding-microvm")
+                            .outline()
+                            .xsmall()
+                            .disabled(working)
+                            .label(t!("Set Up MicroVM Gateway…").into_owned())
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.start_microvm_form(window, cx)
+                            })),
+                    ),
+            );
+        let cancel = Button::new("cancel-adding")
+            .ghost()
+            .small()
+            .disabled(working)
+            .label(t!("Cancel").into_owned())
+            .on_click(cx.listener(|this, _, window, cx| this.cancel_adding(window, cx)));
+        let primary = Button::new("add-gateway")
+            .primary()
+            .small()
+            .loading(working)
+            .disabled(working || typed.trim().is_empty())
+            .label(t!("Add Gateway").into_owned())
+            .on_click(cx.listener(|this, _, window, cx| this.add_gateway(window, cx)));
+        self.form_panel(
+            t!("Add Gateway"),
+            "adding",
+            body,
+            footer_left,
+            cancel,
+            primary,
+            working,
+            |this, _, window, cx| this.cancel_adding(window, cx),
+            cx,
+        )
     }
 }
 

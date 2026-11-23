@@ -6,7 +6,8 @@ use playpen_core::{Activity, Reached};
 
 use super::*;
 
-/// How many are shown, newest first.
+/// How many are shown before expanding, and the maximum shown when expanded.
+const COLLAPSED: usize = 8;
 const SHOWN: usize = 40;
 
 /// What's known of the chosen sandbox's activity.
@@ -18,6 +19,8 @@ pub(super) struct ActivityLog {
     listed: Option<Result<Vec<Activity>, String>>,
     /// Whether only what was stopped is shown.
     only_blocked: bool,
+    /// Whether the full log (up to [`SHOWN`]) is expanded rather than capped at [`COLLAPSED`].
+    expanded: bool,
     _asking: Option<Task<()>>,
 }
 
@@ -43,6 +46,7 @@ impl MainView {
         };
         if self.activity.sandbox.as_ref() != Some(&key) {
             self.activity.listed = None;
+            self.activity.expanded = false;
         }
         self.activity.sandbox = Some(key.clone());
         let Ok(openshell) = self.openshell_for(&key.gateway) else {
@@ -102,24 +106,27 @@ impl MainView {
             .items_start()
             .min_w_0()
             .child(
-                Icon::new(if activity.allowed {
-                    assets::IconName::Check
-                } else {
-                    assets::IconName::X
-                })
-                .size_3p5()
-                .flex_none()
-                .text_color(if activity.allowed {
-                    theme.success
-                } else {
-                    theme.danger
-                }),
+                div().flex_none().mt(px(3.)).child(
+                    Icon::new(if activity.allowed {
+                        assets::IconName::Check
+                    } else {
+                        assets::IconName::X
+                    })
+                    .size_3p5()
+                    .text_color(if activity.allowed {
+                        theme.success
+                    } else {
+                        theme.danger
+                    }),
+                ),
             )
             .child(
                 div()
                     .flex_none()
-                    .w(rems(4.5))
+                    .w(rems(4.8))
+                    .mt(px(1.))
                     .text_xs()
+                    .font_family(theme.mono_font_family.clone())
                     .text_color(theme.muted_foreground)
                     .child(activity.time_of_day()),
             )
@@ -164,17 +171,28 @@ impl MainView {
     pub(super) fn activity_card(&self, key: &SandboxKey, cx: &Context<Self>) -> Div {
         let theme = cx.theme();
         let only_blocked = self.activity.only_blocked;
-        let chip = |only: bool, label: String| {
-            shell::chip(only_blocked == only, cx)
-                .id(ElementId::from((
-                    ElementId::from("activity-show"),
-                    label.clone(),
-                )))
+        let current = self.activity.sandbox.as_ref() == Some(key);
+        let blocked_count = self
+            .activity
+            .listed
+            .as_ref()
+            .filter(|_| current)
+            .and_then(|listed| listed.as_ref().ok())
+            .map(|all| all.iter().filter(|entry| !entry.allowed).count())
+            .unwrap_or(0);
+        let blocked_label = if blocked_count > 0 {
+            t!("Blocked · %{count}", count = blocked_count).into_owned()
+        } else {
+            t!("Blocked").into_owned()
+        };
+        let chip = |only: bool, id: &'static str, label: String| {
+            choice_chip(only_blocked == only, cx)
+                .id(ElementId::from((ElementId::from("activity-show"), id)))
                 .child(label)
                 .on_click(cx.listener(move |this, _, _, cx| this.show_only_blocked(only, cx)))
         };
         let heading = h_flex()
-            .gap_2()
+            .gap_1p5()
             .items_center()
             .child(
                 div()
@@ -183,8 +201,8 @@ impl MainView {
                     .font_semibold()
                     .child(t!("Recent activity").into_owned()),
             )
-            .child(chip(false, t!("All").into_owned()))
-            .child(chip(true, t!("Blocked").into_owned()))
+            .child(chip(false, "all", t!("All").into_owned()))
+            .child(chip(true, "blocked", blocked_label))
             .child(
                 Button::new("refresh-activity")
                     .ghost()
@@ -195,7 +213,6 @@ impl MainView {
                         this.run("sandbox.activity", window, cx);
                     })),
             );
-        let current = self.activity.sandbox.as_ref() == Some(key);
         let body = match self.activity.listed.as_ref().filter(|_| current) {
             None if self.watch == Watch::Nothing => hint(t!("Not asked"), cx),
             None => hint(t!("Reading its log…"), cx),
@@ -215,16 +232,40 @@ impl MainView {
                         cx,
                     )
                 } else {
-                    let more = shown.len().saturating_sub(SHOWN);
+                    let limit = if self.activity.expanded {
+                        SHOWN
+                    } else {
+                        COLLAPSED
+                    };
+                    let total = shown.len();
+                    let can_expand = !self.activity.expanded && total > COLLAPSED;
+                    let more = total.saturating_sub(SHOWN);
                     v_flex()
                         .gap_2()
                         .children(
                             shown
                                 .into_iter()
-                                .take(SHOWN)
+                                .take(limit)
                                 .map(|activity| Self::activity_row(activity, cx)),
                         )
-                        .when(more > 0, |list| {
+                        .when(can_expand, |list| {
+                            list.child(
+                                h_flex().pt_1().child(
+                                    Button::new("expand-activity")
+                                        .ghost()
+                                        .xsmall()
+                                        .label(
+                                            t!("Show all %{count}", count = total.min(SHOWN))
+                                                .into_owned(),
+                                        )
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.activity.expanded = true;
+                                            cx.notify();
+                                        })),
+                                ),
+                            )
+                        })
+                        .when(self.activity.expanded && more > 0, |list| {
                             list.child(hint(t!("and %{count} earlier", count = more), cx))
                         })
                 }

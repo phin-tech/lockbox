@@ -58,7 +58,7 @@ impl MainView {
     }
 
     /// Brings the chosen sandbox's work back, each repository's to its branch, off the window's thread.
-    pub(super) fn bring_back_selected(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn bring_back_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(sandbox) = self.selected_sandbox() else {
             return;
         };
@@ -79,25 +79,45 @@ impl MainView {
         };
         self.bring_back.working = true;
         tracing::info!(sandbox = %name, "bringing work back");
-        self.bring_back._working = Some(cx.spawn(async move |this, cx| {
+        self.bring_back._working = Some(cx.spawn_in(window, async move |this, cx| {
             let results = cx
                 .background_spawn({
                     let name = name.clone();
                     async move {
                         repos
                             .iter()
-                            .map(|repo| bring_back(&openshell, &name, repo).map_err(|error| error.to_string()))
+                            .map(|repo| {
+                                bring_back(&openshell, &name, repo)
+                                    .map_err(|error| error.to_string())
+                            })
                             .collect::<Vec<_>>()
                     }
                 })
                 .await;
-            let _ = this.update(cx, |this, cx| {
+            let _ = this.update_in(cx, |this, window, cx| {
                 this.bring_back.working = false;
+                let mut ok_branch: Option<String> = None;
                 for result in &results {
                     match result {
-                        Ok(brought) => tracing::info!(sandbox = %name, branch = %brought.branch, "brought work back"),
-                        Err(error) => tracing::warn!(sandbox = %name, "couldn't bring work back: {error}"),
+                        Ok(brought) => {
+                            tracing::info!(sandbox = %name, branch = %brought.branch, "brought work back");
+                            if ok_branch.is_none() {
+                                ok_branch = Some(brought.branch.clone());
+                            }
+                        }
+                        Err(error) => {
+                            tracing::warn!(sandbox = %name, "couldn't bring work back: {error}")
+                        }
                     }
+                }
+                if let Some(branch) = ok_branch
+                    && results.iter().all(Result::is_ok)
+                {
+                    Toast::new(
+                        t!("Brought work back to %{branch}", branch = branch).into_owned(),
+                    )
+                    .key("bring-back")
+                    .show(window, cx);
                 }
                 this.bring_back.results = results;
                 cx.notify();

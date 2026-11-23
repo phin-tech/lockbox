@@ -11,3 +11,4 @@ workspace = true
 
 [dependencies]
 playpen-core.workspace = true
+serde_json.workspace = true

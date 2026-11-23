@@ -173,6 +173,7 @@ impl MainView {
             let running = self.sandboxes_running(agent).len();
             let said = match running {
                 0 => t!("Version %{version}", version = agent.version()).into_owned(),
+                1 => t!("Version %{version} · 1 sandbox", version = agent.version()).into_owned(),
                 count => t!(
                     "Version %{version} · %{count} sandboxes",
                     version = agent.version(),
@@ -224,19 +225,52 @@ impl MainView {
         let agent = self.agents.selected;
         let built = self.agents.built(agent);
         let building = built == Built::Building;
+        let build_badge = match &built {
+            Built::Yes => Some(
+                shell::badge(Tag::success())
+                    .xsmall()
+                    .child(t!("Built").into_owned()),
+            ),
+            Built::No => Some(
+                shell::badge(Tag::secondary())
+                    .xsmall()
+                    .child(t!("Not built").into_owned()),
+            ),
+            Built::Building => Some(
+                shell::badge(Tag::info())
+                    .xsmall()
+                    .child(t!("Building…").into_owned()),
+            ),
+            Built::Failed(_) => Some(
+                shell::badge(Tag::danger())
+                    .xsmall()
+                    .child(t!("Build failed").into_owned()),
+            ),
+            Built::Checking => None,
+        };
         let hero = h_flex()
             .gap_3()
-            .child(agent_tile(Some(agent), theme.primary, rems(44. / 13.), cx))
+            .items_center()
+            .child(agent_tile(Some(agent), theme.primary, rems(42. / 13.), cx))
             .child(
                 v_flex()
                     .flex_1()
                     .min_w_0()
+                    .gap_0p5()
                     .child(
-                        div()
-                            .truncate()
-                            .text_lg()
-                            .font_semibold()
-                            .child(agent.name()),
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .min_w_0()
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_lg()
+                                    .font_semibold()
+                                    .child(agent.name()),
+                            )
+                            .when_some(build_badge, |row, badge| row.child(badge)),
                     )
                     .child(
                         div()
@@ -273,6 +307,15 @@ impl MainView {
                     })
                     .on_click(cx.listener(|this, _, window, cx| this.build_image(window, cx))),
             );
+        let pinned_header = v_flex()
+            .flex_none()
+            .gap_3()
+            .px_5()
+            .py_4()
+            .border_b_1()
+            .border_color(shell::hairline(theme))
+            .child(hero)
+            .child(actions);
         let image = match &built {
             Built::Checking => t!("Checking…").into_owned(),
             Built::Yes => t!("Built").into_owned(),
@@ -320,7 +363,36 @@ impl MainView {
             }
         };
         let sandboxes = self.sandboxes_running(agent);
-        let mut info = vec![
+        let gateway_key = self.gateway_key();
+        let sandboxes_value = if sandboxes.is_empty() {
+            div()
+                .text_color(theme.muted_foreground)
+                .child(t!("None").into_owned())
+        } else {
+            h_flex()
+                .flex_wrap()
+                .justify_end()
+                .gap_1p5()
+                .children(sandboxes.into_iter().map(|sandbox| {
+                    let target = SandboxKey {
+                        gateway: gateway_key.clone(),
+                        name: sandbox.name.clone(),
+                    };
+                    Button::new(ElementId::from((
+                        ElementId::from("jump-sandbox"),
+                        sandbox.name.clone(),
+                    )))
+                    .outline()
+                    .xsmall()
+                    .icon(assets::IconName::Box)
+                    .label(sandbox.name.clone())
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.show_page(Page::Sandboxes, window, cx);
+                        this.select(target.clone(), cx);
+                    }))
+                }))
+        };
+        let info = vec![
             (
                 t!("Image").into_owned(),
                 shell::code_chip(agent.image(), cx),
@@ -328,23 +400,11 @@ impl MainView {
             (t!("Built").into_owned(), text_value(image)),
             (t!("Can use").into_owned(), text_value(names.join(", "))),
             (t!("Your providers").into_owned(), yours),
+            (t!("Sandboxes").into_owned(), sandboxes_value),
         ];
-        info.push((
-            t!("Sandboxes").into_owned(),
-            text_value(match sandboxes.len() {
-                0 => t!("None").into_owned(),
-                _ => sandboxes
-                    .iter()
-                    .map(|sandbox| sandbox.name.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", "),
-            }),
-        ));
         let body = v_flex()
             .gap_5()
             .p_5()
-            .child(hero)
-            .child(actions)
             .child(info_card(info, cx))
             .when_some(
                 match &built {
@@ -359,11 +419,10 @@ impl MainView {
                 ),
                 cx,
             ));
-        div()
-            .id("agent")
+        v_flex()
             .size_full()
-            .overflow_y_scroll()
-            .child(body)
+            .child(pinned_header)
+            .child(div().id("agent").flex_1().overflow_y_scroll().child(body))
             .into_any_element()
     }
 }

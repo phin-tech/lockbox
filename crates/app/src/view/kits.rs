@@ -11,7 +11,7 @@ use playpen_core::{
     parse_env,
 };
 
-use super::sandboxes::{info_card, text_value};
+use super::sandboxes::text_value;
 use super::*;
 
 /// The Kits place's own state.
@@ -20,8 +20,12 @@ pub(super) struct KitsPage {
     /// Where they're kept; none in a capture or a test, which keep them only while open.
     path: Option<PathBuf>,
     pub(super) selected: Option<String>,
-    /// The chosen kit's name, as it's typed.
+    /// The chosen kit's name, as it's typed while renaming.
     name: Option<Entity<InputState>>,
+    /// Whether the hero title is currently in rename mode.
+    renaming: bool,
+    /// Inline validation note while renaming (e.g. duplicate or empty name).
+    rename_problem: Option<String>,
     failed: Option<String>,
     /// The chosen kit's variables, as they're typed, each name and value field with where the value comes from.
     variables: Vec<VariableRow>,
@@ -50,6 +54,8 @@ impl KitsPage {
             path,
             selected,
             name: None,
+            renaming: false,
+            rename_problem: None,
             failed,
             import: None,
             variables: Vec::new(),
@@ -135,30 +141,54 @@ impl MainView {
 
     pub(super) fn select_kit(&mut self, name: String, window: &mut Window, cx: &mut Context<Self>) {
         self.kits.selected = Some(name.clone());
+        self.kits.renaming = false;
+        self.kits.rename_problem = None;
         let field = cx.new(|cx| {
             let mut state = InputState::new(window, cx);
             state.set_value(name.clone(), window, cx);
             state
         });
-        // A new name takes once it's one a kit can have.
-        self.kits._renamed =
-            Some(
-                cx.subscribe_in(&field, window, |this, field, event: &InputEvent, _, cx| {
-                    if !matches!(event, InputEvent::Change) {
-                        return;
+        // A new name takes once it's one a kit can have; otherwise explain why inline.
+        self.kits._renamed = Some(cx.subscribe_in(
+            &field,
+            window,
+            |this, field, event: &InputEvent, window, cx| match event {
+                InputEvent::PressEnter { .. } | InputEvent::Blur => {
+                    if this.kits.rename_problem.is_none() {
+                        this.kits.renaming = false;
+                        this.focus.focus(window, cx);
+                        cx.notify();
                     }
+                }
+                InputEvent::Change => {
                     let typed = field.read(cx).value().trim().to_string();
                     let Some(old) = this.kits.selected.clone() else {
                         return;
                     };
-                    if typed.is_empty() || typed == old || this.kits.kits.find(&typed).is_some() {
+                    if typed.is_empty() {
+                        this.kits.rename_problem = Some(t!("Give the kit a name.").into_owned());
+                        cx.notify();
                         return;
                     }
+                    if typed == old {
+                        this.kits.rename_problem = None;
+                        cx.notify();
+                        return;
+                    }
+                    if this.kits.kits.find(&typed).is_some() {
+                        this.kits.rename_problem =
+                            Some(t!("Another kit already has that name.").into_owned());
+                        cx.notify();
+                        return;
+                    }
+                    this.kits.rename_problem = None;
                     this.kits.change(|kit| kit.name = typed.clone());
                     this.kits.selected = Some(typed);
                     cx.notify();
-                }),
-            );
+                }
+                _ => {}
+            },
+        ));
         self.kits.name = Some(field);
         let variables = self
             .kits
@@ -279,10 +309,16 @@ impl MainView {
                 }
             });
             v_flex()
-                .gap_1p5()
+                .gap_2()
+                .p_2p5()
+                .rounded(theme.radius * 1.5)
+                .border_1()
+                .border_color(theme.border)
+                .bg(shell::recessed_colour(theme))
                 .child(
                     h_flex()
                         .gap_2()
+                        .items_center()
                         .child(div().w(rems(11.)).child(small_field(&row.name)))
                         .child(div().flex_1().min_w_0().child(small_field(&row.value)))
                         .child(
@@ -295,7 +331,9 @@ impl MainView {
                                     if at < this.kits.variables.len() {
                                         this.kits.variables.remove(at);
                                         // Each row has two subscriptions, its name's and its value's.
-                                        this.kits._variables.drain(at * 2..(at * 2 + 2).min(this.kits._variables.len()));
+                                        this.kits._variables.drain(
+                                            at * 2..(at * 2 + 2).min(this.kits._variables.len()),
+                                        );
                                     }
                                     this.save_variables(cx);
                                 })),
@@ -303,6 +341,7 @@ impl MainView {
                 )
                 .child(
                     h_flex()
+                        .flex_wrap()
                         .gap_4()
                         .child(source(From::Value, t!("Value")))
                         .child(source(From::OnePassword, t!("1Password reference")))
@@ -419,24 +458,60 @@ impl MainView {
         self.kits.save();
         self.show_page(Page::Kits, window, cx);
         self.select_kit(name, window, cx);
+        self.kits.renaming = true;
         if let Some(field) = &self.kits.name {
             field.read(cx).focus_handle(cx).focus(window, cx);
         }
+        cx.notify();
     }
 
-    fn delete_kit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn delete_kit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(name) = self.kits.selected.clone() else {
             return;
         };
-        self.kits.kits.kits.retain(|kit| kit.name != name);
+        let Some(pos) = self.kits.kits.kits.iter().position(|kit| kit.name == name) else {
+            return;
+        };
+        let removed = self.kits.kits.kits.remove(pos);
         self.kits.save();
         match self.kits.kits.kits.first().map(|kit| kit.name.clone()) {
             Some(first) => self.select_kit(first, window, cx),
             None => {
                 self.kits.selected = None;
                 self.kits.name = None;
+                self.kits.renaming = false;
             }
         }
+        let view = cx.entity().downgrade();
+        Toast::new(t!("Deleted kit “%{name}”", name = removed.name.clone()).into_owned())
+            .key("kit-deleted")
+            .undo(move |window, cx| {
+                let kit = removed.clone();
+                let _ = view.update(cx, |this, cx| {
+                    if this.kits.kits.find(&kit.name).is_none() {
+                        let at = pos.min(this.kits.kits.kits.len());
+                        let restored_name = kit.name.clone();
+                        this.kits.kits.kits.insert(at, kit);
+                        this.kits.save();
+                        this.select_kit(restored_name, window, cx);
+                    }
+                });
+            })
+            .show(window, cx);
+        cx.notify();
+    }
+
+    pub(super) fn cancel_import(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self
+            .kits
+            .import
+            .as_ref()
+            .is_some_and(|import| import.saving)
+        {
+            return;
+        }
+        self.kits.import = None;
+        self.focus.focus(window, cx);
         cx.notify();
     }
 
@@ -649,7 +724,11 @@ impl MainView {
             }
         };
         let services = match catalog {
-            None => v_flex(),
+            None => v_flex().child(text_value(if self.watch == Watch::Nothing {
+                t!("Not asked").into_owned()
+            } else {
+                t!("Asking OpenShell…").into_owned()
+            })),
             Some((providers, profiles)) => {
                 let choices = Service::choices(providers, profiles);
                 v_flex()
@@ -696,13 +775,62 @@ impl MainView {
         };
         let hero = h_flex()
             .gap_3()
-            .child(kit_tile(theme.primary, rems(44. / 13.), cx))
+            .items_center()
+            .child(kit_tile(theme.primary, rems(42. / 13.), cx))
             .child(
                 v_flex()
                     .flex_1()
                     .min_w_0()
-                    .when_some(self.kits.name.clone(), |this, name| {
-                        this.child(div().w(rems(16.)).child(small_field(&name)))
+                    .gap_0p5()
+                    .child(if self.kits.renaming {
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .when_some(self.kits.name.clone(), |row, name| {
+                                row.child(div().w(rems(16.)).child(small_field(&name)))
+                            })
+                            .child(
+                                Button::new("done-rename-kit")
+                                    .ghost()
+                                    .xsmall()
+                                    .disabled(self.kits.rename_problem.is_some())
+                                    .label(t!("Done").into_owned())
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.kits.renaming = false;
+                                        this.focus.focus(window, cx);
+                                        cx.notify();
+                                    })),
+                            )
+                    } else {
+                        h_flex()
+                            .gap_1p5()
+                            .items_center()
+                            .min_w_0()
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_lg()
+                                    .font_semibold()
+                                    .child(kit.name.clone()),
+                            )
+                            .child(
+                                Button::new("rename-kit")
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(assets::IconName::Pencil)
+                                    .tooltip(t!("Rename Kit").into_owned())
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.kits.renaming = true;
+                                        if let Some(field) = &this.kits.name {
+                                            field.read(cx).focus_handle(cx).focus(window, cx);
+                                        }
+                                        cx.notify();
+                                    })),
+                            )
+                    })
+                    .when_some(self.kits.rename_problem.clone(), |col, problem| {
+                        col.child(div().text_xs().text_color(theme.danger).child(problem))
                     })
                     .child(
                         div()
@@ -730,23 +858,34 @@ impl MainView {
             .child(
                 Button::new("delete-kit")
                     .small()
-                    .ghost()
+                    .outline()
                     .icon(assets::IconName::Trash)
                     .label(t!("Delete Kit").into_owned())
                     .on_click(cx.listener(|this, _, window, cx| this.delete_kit(window, cx))),
             );
+        let pinned_header = v_flex()
+            .flex_none()
+            .gap_3()
+            .px_5()
+            .py_4()
+            .border_b_1()
+            .border_color(shell::hairline(theme))
+            .child(hero)
+            .child(actions);
+        let recessed_box = |content: Div| {
+            div()
+                .p_3()
+                .rounded(theme.radius * 1.5)
+                .border_1()
+                .border_color(theme.border)
+                .bg(shell::recessed_colour(theme))
+                .child(content)
+        };
         let body = v_flex()
             .gap_5()
             .p_5()
-            .child(hero)
-            .child(actions)
-            .child(info_card(
-                vec![
-                    (t!("Model key").into_owned(), model_keys.items_end()),
-                    (t!("Services").into_owned(), services.items_end()),
-                ],
-                cx,
-            ))
+            .child(section(t!("Model key"), cx).child(recessed_box(model_keys)))
+            .child(section(t!("Services"), cx).child(recessed_box(services)))
             .child(section(t!("Setup folder"), cx).child(self.setup_folder_editor(kit, cx)))
             .child(section(t!("Variables"), cx).child(self.variables_editor(cx)))
             .when_some(self.kits.failed.clone(), |body, failed| {
@@ -758,11 +897,10 @@ impl MainView {
                 ),
                 cx,
             ));
-        div()
-            .id("kit")
+        v_flex()
             .size_full()
-            .overflow_y_scroll()
-            .child(body)
+            .child(pinned_header)
+            .child(div().id("kit").flex_1().overflow_y_scroll().child(body))
             .into_any_element()
     }
 }
@@ -1092,30 +1230,6 @@ impl MainView {
     /// What a kit made from a `.env` file would hold, each line to tick, name and point at a host.
     pub(super) fn import_panel(&self, import: &EnvImport, cx: &Context<Self>) -> AnyElement {
         let theme = cx.theme();
-        let header = Self::panel_header(t!("New Kit from .env"), cx).child(
-            h_flex()
-                .gap_1()
-                .child(
-                    Button::new("cancel-import")
-                        .ghost()
-                        .xsmall()
-                        .disabled(import.saving)
-                        .label(t!("Cancel").into_owned())
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.kits.import = None;
-                            cx.notify();
-                        })),
-                )
-                .child(
-                    Button::new("finish-import")
-                        .primary()
-                        .xsmall()
-                        .loading(import.saving)
-                        .disabled(!import.rows.iter().any(|row| row.include))
-                        .label(t!("Add and Make Kit").into_owned())
-                        .on_click(cx.listener(|this, _, _, cx| this.finish_import(cx))),
-                ),
-        );
         let there: Vec<String> = self
             .services
             .catalog
@@ -1127,17 +1241,35 @@ impl MainView {
                     .collect()
             })
             .unwrap_or_default();
+        let short_from = {
+            let file = import
+                .from
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            match import
+                .from
+                .parent()
+                .and_then(|parent| parent.file_name())
+                .map(|name| name.to_string_lossy().into_owned())
+            {
+                Some(parent) if !parent.is_empty() => format!("{parent}/{file}"),
+                _ => file,
+            }
+        };
         let rows = import.rows.iter().enumerate().map(|(at, row)| {
             let what = match &row.guess {
                 Guess::Model(kind) => t!("%{kind} model key", kind = kind.name()).into_owned(),
-                _ if row.as_variable => t!("Variable, set as it is").into_owned(),
+                _ if row.as_variable => t!("Plain variable").into_owned(),
                 Guess::Service(_) => t!("Service").into_owned(),
-                Guess::Unknown => t!("Service, if you say where it goes").into_owned(),
+                Guess::Unknown => t!("Needs a host").into_owned(),
             };
-            let value = if row.line.is_reference() {
-                row.line.value.clone()
+            let source_badge = if row.line.is_reference() {
+                t!("1Password").into_owned()
+            } else if row.as_variable {
+                t!("Value").into_owned()
             } else {
-                t!("a key, kept by OpenShell").into_owned()
+                t!("Secret").into_owned()
             };
             let name = row.name.read(cx).value().trim().to_string();
             let toggle = move |change: fn(&mut ImportRow, bool)| {
@@ -1152,7 +1284,7 @@ impl MainView {
             };
             // An index into a list that's only ever read in this order, since a file's lines don't move.
             v_flex()
-                .gap_2()
+                .gap_2p5()
                 .p_3()
                 .rounded(theme.radius * 1.5)
                 .border_1()
@@ -1160,81 +1292,165 @@ impl MainView {
                 .bg(shell::recessed_colour(theme))
                 .child(
                     h_flex()
-                        .gap_3()
+                        .gap_2p5()
+                        .items_center()
                         .child(
                             Checkbox::new(("import-row", at))
                                 .checked(row.include)
                                 .disabled(import.saving)
                                 .on_click(toggle(|row, checked| row.include = checked)),
                         )
-                        .child(h_flex().flex_none().child(shell::code_chip(row.line.variable.clone(), cx)))
-                        .child(div().flex_1().min_w_0().truncate().text_sm().text_color(theme.muted_foreground).child(what))
-                        .child(div().min_w_0().truncate().text_xs().text_color(theme.muted_foreground).child(value)),
+                        .child(
+                            div()
+                                .flex_none()
+                                .child(shell::code_chip(row.line.variable.clone(), cx)),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .text_xs()
+                                .text_color(theme.muted_foreground)
+                                .child(what),
+                        )
+                        .child(
+                            shell::badge(Tag::secondary())
+                                .xsmall()
+                                .child(source_badge),
+                        ),
                 )
                 .when(row.include, |card| {
                     card.child(
-                        h_flex()
-                            .flex_wrap()
-                            .gap_3()
-                            .child(
-                                v_flex()
-                                    .gap_1()
-                                    .child(div().text_xs().text_color(theme.muted_foreground).child(t!("Name").into_owned()))
-                                    .child(div().w(rems(11.)).child(small_field(&row.name))),
-                            )
-                            .when(!matches!(row.guess, Guess::Model(_)), |line| {
-                                line.child(
-                                    Checkbox::new(("import-variable", at))
-                                        .label(t!("Set as a variable").into_owned())
-                                        .checked(row.as_variable)
-                                        .disabled(import.saving)
-                                        .on_click(toggle(|row, checked| row.as_variable = checked)),
+                        v_flex()
+                            .gap_2()
+                            .pl_6()
+                            .when(!row.as_variable, |details| {
+                                details.child(
+                                    h_flex()
+                                        .flex_wrap()
+                                        .gap_3()
+                                        .items_end()
+                                        .child(
+                                            v_flex()
+                                                .gap_1()
+                                                .child(
+                                                    div()
+                                                        .text_xs()
+                                                        .text_color(theme.muted_foreground)
+                                                        .child(t!("Name").into_owned()),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .w(rems(11.))
+                                                        .child(small_field(&row.name)),
+                                                ),
+                                        )
+                                        .when(!matches!(row.guess, Guess::Model(_)), |line| {
+                                            line.child(
+                                                v_flex()
+                                                    .gap_1()
+                                                    .child(
+                                                        div()
+                                                            .text_xs()
+                                                            .text_color(theme.muted_foreground)
+                                                            .child(t!("Host").into_owned()),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .w(rems(14.))
+                                                            .child(small_field(&row.host)),
+                                                    ),
+                                            )
+                                        }),
                                 )
                             })
-                            .when(!matches!(row.guess, Guess::Model(_)) && !row.as_variable, |line| {
-                                line.child(
-                                    v_flex()
-                                        .gap_1()
-                                        .child(div().text_xs().text_color(theme.muted_foreground).child(t!("Host").into_owned()))
-                                        .child(div().w(rems(14.)).child(small_field(&row.host))),
-                                )
-                                .child(
-                                    Checkbox::new(("import-writes", at))
-                                        .label(t!("Allow writes").into_owned())
-                                        .checked(row.writes)
-                                        .disabled(import.saving)
-                                        .on_click(toggle(|row, checked| row.writes = checked)),
+                            .when(!matches!(row.guess, Guess::Model(_)), |details| {
+                                details.child(
+                                    h_flex()
+                                        .flex_wrap()
+                                        .gap_4()
+                                        .child(
+                                            Checkbox::new(("import-variable", at))
+                                                .label(t!("Set as a variable").into_owned())
+                                                .checked(row.as_variable)
+                                                .disabled(import.saving)
+                                                .on_click(toggle(|row, checked| {
+                                                    row.as_variable = checked
+                                                })),
+                                        )
+                                        .when(!row.as_variable, |line| {
+                                            line.child(
+                                                Checkbox::new(("import-writes", at))
+                                                    .label(t!("Allow writes").into_owned())
+                                                    .checked(row.writes)
+                                                    .disabled(import.saving)
+                                                    .on_click(toggle(|row, checked| {
+                                                        row.writes = checked
+                                                    })),
+                                            )
+                                        }),
                                 )
                             }),
                     )
-                    .when(there.contains(&name), |card| {
-                        card.child(hint(
+                    .when(!row.as_variable && there.contains(&name), |card| {
+                        card.child(div().pl_6().child(hint(
                             t!("OpenShell has a provider called that already, so the kit uses it as it is."),
                             cx,
-                        ))
+                        )))
                     })
                 })
         });
         let body = v_flex()
             .gap_4()
             .p_4()
+            .child(
+                h_flex()
+                    .flex_wrap()
+                    .gap_1p5()
+                    .items_center()
+                    .child(div().text_sm().text_color(theme.muted_foreground).child(t!("From").into_owned()))
+                    .child(shell::code_chip(short_from, cx)),
+            )
             .child(hint(
-                t!("From %{path}. A .env says what a key's called but not where it goes, so give each service its host; one Playpen doesn't know starts unticked.", path = import.from.display()),
+                t!("Give each service its host. Unrecognized keys start unticked; 1Password references (op://…) go directly from 1Password to OpenShell."),
                 cx,
             ))
-            .child(section(t!("Kit"), cx).child(div().w(rems(16.)).child(small_field(&import.kit_name))))
-            .children(rows)
-            .when_some(self.kits.failed.clone(), |body, failed| {
-                body.child(div().text_sm().text_color(theme.danger).child(failed))
-            })
-            .child(hint(
-                t!("Values that are 1Password references, op://…, go from op to OpenShell; Playpen never reads them."),
-                cx,
-            ));
-        v_flex()
-            .size_full()
-            .child(header)
-            .child(div().id("import").flex_1().overflow_y_scroll().child(body))
-            .into_any_element()
+            .child(
+                section(t!("Kit"), cx).child(div().w(rems(16.)).child(small_field(&import.kit_name))),
+            )
+            .children(rows);
+        let footer_left = match &self.kits.failed {
+            Some(failed) => div()
+                .text_sm()
+                .text_color(theme.danger)
+                .child(failed.clone())
+                .into_any_element(),
+            None => div().into_any_element(),
+        };
+        let cancel = Button::new("cancel-import")
+            .ghost()
+            .small()
+            .disabled(import.saving)
+            .label(t!("Cancel").into_owned())
+            .on_click(cx.listener(|this, _, window, cx| this.cancel_import(window, cx)));
+        let primary = Button::new("finish-import")
+            .primary()
+            .small()
+            .loading(import.saving)
+            .disabled(!import.rows.iter().any(|row| row.include))
+            .label(t!("Add and Make Kit").into_owned())
+            .on_click(cx.listener(|this, _, _, cx| this.finish_import(cx)));
+        self.form_panel(
+            t!("New Kit from .env"),
+            "import",
+            body,
+            footer_left,
+            cancel,
+            primary,
+            import.saving,
+            |this, _, window, cx| this.cancel_import(window, cx),
+            cx,
+        )
     }
 }

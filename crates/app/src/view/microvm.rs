@@ -263,13 +263,15 @@ impl MainView {
                         crate::settings::set_gateway(MICROVM_GATEWAY, None, cx);
                         let was_shown = this.gateway.name() == Some(MICROVM_GATEWAY);
                         this.gateways_listed(Ok(gateways));
-                        this.failed = Some(
+                        Toast::new(
                             t!(
-                                "The MicroVM gateway is removed. Its sandboxes' disks are still in %{folder}.",
+                                "Removed MicroVM gateway (disks kept in %{folder})",
                                 folder = kept.display().to_string()
                             )
                             .into_owned(),
-                        );
+                        )
+                        .key("microvm-removed")
+                        .show(window, cx);
                         if was_shown {
                             cx.set_global(crate::providers::ShownGateway(this.gateway.clone()));
                         }
@@ -307,7 +309,7 @@ impl MainView {
         let busy = form.busy();
         h_flex().gap_2().children(values.iter().map(|value| {
             let value = *value;
-            shell::chip(chosen == value, cx)
+            choice_chip(chosen == value, cx)
                 .id(ElementId::from((
                     ElementId::from(format!("microvm-{part:?}")),
                     value.to_string(),
@@ -388,50 +390,27 @@ impl MainView {
         let theme = cx.theme();
         let busy = form.busy();
         let set_up_before = form.microvm.as_ref().is_some_and(MicroVm::is_set_up);
-        let header = Self::panel_header(t!("MicroVM Gateway"), cx).child(
-            h_flex()
-                .gap_1()
-                .child(
-                    Button::new("cancel-microvm")
-                        .ghost()
-                        .xsmall()
-                        .disabled(busy)
-                        .label(t!("Cancel").into_owned())
-                        .on_click(
-                            cx.listener(|this, _, window, cx| this.cancel_microvm(window, cx)),
-                        ),
-                )
-                .child(
-                    Button::new("set-up-microvm")
-                        .primary()
-                        .xsmall()
-                        .disabled(busy || !form.missing.is_empty())
-                        .loading(matches!(form.state, SetUpState::Working(_)))
-                        .label(if set_up_before {
-                            t!("Set Up Again").into_owned()
-                        } else {
-                            t!("Set Up").into_owned()
-                        })
-                        .on_click(
-                            cx.listener(|this, _, window, cx| this.set_up_microvm(window, cx)),
-                        ),
-                ),
-        );
         let gib = |value: u32| t!("%{count} GB", count = value).into_owned();
-        let state = match &form.state {
-            SetUpState::Choosing | SetUpState::Installing => div(),
-            SetUpState::Working(step) => hint(
-                match step {
-                    SetUpStep::Certificates => t!("Making its certificates…"),
-                    SetUpStep::Starting => t!("Starting it…"),
-                    SetUpStep::Registering => t!("Registering it with OpenShell…"),
-                },
-                cx,
-            ),
+        let footer_left = match &form.state {
+            SetUpState::Choosing | SetUpState::Installing => div().into_any_element(),
+            SetUpState::Working(step) => h_flex()
+                .gap_2()
+                .items_center()
+                .child(Spinner::new().xsmall())
+                .child(hint(
+                    match step {
+                        SetUpStep::Certificates => t!("Making its certificates…"),
+                        SetUpStep::Starting => t!("Starting it…"),
+                        SetUpStep::Registering => t!("Registering it with OpenShell…"),
+                    },
+                    cx,
+                ))
+                .into_any_element(),
             SetUpState::Failed(error) => div()
                 .text_sm()
                 .text_color(theme.danger)
-                .child(error.clone()),
+                .child(error.clone())
+                .into_any_element(),
         };
         let folder = form
             .microvm
@@ -457,8 +436,20 @@ impl MainView {
                         |value| t!("%{count} CPUs", count = value).into_owned(),
                         cx,
                     ))
-                    .child(self.size_chips(form, SizePart::Memory, &MicroVmSize::MEMORY_GIB, |value| t!("%{memory} memory", memory = gib(value)).into_owned(), cx))
-                    .child(self.size_chips(form, SizePart::Disk, &MicroVmSize::DISK_GIB, |value| t!("%{disk} disk", disk = gib(value)).into_owned(), cx))
+                    .child(self.size_chips(
+                        form,
+                        SizePart::Memory,
+                        &MicroVmSize::MEMORY_GIB,
+                        |value| t!("%{memory} memory", memory = gib(value)).into_owned(),
+                        cx,
+                    ))
+                    .child(self.size_chips(
+                        form,
+                        SizePart::Disk,
+                        &MicroVmSize::DISK_GIB,
+                        |value| t!("%{disk} disk", disk = gib(value)).into_owned(),
+                        cx,
+                    ))
                     .child(hint(
                         t!("Memory is taken as a sandbox uses it, and disk as it's written."),
                         cx,
@@ -478,13 +469,35 @@ impl MainView {
                     folder = folder
                 ),
                 cx,
-            ))
-            .child(state);
-        v_flex()
-            .size_full()
-            .child(header)
-            .child(div().id("microvm").flex_1().overflow_y_scroll().child(body))
-            .into_any_element()
+            ));
+        let cancel = Button::new("cancel-microvm")
+            .ghost()
+            .small()
+            .disabled(busy)
+            .label(t!("Cancel").into_owned())
+            .on_click(cx.listener(|this, _, window, cx| this.cancel_microvm(window, cx)));
+        let primary = Button::new("set-up-microvm")
+            .primary()
+            .small()
+            .disabled(busy || !form.missing.is_empty())
+            .loading(matches!(form.state, SetUpState::Working(_)))
+            .label(if set_up_before {
+                t!("Set Up Again").into_owned()
+            } else {
+                t!("Set Up Gateway").into_owned()
+            })
+            .on_click(cx.listener(|this, _, window, cx| this.set_up_microvm(window, cx)));
+        self.form_panel(
+            t!("MicroVM Gateway"),
+            "microvm",
+            body,
+            footer_left,
+            cancel,
+            primary,
+            busy,
+            |this, _, window, cx| this.cancel_microvm(window, cx),
+            cx,
+        )
     }
 }
 

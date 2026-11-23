@@ -22,9 +22,9 @@ pub(super) struct Ports {
 impl Ports {
     pub(super) fn new(watch: Watch, window: &mut Window, cx: &mut Context<MainView>) -> Ports {
         let field = cx.new(|cx| InputState::new(window, cx).placeholder("3000"));
-        let typed = cx.subscribe_in(&field, window, |this, _, event: &InputEvent, _, cx| {
+        let typed = cx.subscribe_in(&field, window, |this, _, event: &InputEvent, window, cx| {
             if let InputEvent::PressEnter { .. } = event {
-                this.forward_typed_port(cx);
+                this.forward_typed_port(window, cx);
             }
         });
         let file = (watch == Watch::OpenShell)
@@ -82,10 +82,10 @@ impl MainView {
     }
 
     /// Forwards the port typed to the chosen sandbox.
-    fn forward_typed_port(&mut self, cx: &mut Context<Self>) {
+    fn forward_typed_port(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let typed = self.ports.field.read(cx).value().trim().to_string();
         match typed.parse::<u16>() {
-            Ok(port) if port > 0 => self.forward_port(port, cx),
+            Ok(port) if port > 0 => self.forward_port(port, window, cx),
             _ => {
                 self.failed = Some(
                     t!(
@@ -100,7 +100,7 @@ impl MainView {
     }
 
     /// Forwards `port` to the chosen sandbox, off the window's thread.
-    pub(super) fn forward_port(&mut self, port: u16, cx: &mut Context<Self>) {
+    pub(super) fn forward_port(&mut self, port: u16, window: &mut Window, cx: &mut Context<Self>) {
         let Some(key) = self.selected.clone() else {
             return;
         };
@@ -123,9 +123,9 @@ impl MainView {
         self.ports.working = Some(port);
         let name = key.name.clone();
         let done = cx.background_spawn(async move { openshell.forward_port(&name, port) });
-        self.ports._working = Some(cx.spawn(async move |this, cx| {
+        self.ports._working = Some(cx.spawn_in(window, async move |this, cx| {
             let done = done.await;
-            let _ = this.update(cx, |this, cx| {
+            let _ = this.update_in(cx, |this, window, cx| {
                 this.ports.working = None;
                 match done {
                     Ok(()) => {
@@ -136,6 +136,12 @@ impl MainView {
                         });
                         this.ports.forwards.forwards.sort();
                         this.ports.save();
+                        this.ports
+                            .field
+                            .update(cx, |field, cx| field.set_value("", window, cx));
+                        Toast::new(t!("Forwarding localhost:%{port}", port = port).into_owned())
+                            .key("port-forward")
+                            .show(window, cx);
                     }
                     Err(error) => {
                         tracing::warn!("couldn't forward a port: {error}");
@@ -199,11 +205,13 @@ impl MainView {
                 let stopping = forward.clone();
                 h_flex()
                     .gap_1()
+                    .items_center()
                     .child(shell::code_chip(format!("localhost:{}", forward.port), cx))
                     .child(
                         Button::new(id("open-port"))
                             .ghost()
                             .xsmall()
+                            .icon(assets::IconName::ExternalLink)
                             .label(t!("Open").into_owned())
                             .on_click(move |_, _, cx| cx.open_url(&address)),
                     )
@@ -222,10 +230,12 @@ impl MainView {
             }))
             .child(
                 h_flex()
-                    .gap_1()
-                    .child(div().w(rems(5.)).child(small_field(&self.ports.field)))
+                    .gap_1p5()
+                    .items_center()
+                    .child(div().w(rems(5.5)).child(small_field(&self.ports.field)))
                     .child(
                         Button::new("forward-port")
+                            .outline()
                             .xsmall()
                             .icon(assets::IconName::Plus)
                             .label(t!("Forward").into_owned())
@@ -237,7 +247,9 @@ impl MainView {
                                     .iter()
                                     .any(|forward| forward.port == port)
                             }))
-                            .on_click(cx.listener(|this, _, _, cx| this.forward_typed_port(cx))),
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.forward_typed_port(window, cx)
+                            })),
                     ),
             )
     }

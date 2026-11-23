@@ -20,6 +20,7 @@ use typecase::settings::{Section, SettingsFrame};
 use crate::login_item;
 use crate::shortcuts::RunAction;
 use crate::update;
+use crate::view::copyable_command;
 use crate::{commands, theme};
 
 /// The settings, where they're kept, and the Settings window if it's open.
@@ -179,18 +180,18 @@ pub fn open(cx: &mut App) {
 /// The sections, in the sidebar's order.
 fn sections(keys: Entity<Keys>) -> Vec<Section> {
     vec![
-        Section::new(t!("General").into_owned(), |_, cx| general(cx)).keywords([
-            "text", "size", "herdr", "ghostty", "terminal", "sessions", "agents",
-        ]),
-        Section::new(t!("Keys").into_owned(), move |_, _| keys.clone()).keywords([
-            "1password",
-            "keychain",
-            "op",
-            "vault",
-            "providers",
-        ]),
+        Section::new(t!("General").into_owned(), |_, cx| general(cx))
+            .icon(assets::IconName::Settings)
+            .keywords([
+                "text", "size", "herdr", "ghostty", "terminal", "sessions", "agents",
+            ]),
+        Section::new(t!("Keys").into_owned(), move |_, _| keys.clone())
+            .icon(assets::IconName::KeyRound)
+            .keywords(["1password", "keychain", "op", "vault", "providers"]),
         Section::appearance(),
-        Section::new(t!("Updates").into_owned(), |_, cx| updates(cx)).keywords(["beta", "sparkle"]),
+        Section::new(t!("Updates").into_owned(), |_, cx| updates(cx))
+            .icon(assets::IconName::Download)
+            .keywords(["beta", "sparkle"]),
     ]
 }
 
@@ -294,12 +295,22 @@ impl Render for Keys {
                     .on_click(move |_, _, cx| change(cx, |settings| settings.keep_keys_in = choice))
             };
         let note = |text: std::borrow::Cow<str>| {
-            div().text_sm().text_color(muted).child(text.into_owned())
+            div()
+                .max_w(rems(42.))
+                .text_sm()
+                .text_color(muted)
+                .child(text.into_owned())
         };
         let vaults = match (&self.op, &self.vaults) {
-            (None, _) => note(t!(
-                "1Password's command line, `op`, isn't installed: `brew install 1password-cli`."
-            )),
+            (None, _) => v_flex()
+                .gap_1p5()
+                .items_start()
+                .child(note(t!("The 1Password CLI isn't installed:")))
+                .child(copyable_command(
+                    "copy-op-install-settings",
+                    "brew install 1password-cli",
+                    cx,
+                )),
             (Some(_), None) => note(t!("Asking 1Password for your vaults…")),
             (Some(_), Some(Err(error))) => v_flex()
                 .gap_2()
@@ -438,15 +449,22 @@ fn sessions(settings: &Settings, cx: &mut App) -> Div {
         }
     };
     let choice = |id: &'static str, show_in: ShowIn, label: std::borrow::Cow<str>, said: String| {
-        h_flex()
-            .gap_2()
+        v_flex()
+            .gap_0p5()
             .child(
                 Radio::new(id)
                     .label(label.into_owned())
                     .checked(settings.show_in == show_in)
                     .on_click(move |_, _, cx| change(cx, |settings| settings.show_in = show_in)),
             )
-            .child(div().text_sm().text_color(muted).child(said))
+            .child(
+                div()
+                    .pl_6()
+                    .max_w(rems(42.))
+                    .text_sm()
+                    .text_color(muted)
+                    .child(said),
+            )
     };
     let keeps = if installed.herdr_core {
         t!(
@@ -509,52 +527,54 @@ fn updates(cx: &mut App) -> Div {
     let muted = cx.theme().muted_foreground;
     let settings = current(cx);
     let sparkle = update::available();
-    v_flex()
-        .p_4()
-        .gap_3()
-        .child(
-            Switch::new("automatic")
-                .label(t!("Check for updates automatically").into_owned())
-                .checked(update::automatic())
-                .disabled(!sparkle)
-                .on_click(|on, window, _| {
-                    update::set_automatic(*on);
-                    window.refresh();
-                }),
-        )
-        .child(
-            Switch::new("beta")
-                .label(t!("Get beta versions, which come before a release").into_owned())
-                .checked(settings.beta_updates)
-                .on_click(|on, _, cx| set_beta_updates(*on, cx)),
-        )
-        .child(
-            h_flex()
-                .gap_3()
-                .items_center()
-                .child(
-                    Button::new("check")
-                        .outline()
-                        .label(t!("Check Now").into_owned())
-                        .disabled(!sparkle)
-                        .on_click(|_, _, _| {
-                            update::check();
-                        }),
-                )
-                .child(
-                    div().text_sm().text_color(muted).child(
-                        if sparkle {
-                            t!(
-                                "Once a day, %{app} looks for a newer release on apps.phin.tech.",
-                                app = "Playpen"
-                            )
-                        } else {
-                            t!("Updates come with the released app.")
-                        }
-                        .into_owned(),
+    v_flex().p_4().gap_6().child(part(
+        t!("Automatic Updates"),
+        v_flex()
+            .gap_3()
+            .child(
+                Switch::new("automatic")
+                    .label(t!("Check for updates automatically").into_owned())
+                    .checked(update::automatic())
+                    .disabled(!sparkle)
+                    .on_click(|on, window, _| {
+                        update::set_automatic(*on);
+                        window.refresh();
+                    }),
+            )
+            .child(
+                Switch::new("beta")
+                    .label(t!("Get beta versions, which come before a release").into_owned())
+                    .checked(settings.beta_updates)
+                    .on_click(|on, _, cx| set_beta_updates(*on, cx)),
+            )
+            .child(
+                h_flex()
+                    .gap_3()
+                    .items_center()
+                    .child(
+                        Button::new("check")
+                            .outline()
+                            .label(t!("Check Now").into_owned())
+                            .disabled(!sparkle)
+                            .on_click(|_, _, _| {
+                                update::check();
+                            }),
+                    )
+                    .child(
+                        div().max_w(rems(36.)).text_sm().text_color(muted).child(
+                            if sparkle {
+                                t!(
+                                    "Once a day, %{app} looks for a newer release on apps.phin.tech.",
+                                    app = "Playpen"
+                                )
+                            } else {
+                                t!("Updates come with the released app.")
+                            }
+                            .into_owned(),
+                        ),
                     ),
-                ),
-        )
+            ),
+    ))
 }
 
 #[cfg(test)]

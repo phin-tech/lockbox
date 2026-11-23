@@ -22,6 +22,8 @@ use gpui_kit::component::Icon;
 use gpui_kit::component::button::DropdownButton;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::radio::Radio;
+use gpui_kit::component::spinner::Spinner;
+use gpui_kit::component::tag::Tag;
 use gpui_kit::component::{
     ActiveTheme, Disableable as _, Sizable as _, StyledExt as _, TitleBar,
     button::{Button, ButtonVariants},
@@ -34,14 +36,15 @@ use playpen_core::{
     Sandbox, What,
 };
 use rust_i18n::t;
+use typecase::Toast;
 use typecase::help::{HelpEvent, KeyHelp};
 use typecase::overlay;
 use typecase::palette::{CommandPalette, PaletteEvent};
 use typecase::shell::{self, Footer, Lead};
 
 use crate::commands::{self, COMMANDS};
-use crate::providers::Providers;
-use crate::shortcuts::{CONTEXT, RunAction};
+use crate::providers::{Providers, ProvidersEvent};
+use crate::shortcuts::{CONTEXT, DismissForm, FORM_CONTEXT, RunAction};
 use crate::{about, palette, restore, theme};
 
 /// A place in the sidebar, each a kind of thing Playpen keeps.
@@ -107,13 +110,13 @@ pub fn open_with(
         .ok()
         .filter(|_| cfg!(feature = "screenshot"))
         .and_then(|width| width.parse().ok())
-        .unwrap_or(900.);
-    let centered = WindowBounds::Windowed(Bounds::centered(None, size(px(width), px(640.)), cx));
+        .unwrap_or(980.);
+    let centered = WindowBounds::Windowed(Bounds::centered(None, size(px(width), px(660.)), cx));
     let restored = remembered && !cfg!(feature = "screenshot");
     let bounds = restored.then(|| restore::bounds(cx)).flatten();
     let options = WindowOptions {
         window_bounds: Some(bounds.unwrap_or(centered)),
-        window_min_size: Some(size(px(480.), px(320.))),
+        window_min_size: Some(size(px(680.), px(400.))),
         titlebar: Some(TitlebarOptions {
             title: Some("Playpen".into()),
             // Centred down the taller title bar, which holds the list's heading.
@@ -218,6 +221,7 @@ impl MainView {
                 .by_sandbox
                 .insert(key.clone(), requests::stand_in_requests());
             view.ports_give_stand_ins(&key);
+            view.give_stand_in_services(&key);
             view.selected = Some(key);
             view.give_stand_in_activity();
             return view;
@@ -234,6 +238,7 @@ impl MainView {
         focus.focus(window, cx);
         let watching = (watch == Watch::OpenShell).then(|| Self::watch_sandboxes(window, cx));
         let ports = ports::Ports::new(watch, window, cx);
+        let services = services::Services::new(window, cx);
         Self {
             focus,
             openshell: OpenShell::find(),
@@ -252,7 +257,7 @@ impl MainView {
             herdr_failed: None,
             failed: None,
             making: None,
-            services: services::Services::default(),
+            services,
             requests: requests::Requests::default(),
             activity: activity::ActivityLog::default(),
             ports,
@@ -290,8 +295,8 @@ impl MainView {
             "sandbox.continue" => self.open_session(None, What::Continue, window, cx),
             "sandbox.shell" => self.open_session(None, What::Shell, window, cx),
             "sandbox.add-folders" => self.choose_folders_to_add(window, cx),
-            "sandbox.bring-back" => self.bring_back_selected(cx),
-            "sandbox.approve-requests" => self.approve_all_requests(cx),
+            "sandbox.bring-back" => self.bring_back_selected(window, cx),
+            "sandbox.approve-requests" => self.approve_all_requests(window, cx),
             "sandbox.activity" => self.look_up_activity(cx),
             "sandbox.forward" => self.focus_port_field(window, cx),
             "sandbox.start" => self.act_on_selected(sandboxes::Act::Start, window, cx),
@@ -390,9 +395,32 @@ impl MainView {
                 }
             }
             Page::Providers if self.providers.is_none() => {
-                self.providers = Some(cx.new(|cx| Providers::new(window, cx)));
+                let providers = cx.new(|cx| Providers::new(window, cx));
+                cx.subscribe_in(
+                    &providers,
+                    window,
+                    |this, _, event: &ProvidersEvent, window, cx| match event {
+                        ProvidersEvent::ServiceAdded(name) => {
+                            if this.services.pending_attach.is_some() {
+                                this.attach_newly_added_service(name.clone(), window, cx);
+                            } else {
+                                this.services.picker_dirty = true;
+                            }
+                        }
+                        ProvidersEvent::ServiceCancelled => {
+                            if this.services.pending_attach.take().is_some() {
+                                this.show_page(Page::Sandboxes, window, cx);
+                            }
+                        }
+                    },
+                )
+                .detach();
+                self.providers = Some(providers);
             }
-            Page::Sandboxes | Page::Providers => {}
+            Page::Sandboxes => {
+                self.services.picker_dirty = true;
+            }
+            Page::Providers => {}
         }
         self.page = page;
         self.focus.focus(window, cx);
@@ -403,13 +431,33 @@ impl MainView {
         self.card = None;
         cx.notify();
     }
+
+    /// Dismisses whichever inline form is open in the detail panel, if it isn't mid-operation.
+    fn dismiss_active_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.microvm.is_some() {
+            self.cancel_microvm(window, cx);
+        } else if self.imaging.is_some() {
+            self.cancel_images(window, cx);
+        } else if self.adding.is_some() {
+            self.cancel_adding(window, cx);
+        } else if self.making.is_some() {
+            if !matches!(
+                self.making.as_ref().map(|making| &making.state),
+                Some(making::MakeState::Working(_))
+            ) {
+                self.cancel_making(window, cx);
+            }
+        } else if self.kits.import.is_some() {
+            self.cancel_import(window, cx);
+        }
+    }
 }
 
 /// How wide the sidebar of places is, which the traffic lights sit above.
-const NAV_WIDTH: f32 = 180. / 13.;
+const NAV_WIDTH: f32 = 148. / 13.;
 
 /// How wide the list of sandboxes is.
-const LIST_WIDTH: f32 = 260. / 13.;
+const LIST_WIDTH: f32 = 244. / 13.;
 
 /// The title bar's height: taller than the kit's, since the list's heading and its buttons sit in it.
 const TITLE_BAR_HEIGHT: Pixels = px(46.);
@@ -436,8 +484,8 @@ impl MainView {
             .flex_none()
             .justify_between()
             .gap_2()
-            .px_3()
-            .h(rems(36. / 13.))
+            .px_4()
+            .h(rems(38. / 13.))
             .border_b_1()
             .border_color(cx.theme().border)
             // The title gives way to what's beside it, so a button is never pushed out of a narrow panel.
@@ -448,6 +496,54 @@ impl MainView {
                     .font_semibold()
                     .child(title.into()),
             )
+    }
+
+    /// Standard shell for inline forms in the detail panel: header with close `×`, scrollable body, and a sticky
+    /// footer holding status/error on the left and `Cancel` + primary button on the right. Escape dismisses it.
+    #[allow(clippy::too_many_arguments)]
+    fn form_panel(
+        &self,
+        title: impl Into<SharedString>,
+        scroll_id: &'static str,
+        body: Div,
+        footer_left: impl IntoElement,
+        cancel: Button,
+        primary: Button,
+        close_disabled: bool,
+        on_close: impl Fn(&mut Self, &ClickEvent, &mut Window, &mut Context<Self>) + 'static,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let theme = cx.theme();
+        let header = Self::panel_header(title, cx).child(
+            Button::new(ElementId::from((ElementId::from("close-form"), scroll_id)))
+                .ghost()
+                .xsmall()
+                .disabled(close_disabled)
+                .icon(assets::IconName::X)
+                .tooltip(t!("Cancel").into_owned())
+                .on_click(cx.listener(on_close)),
+        );
+        let footer = h_flex()
+            .flex_none()
+            .justify_between()
+            .items_center()
+            .gap_3()
+            .px_4()
+            .py_2p5()
+            .border_t_1()
+            .border_color(theme.border)
+            .child(div().flex_1().min_w_0().child(footer_left))
+            .child(h_flex().flex_none().gap_2().child(cancel).child(primary));
+        v_flex()
+            .size_full()
+            .key_context(FORM_CONTEXT)
+            .on_action(cx.listener(|this, _: &DismissForm, window, cx| {
+                this.dismiss_active_form(window, cx);
+            }))
+            .child(header)
+            .child(div().id(scroll_id).flex_1().overflow_y_scroll().child(body))
+            .child(footer)
+            .into_any_element()
     }
 }
 
@@ -489,6 +585,42 @@ fn list_row(chosen: bool, cx: &App) -> Div {
         .when(!chosen, |row| row.hover(move |row| row.bg(hover)))
 }
 
+/// A selectable choice pill inside a form: builds on Typecase's chip so unselected choices still have a clear hairline
+/// border and recessed fill instead of looking like unclickable text.
+pub(crate) fn choice_chip(selected: bool, cx: &App) -> Div {
+    let theme = cx.theme();
+    let chip = shell::chip(selected, cx);
+    if selected {
+        chip
+    } else {
+        chip.border_color(theme.border.opacity(0.75))
+            .bg(shell::recessed_colour(theme))
+    }
+}
+
+/// A shell command in a code chip paired with a one-click Copy button that confirms with a Toast.
+pub(crate) fn copyable_command(id: &'static str, command: impl Into<String>, cx: &App) -> Div {
+    let command = command.into();
+    let copied = command.clone();
+    h_flex()
+        .gap_1()
+        .items_center()
+        .child(shell::code_chip(command, cx))
+        .child(
+            Button::new(id)
+                .ghost()
+                .xsmall()
+                .icon(assets::IconName::Copy)
+                .tooltip(t!("Copy").into_owned())
+                .on_click(move |_, window, cx| {
+                    cx.write_to_clipboard(ClipboardItem::new_string(copied.clone()));
+                    Toast::new(t!("Copied command").into_owned())
+                        .key("copy-command")
+                        .show(window, cx);
+                }),
+        )
+}
+
 /// Something in a detail panel: a small heading and what's under it.
 fn section(title: impl Into<SharedString>, cx: &App) -> Div {
     v_flex().gap_2().child(
@@ -500,9 +632,10 @@ fn section(title: impl Into<SharedString>, cx: &App) -> Div {
     )
 }
 
-/// A line saying what something means, small and quiet.
+/// A line saying what something means, small and quiet, capped at a comfortable reading measure.
 fn hint(text: impl Into<SharedString>, cx: &App) -> Div {
     div()
+        .max_w(rems(42.))
         .text_sm()
         .text_color(cx.theme().muted_foreground)
         .child(text.into())
@@ -514,17 +647,38 @@ fn small_field(state: &Entity<InputState>) -> Input {
 }
 
 impl MainView {
-    /// The sidebar of places, each with how many things it holds.
+    /// How many pending network requests or blocked agents need the person's attention across all polled gateways.
+    fn attention_count(&self) -> usize {
+        let ready = self.ready_sandboxes();
+        let requests: usize = ready
+            .iter()
+            .map(|key| self.requests.pending(key).len())
+            .sum();
+        if requests > 0 {
+            return requests;
+        }
+        ready
+            .iter()
+            .filter(|key| self.agent_states.get(&self.label_of(key)) == Some(&AgentState::Blocked))
+            .count()
+    }
+
+    /// The sidebar of places, each with how many things it holds and an amber attention indicator when sandboxes wait.
     fn places(&self, cx: &Context<Self>) -> Div {
         let theme = cx.theme();
+        let attention = self.attention_count();
         let rows = Page::ALL.map(|page| {
             let shown = self.page == page;
             let count = match page {
                 Page::Sandboxes => Some(self.listed_sandboxes().len()),
                 Page::Agents => Some(Agent::ALL.len()),
                 Page::Kits => Some(self.kits.kits.kits.len()),
-                Page::Providers => None,
+                Page::Providers => self
+                    .providers
+                    .as_ref()
+                    .and_then(|providers| providers.read(cx).total_count()),
             };
+            let waiting_here = page == Page::Sandboxes && attention > 0;
             shell::sidebar_row(shown, cx)
                 .id(ElementId::from((ElementId::from("place"), page.command())))
                 .child(
@@ -534,13 +688,28 @@ impl MainView {
                         .child(
                             Icon::new(page.icon())
                                 .small()
-                                .when(shown, |icon| icon.text_color(theme.accent_foreground)),
+                                .when(shown, |icon| icon.text_color(theme.primary)),
                         )
                         .child(div().truncate().text_sm().child(page.name())),
                 )
-                .when_some(count.filter(|count| *count > 0), |row, count| {
-                    row.child(shell::count(count, cx))
-                })
+                .child(
+                    h_flex()
+                        .flex_none()
+                        .gap_1p5()
+                        .items_center()
+                        .when(waiting_here, |trail| {
+                            trail.child(
+                                div()
+                                    .flex_none()
+                                    .size(px(7.))
+                                    .rounded_full()
+                                    .bg(theme.warning),
+                            )
+                        })
+                        .when_some(count.filter(|count| *count > 0), |trail, count| {
+                            trail.child(shell::count(count, cx))
+                        }),
+                )
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.run(page.command(), window, cx);
                 }))
@@ -560,6 +729,7 @@ impl MainView {
 
 impl Render for MainView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.sync_attach_picker(window, cx);
         let (heading, list, detail) = match self.page {
             Page::Sandboxes => (
                 self.list_heading(cx),
@@ -583,23 +753,32 @@ impl Render for MainView {
                 self.kit_detail(cx),
             ),
             Page::Providers => (
-                heading(
-                    t!("Providers").into_owned(),
-                    t!("Model keys and services OpenShell holds").into_owned(),
-                    cx,
+                h_flex().flex_1().h_full().px_3().gap_2().child(
+                    v_flex()
+                        .min_w_0()
+                        .child(
+                            div()
+                                .truncate()
+                                .text_sm()
+                                .font_semibold()
+                                .child(t!("Providers").into_owned()),
+                        )
+                        .child(
+                            div()
+                                .truncate()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(t!("Model keys and services OpenShell holds").into_owned()),
+                        ),
                 ),
                 None,
                 match &self.providers {
-                    Some(providers) => div()
-                        .id("providers")
-                        .size_full()
-                        .overflow_y_scroll()
-                        .child(providers.clone())
-                        .into_any_element(),
+                    Some(providers) => providers.clone().into_any_element(),
                     None => div().into_any_element(),
                 },
             ),
         };
+        let has_list = list.is_some();
         shell::window(cx)
             .relative()
             .track_focus(&self.focus)
@@ -617,10 +796,10 @@ impl Render for MainView {
                 shell::title_bar(cx)
                     .h(TITLE_BAR_HEIGHT)
                     .pl_0()
-                    // Over the places, where the traffic lights are, then over the list.
+                    // Over the places, where the traffic lights are, then over the list (or the full panel when there's no list).
                     .child(div().flex_none().w(rems(NAV_WIDTH)))
                     .child(heading)
-                    .child(div().flex_1()),
+                    .when(has_list, |bar| bar.child(div().flex_1())),
             )
             .child(
                 // The places and the list are on the window's own colour, and what's chosen on a panel beside them.

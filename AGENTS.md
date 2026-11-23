@@ -30,7 +30,10 @@ headless; `crates/app` is the GPUI front end. Read `CONTEXT.md` before naming an
   shows it. `just openshell-test <provider>` makes a real sandbox.
 - Gateways: OpenShell keeps the list (`openshell gateway list`), Playpen keeps none. What Playpen keeps for one is a
   `[gateways.<name>]` section of the settings file: where its images come from.
-- `crates/cli`: the command line, which the app's own binary answers before any window opens.
+- `crates/cli`: the command line, which the app's own binary answers before any window opens: the services catalog,
+  gateways, sandboxes (start, stop, restart, delete, attach and detach services) and providers, each with `--json` and
+  `--gateway`. Errors go to stderr; a `--` option or a near miss of a command is an error, not a window. A new CLI
+  command takes its place in `parse`, `USAGE` and the tests there.
 - `DEVELOPMENT.md`: building, checking, CI, releasing.
 
 ## Done

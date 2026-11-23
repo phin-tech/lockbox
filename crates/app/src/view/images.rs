@@ -127,26 +127,6 @@ impl MainView {
 
     pub(super) fn images_panel(&self, imaging: &Imaging, cx: &Context<Self>) -> AnyElement {
         let theme = cx.theme();
-        let header = Self::panel_header(t!("Image Source"), cx).child(
-            h_flex()
-                .gap_1()
-                .child(
-                    Button::new("cancel-images")
-                        .ghost()
-                        .xsmall()
-                        .label(t!("Cancel").into_owned())
-                        .on_click(
-                            cx.listener(|this, _, window, cx| this.cancel_images(window, cx)),
-                        ),
-                )
-                .child(
-                    Button::new("save-images")
-                        .primary()
-                        .xsmall()
-                        .label(t!("Save").into_owned())
-                        .on_click(cx.listener(|this, _, window, cx| this.save_images(window, cx))),
-                ),
-        );
         let option = |from: ImagesFrom, label: String, about: String| {
             v_flex()
                 .gap_0p5()
@@ -231,15 +211,36 @@ impl MainView {
                             cx,
                         )),
                 )
-            })
-            .when_some(imaging.failed.clone(), |body, failed| {
-                body.child(div().text_sm().text_color(theme.danger).child(failed))
             });
-        v_flex()
-            .size_full()
-            .child(header)
-            .child(div().id("images").flex_1().overflow_y_scroll().child(body))
-            .into_any_element()
+        let footer_left = match &imaging.failed {
+            Some(failed) => div()
+                .text_sm()
+                .text_color(theme.danger)
+                .child(failed.clone())
+                .into_any_element(),
+            None => div().into_any_element(),
+        };
+        let cancel = Button::new("cancel-images")
+            .ghost()
+            .small()
+            .label(t!("Cancel").into_owned())
+            .on_click(cx.listener(|this, _, window, cx| this.cancel_images(window, cx)));
+        let primary = Button::new("save-images")
+            .primary()
+            .small()
+            .label(t!("Save").into_owned())
+            .on_click(cx.listener(|this, _, window, cx| this.save_images(window, cx)));
+        self.form_panel(
+            t!("Image Source"),
+            "images",
+            body,
+            footer_left,
+            cancel,
+            primary,
+            false,
+            |this, _, window, cx| this.cancel_images(window, cx),
+            cx,
+        )
     }
 }
 

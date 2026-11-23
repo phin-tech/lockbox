@@ -17,10 +17,18 @@ pub struct RunAction {
     pub name: &'static str,
 }
 
+/// Closes an open inline form (`New Agent`, `Add Gateway`, `Add a Service`, …) on Escape.
+#[derive(Action, Clone, PartialEq, Eq)]
+#[action(namespace = playpen, no_json)]
+pub struct DismissForm;
+
 /// The key context of the main view, while the view itself has focus. GPUI matches a binding against every context
 /// around what has focus, so a shortcut here would reach a text field inside the view and take its letter; the view
 /// gives up this context while a field has focus (see its `render`).
 pub const CONTEXT: &str = "MainView";
+
+/// Key context on inline forms so Escape closes them even while an `Input` inside has focus.
+pub const FORM_CONTEXT: &str = "Form";
 
 /// A menu shows the first key bound to its Command, so list the one to show first: `primary-=` before `primary-+`.
 pub const SHORTCUTS: &[(&str, &str, Option<&str>)] = &[
@@ -65,12 +73,16 @@ fn keys(keys: &str) -> &'static str {
 }
 
 pub fn bindings() -> Vec<KeyBinding> {
-    SHORTCUTS
+    let mut all: Vec<KeyBinding> = SHORTCUTS
         .iter()
         .map(|&(shortcut, name, context)| {
             KeyBinding::new(keys(shortcut), RunAction { name }, context)
         })
-        .collect()
+        .collect();
+    // Override `Input`'s own Escape binding inside inline forms so Escape always cancels the form.
+    all.push(KeyBinding::new("escape", DismissForm, Some(FORM_CONTEXT)));
+    all.push(KeyBinding::new("escape", DismissForm, Some("Form > Input")));
+    all
 }
 
 /// A shortcut as a Mac shows it: `primary-shift-d` is ⇧⌘D, modifiers in the Mac's order.

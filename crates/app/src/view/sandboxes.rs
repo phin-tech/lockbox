@@ -4,6 +4,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use playpen_core::{GatewayInfo, HerdrCore, Installed, Keep, Opened, Phase, session};
 
 use crate::providers::ShownGateway;
@@ -759,24 +760,26 @@ impl MainView {
             let key = key.clone();
             async move |this, cx| {
                 let opened = opened.await;
-                let _ = this.update(cx, |this, cx| {
+                let _ = this.update_in(cx, |this, window, cx| {
                     this.working.remove(&key);
                     match &opened {
                         Ok(Opened::AsAsked) => tracing::info!(sandbox = %name, "opened a session"),
                         Ok(Opened::InTerminalInstead(place)) => {
                             tracing::info!(sandbox = %name, ?place, "not installed, so opened in Terminal");
+                            Toast::new(
+                                t!(
+                                    "%{place} isn't installed — opened in Terminal",
+                                    place = place_name(*place)
+                                )
+                                .into_owned(),
+                            )
+                            .key("opened-fallback")
+                            .show(window, cx);
                         }
                         Err(error) => tracing::warn!(sandbox = %name, "couldn't open a session: {error}"),
                     }
                     this.failed = match opened {
-                        Ok(Opened::AsAsked) => None,
-                        Ok(Opened::InTerminalInstead(place)) => Some(
-                            t!(
-                                "%{place} isn't installed, so it opened in Terminal.",
-                                place = place_name(place)
-                            )
-                            .into_owned(),
-                        ),
+                        Ok(Opened::AsAsked | Opened::InTerminalInstead(_)) => None,
                         Err(error) => Some(
                             t!(
                                 "Couldn't open “%{name}”: %{error}",
@@ -822,15 +825,15 @@ impl MainView {
         }
     }
 
-    /// The list's heading: how many are running.
+    /// The list's heading: how many are running, and a clear New button.
     pub(super) fn list_heading(&self, cx: &Context<Self>) -> Div {
         let said = self.sandboxes_said();
         heading(t!("Sandboxes").into_owned(), said, cx).child(
             Button::new("new-agent")
-                .ghost()
-                .small()
-                .rounded(px(999.))
+                .outline()
+                .xsmall()
                 .icon(assets::IconName::Plus)
+                .label(t!("New").into_owned())
                 .tooltip(t!("New Agent…").into_owned())
                 .on_click(cx.listener(|this, _, window, cx| this.run("sandbox.new", window, cx))),
         )
@@ -885,15 +888,16 @@ impl MainView {
             .when(!footer.is_empty(), |list| list.child(footer))
     }
 
-    /// The heading above the gateways, with the button that adds one.
+    /// The heading above the gateways, with a labelled Add button so it never looks like a duplicate `+`.
     fn gateway_heading(&self, cx: &Context<Self>) -> Div {
         h_flex()
             .justify_between()
             .items_center()
+            .pt_0p5()
+            .pb_0p5()
             .child(
                 div()
                     .px_2()
-                    .pb_1()
                     .text_xs()
                     .font_semibold()
                     .text_color(cx.theme().muted_foreground)
@@ -904,6 +908,7 @@ impl MainView {
                     .ghost()
                     .xsmall()
                     .icon(assets::IconName::Plus)
+                    .label(t!("Add").into_owned())
                     .tooltip(t!("Add Gateway…").into_owned())
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.run("gateway.add", window, cx);
@@ -951,6 +956,7 @@ impl MainView {
         };
         let mut all = rows(running);
         if !resting.is_empty() {
+            let count = resting.len();
             all.push(
                 div()
                     .px_2()
@@ -959,7 +965,7 @@ impl MainView {
                     .text_xs()
                     .font_semibold()
                     .text_color(cx.theme().muted_foreground)
-                    .child(t!("Stopped").into_owned())
+                    .child(t!("Stopped · %{count}", count = count).into_owned())
                     .into_any_element(),
             );
             all.extend(rows(resting));
@@ -1027,10 +1033,12 @@ impl MainView {
                     })),
                 )
             });
+        let group_name = SharedString::from(format!("gateway-row-{}", name));
         h_flex()
             .id(ElementId::from((ElementId::from("gateway"), name.clone())))
+            .group(group_name.clone())
             .flex_none()
-            .gap_2p5()
+            .gap_2()
             .px_2()
             .py_1p5()
             .rounded_lg()
@@ -1038,12 +1046,14 @@ impl MainView {
             .when(shown, |row| row.bg(theme.list_active))
             .when(!shown, |row| row.hover(move |row| row.bg(hover)))
             .child(
-                div()
-                    .flex_none()
-                    .w(px(10.))
-                    .text_xs()
-                    .text_color(theme.muted_foreground)
-                    .child(if open { "▾" } else { "▸" }),
+                Icon::new(if open {
+                    assets::IconName::ChevronDown
+                } else {
+                    assets::IconName::ChevronRight
+                })
+                .size_3()
+                .flex_none()
+                .text_color(theme.muted_foreground),
             )
             .child(div().flex_none().size(px(8.)).rounded_full().bg(dot))
             .child(
@@ -1065,15 +1075,23 @@ impl MainView {
                             .child(said),
                     ),
             )
-            .child(acts)
+            .child(
+                div()
+                    .flex_none()
+                    .when(!shown && !signs_in, |el| {
+                        el.opacity(0.).group_hover(group_name, |el| el.opacity(1.))
+                    })
+                    .child(acts),
+            )
             .on_click(cx.listener(move |this, _, window, cx| {
                 this.click_gateway(&name, window, cx);
                 this.focus.focus(window, cx);
             }))
     }
 
-    /// A sandbox in the list: its agent's mark in the colour of its state, its name, what it's doing, and a button
-    /// each to start or stop it and to delete it.
+    /// A sandbox in the list: its agent's mark in the colour of its state, its name, what it's doing, and a hover
+    /// button to start or stop it. Deleting stays in the detail panel and `⌘⌫` to prevent misclicks and keep names
+    /// and status lines from truncating.
     fn sandbox_row(&self, sandbox: &Sandbox, gateway: &str, cx: &Context<Self>) -> Stateful<Div> {
         let theme = cx.theme();
         let key = SandboxKey {
@@ -1083,7 +1101,8 @@ impl MainView {
         let chosen = self.selected.as_ref() == Some(&key)
             && self.making.is_none()
             && self.adding.is_none()
-            && self.imaging.is_none();
+            && self.imaging.is_none()
+            && self.microvm.is_none();
         let busy = self.working.contains_key(&key);
         let agent = sandbox.agent.as_deref().and_then(Agent::from_id);
         let state = self.agent_states.get(&self.label_of(&key)).copied();
@@ -1103,39 +1122,22 @@ impl MainView {
         } else {
             ("sandbox.stop", assets::IconName::CircleStop, t!("Stop"))
         };
-        let acts = h_flex()
-            .flex_none()
-            .gap_0p5()
-            .child(
-                Button::new(id("row-act"))
-                    .ghost()
-                    .xsmall()
-                    .icon(icon)
-                    .tooltip(tip.into_owned())
-                    .disabled(busy || (act == "sandbox.stop" && !sandbox.phase.can_stop()))
-                    .on_click(cx.listener({
-                        let key = key.clone();
-                        move |this, _, window, cx| {
-                            this.select(key.clone(), cx);
-                            this.run(act, window, cx);
-                        }
-                    })),
-            )
-            .child(
-                Button::new(id("row-delete"))
-                    .ghost()
-                    .xsmall()
-                    .icon(assets::IconName::Trash)
-                    .tooltip(t!("Delete…").into_owned())
-                    .disabled(busy)
-                    .on_click(cx.listener({
-                        let key = key.clone();
-                        move |this, _, window, cx| {
-                            this.select(key.clone(), cx);
-                            this.run("sandbox.delete", window, cx);
-                        }
-                    })),
-            );
+        let group_name = SharedString::from(format!("sandbox-row-{id_name}"));
+        let row_action = Button::new(id("row-act"))
+            .ghost()
+            .xsmall()
+            .icon(icon)
+            .tooltip(tip.into_owned())
+            .loading(busy)
+            .disabled(busy || (act == "sandbox.stop" && !sandbox.phase.can_stop()))
+            .on_click(cx.listener({
+                let key = key.clone();
+                move |this, _, window, cx| {
+                    cx.stop_propagation();
+                    this.select(key.clone(), cx);
+                    this.run(act, window, cx);
+                }
+            }));
         let blocked = state == Some(AgentState::Blocked) && sandbox.phase.is_ready();
         // Requests waiting say so in place of what the agent's doing, since they're what it waits on.
         let waiting = self
@@ -1144,6 +1146,7 @@ impl MainView {
         let hover = theme.list_hover;
         h_flex()
             .id(id("sandbox"))
+            .group(group_name.clone())
             .flex_none()
             .gap_2p5()
             .px_2()
@@ -1191,7 +1194,14 @@ impl MainView {
                             ),
                     ),
             )
-            .child(acts)
+            .child(
+                div()
+                    .flex_none()
+                    .when(!chosen && !busy, |el| {
+                        el.opacity(0.).group_hover(group_name, |el| el.opacity(1.))
+                    })
+                    .child(row_action),
+            )
             .on_click(cx.listener(move |this, _, window, cx| {
                 this.select(key.clone(), cx);
                 this.focus.focus(window, cx);
@@ -1206,37 +1216,85 @@ impl MainView {
         let busy = self.working.contains_key(key);
         let agent = sandbox.agent.as_deref().and_then(Agent::from_id);
         let state = self.agent_states.get(&self.label_of(key)).copied();
+        let status_badge = status_tag(&sandbox.phase, state);
         let hero = h_flex()
             .gap_3()
+            .items_center()
             .child(agent_tile(
                 agent,
                 state_colour(&sandbox.phase, state, cx),
-                rems(44. / 13.),
+                rems(42. / 13.),
                 cx,
             ))
             .child(
                 v_flex()
                     .flex_1()
                     .min_w_0()
+                    .gap_0p5()
                     .child(
-                        div()
-                            .truncate()
-                            .text_lg()
-                            .font_semibold()
-                            .child(sandbox.name.clone()),
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .min_w_0()
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_lg()
+                                    .font_semibold()
+                                    .child(sandbox.name.clone()),
+                            )
+                            .child(status_badge),
                     )
                     .child(
                         div()
                             .truncate()
                             .text_sm()
                             .text_color(theme.muted_foreground)
-                            .child(agent_name(agent)),
+                            .child(if self.gateways.len() > 1 && !key.gateway.is_empty() {
+                                format!("{} · {}", agent_name(agent), key.gateway)
+                            } else {
+                                agent_name(agent)
+                            }),
                     ),
             );
-        // They wrap rather than run out of a narrow window.
+        // Single-row action bar: primary Open, Stop/Start/Restart, contextual Bring Back, and `…` for the rest.
+        let can_add_folders = !busy && sandbox.phase.is_ready() && self.added.is_some();
+        let view = cx.entity().downgrade();
+        let more_menu = Button::new("sandbox-more")
+            .small()
+            .outline()
+            .icon(assets::IconName::Ellipsis)
+            .tooltip(t!("More Actions").into_owned())
+            .disabled(busy)
+            .dropdown_menu(move |menu, _, _| {
+                let add_view = view.clone();
+                let delete_view = view.clone();
+                menu.item(
+                    PopupMenuItem::new(t!("Add Folders…").into_owned())
+                        .icon(assets::IconName::FolderPlus)
+                        .disabled(!can_add_folders)
+                        .on_click(move |_, window, cx| {
+                            let _ = add_view.update(cx, |this, cx| {
+                                this.run("sandbox.add-folders", window, cx);
+                            });
+                        }),
+                )
+                .separator()
+                .item(
+                    PopupMenuItem::new(t!("Delete…").into_owned())
+                        .icon(assets::IconName::Trash)
+                        .on_click(move |_, window, cx| {
+                            let _ = delete_view.update(cx, |this, cx| {
+                                this.run("sandbox.delete", window, cx);
+                            });
+                        }),
+                )
+            });
         let actions = h_flex()
             .flex_wrap()
             .gap_2()
+            .items_center()
             .child(open_button(
                 agent,
                 busy || !sandbox.phase.is_ready(),
@@ -1272,39 +1330,17 @@ impl MainView {
                     )
             })
             .child(self.bring_back_button(sandbox, cx))
-            .child(
-                Button::new("add-folders")
-                    .small()
-                    .ghost()
-                    .disabled(busy || !sandbox.phase.is_ready() || self.added.is_none())
-                    .icon(assets::IconName::FolderPlus)
-                    .label(t!("Add Folders…").into_owned())
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.run("sandbox.add-folders", window, cx);
-                    })),
-            )
-            .child(
-                Button::new("delete")
-                    .small()
-                    .ghost()
-                    .disabled(busy)
-                    .icon(assets::IconName::Trash)
-                    .label(t!("Delete…").into_owned())
-                    .on_click(
-                        cx.listener(|this, _, window, cx| this.run("sandbox.delete", window, cx)),
-                    ),
-            );
-        let mut info = vec![
-            (t!("Agent").into_owned(), text_value(agent_name(agent))),
-            (
-                t!("Status").into_owned(),
-                text_value(state_words(&sandbox.phase, state)),
-            ),
-        ];
-        // Which gateway it's on, once there's another it might be on.
-        if self.gateways.len() > 1 && !key.gateway.is_empty() {
-            info.push((t!("Gateway").into_owned(), text_value(key.gateway.clone())));
-        }
+            .child(more_menu);
+        let pinned_header = v_flex()
+            .flex_none()
+            .gap_3()
+            .px_5()
+            .py_4()
+            .border_b_1()
+            .border_color(shell::hairline(theme))
+            .child(hero)
+            .child(actions);
+        let mut info = Vec::new();
         if !sandbox.folders.is_empty() {
             info.push((
                 t!("Copied from").into_owned(),
@@ -1325,15 +1361,10 @@ impl MainView {
             t!("Brings back to").into_owned(),
             self.bring_back_row(sandbox, cx),
         ));
-        info.push((
-            t!("Made").into_owned(),
-            text_value(t!("%{when} UTC", when = sandbox.created.clone()).into_owned()),
-        ));
+        info.push((t!("Made").into_owned(), made_value(&sandbox.created, cx)));
         let body = v_flex()
-            .gap_5()
+            .gap_4()
             .p_5()
-            .child(hero)
-            .child(actions)
             .when_some(self.requests_card(key, cx), |body, card| body.child(card))
             .child(info_card(info, cx))
             .child(self.activity_card(key, cx))
@@ -1343,22 +1374,24 @@ impl MainView {
                 ),
                 cx,
             ));
-        div()
-            .id("sandbox")
+        v_flex()
             .size_full()
-            .overflow_y_scroll()
-            .child(body)
+            .child(pinned_header)
+            .child(div().id("sandbox").flex_1().overflow_y_scroll().child(body))
             .into_any_element()
     }
 
     /// The detail panel with no sandbox to show: why, and how to make one.
     fn nothing_chosen(&self, cx: &Context<Self>) -> Div {
+        let local_down = matches!(self.listing(), Listing::Failed(_))
+            && self.current_gateway().has_certificates_of_its_own();
+        let failed = matches!(self.listing(), Listing::Failed(_));
         let (title, said) = match self.listing() {
             Listing::Loading => (t!("Sandboxes"), t!("Asking OpenShell for its sandboxes…")),
-            Listing::Failed(_) if self.current_gateway().has_certificates_of_its_own() => (
+            Listing::Failed(_) if local_down => (
                 t!("OpenShell isn't answering"),
                 t!(
-                    "Is its gateway running? `brew services start openshell` starts it. Playpen asks again every few seconds."
+                    "Start the local gateway, then try again. Playpen also checks every few seconds."
                 ),
             ),
             // Any other gateway is somewhere else, so what to try is its address and the network to it.
@@ -1389,14 +1422,35 @@ impl MainView {
                 div()
                     .max_w(rems(28.))
                     .text_center()
+                    .text_sm()
                     .text_color(cx.theme().muted_foreground)
                     .child(said.into_owned()),
             )
+            .when(local_down, |this| {
+                this.child(copyable_command(
+                    "copy-start-openshell",
+                    "brew services start openshell",
+                    cx,
+                ))
+            })
+            .when(failed, |this| {
+                this.child(
+                    Button::new("retry-listing")
+                        .outline()
+                        .small()
+                        .icon(assets::IconName::RotateCw)
+                        .label(t!("Try Again").into_owned())
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.run("sandboxes.refresh", window, cx);
+                        })),
+                )
+            })
             .when(matches!(self.listing(), Listing::Listed(_)), |this| {
                 this.child(
                     Button::new("new-agent-empty")
                         .primary()
                         .small()
+                        .icon(assets::IconName::Plus)
                         .label(t!("New Agent…").into_owned())
                         .on_click(
                             cx.listener(|this, _, window, cx| this.run("sandbox.new", window, cx)),
@@ -1507,6 +1561,71 @@ fn state_words(phase: &Phase, agent: Option<AgentState>) -> String {
         .into_owned(),
         _ => phase_words(phase),
     }
+}
+
+/// A semantic badge for a sandbox's state, shown beside its name in the detail hero.
+fn status_tag(phase: &Phase, agent: Option<AgentState>) -> Tag {
+    let tag = match (phase, agent) {
+        (Phase::Ready, Some(AgentState::Working)) => Tag::info(),
+        (Phase::Ready, Some(AgentState::Blocked)) => Tag::warning(),
+        (Phase::Ready, _) => Tag::success(),
+        (Phase::Provisioning, _) => Tag::info(),
+        (Phase::Deleting, _) => Tag::warning(),
+        (Phase::Error, _) => Tag::danger(),
+        (Phase::Stopped | Phase::Suspended | Phase::Completed | Phase::Other(_), _) => {
+            Tag::secondary()
+        }
+    };
+    shell::badge(tag).xsmall().child(state_words(phase, agent))
+}
+
+/// Formats an OpenShell UTC creation timestamp as relative time ("3 hours ago") when live, or a clean UTC timestamp
+/// when it can't be parsed (and always keeps the exact UTC string available).
+fn made_value(created: &str, cx: &App) -> Div {
+    let label =
+        relative_utc(created).unwrap_or_else(|| t!("%{when} UTC", when = created).into_owned());
+    div()
+        .min_w_0()
+        .truncate()
+        .text_color(cx.theme().foreground)
+        .child(label)
+}
+
+/// Turns a `"YYYY-MM-DD HH:MM:SS"` (or RFC 3339) UTC timestamp into a concise relative string.
+fn relative_utc(created: &str) -> Option<String> {
+    let iso = if created.contains('T') {
+        created.to_string()
+    } else {
+        format!("{}Z", created.trim().replace(' ', "T"))
+    };
+    let then: jiff::Timestamp = iso.parse().ok()?;
+    let secs = jiff::Timestamp::now().as_second() - then.as_second();
+    if secs < 0 {
+        return None;
+    }
+    let label = if secs < 60 {
+        t!("Just now").into_owned()
+    } else if secs < 3600 {
+        let mins = secs / 60;
+        t!("%{count} min ago", count = mins).into_owned()
+    } else if secs < 86_400 {
+        let hours = secs / 3600;
+        if hours == 1 {
+            t!("1 hour ago").into_owned()
+        } else {
+            t!("%{count} hours ago", count = hours).into_owned()
+        }
+    } else if secs < 86_400 * 14 {
+        let days = secs / 86_400;
+        if days == 1 {
+            t!("Yesterday").into_owned()
+        } else {
+            t!("%{count} days ago", count = days).into_owned()
+        }
+    } else {
+        return None;
+    };
+    Some(label)
 }
 
 /// A value in an info card, in plain text.

@@ -157,6 +157,8 @@ pub enum ServiceCatalogError {
     MissingHeader(String),
     #[error("Couldn't save the service catalog: {0}")]
     Io(String),
+    #[error("Couldn't read {0}")]
+    Read(String),
 }
 
 impl ServiceCatalogFile {
@@ -336,11 +338,9 @@ impl ServiceCatalog {
         .to_json()
     }
 
-    /// Validates a shared catalog JSON file and copies it into `<dir>/services/<filename>`.
-    pub fn import_file(dir: &Path, from: &Path) -> Result<(String, usize), ServiceCatalogError> {
-        let text = std::fs::read_to_string(from)
-            .map_err(|error| ServiceCatalogError::Io(error.to_string()))?;
-        let file = ServiceCatalogFile::from_json(&text)?;
+    /// The file name a shared catalog is kept under in `<dir>/services/`: its own, lowercased, with anything but
+    /// letters, digits, `-` and `_` made a `-`.
+    pub fn stored_name(from: &Path) -> String {
         let stem = from
             .file_stem()
             .and_then(|name| name.to_str())
@@ -357,7 +357,15 @@ impl ServiceCatalog {
             })
             .collect();
         let clean = clean.trim_matches('-');
-        let filename = format!("{}.json", if clean.is_empty() { "shared" } else { clean });
+        format!("{}.json", if clean.is_empty() { "shared" } else { clean })
+    }
+
+    /// Validates a shared catalog JSON file and copies it into `<dir>/services/<filename>`.
+    pub fn import_file(dir: &Path, from: &Path) -> Result<(String, usize), ServiceCatalogError> {
+        let text = std::fs::read_to_string(from)
+            .map_err(|error| ServiceCatalogError::Read(format!("{}: {error}", from.display())))?;
+        let file = ServiceCatalogFile::from_json(&text)?;
+        let filename = ServiceCatalog::stored_name(from);
         let folder = dir.join("services");
         std::fs::create_dir_all(&folder)
             .map_err(|error| ServiceCatalogError::Io(error.to_string()))?;

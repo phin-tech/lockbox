@@ -1120,3 +1120,116 @@ fn a_forwarded_port_shows_only_on_its_own_sandbox_and_gateway(cx: &mut TestAppCo
         assert_eq!(view.forwards_of(&key), [3000, 5173]);
     });
 }
+
+#[gpui_kit::test]
+fn escape_closes_an_open_form_even_while_a_field_has_focus(cx: &mut TestAppContext) {
+    let (view, cx) = open(cx);
+    listed(
+        &view,
+        vec![
+            sandbox("alpha", Phase::Ready),
+            sandbox("beta", Phase::Ready),
+        ],
+        cx,
+    );
+    // New Agent focuses its Name field; Escape must still close the form and return arrow navigation.
+    cx.simulate_keystrokes("cmd-n");
+    cx.run_until_parked();
+    view.read_with(cx, |view, _| assert!(view.making.is_some()));
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    view.read_with(cx, |view, _| assert!(view.making.is_none()));
+    cx.simulate_keystrokes("down");
+    assert_eq!(selected(&view, cx).as_deref(), Some("beta"));
+
+    // Add Gateway focuses its Address field; Escape closes it too.
+    view.update_in(cx, |view, window, cx| {
+        view.run("gateway.add", window, cx);
+    });
+    cx.run_until_parked();
+    view.read_with(cx, |view, _| assert!(view.adding.is_some()));
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    view.read_with(cx, |view, _| assert!(view.adding.is_none()));
+}
+
+#[gpui_kit::test]
+fn deleting_a_kit_shows_an_undo_toast_that_restores_it(cx: &mut TestAppContext) {
+    use gpui_kit::Modifiers;
+    use std::time::Duration;
+
+    let (view, cx) = open(cx);
+    view.update_in(cx, |view, window, cx| {
+        view.kits.kits.kits.push(playpen_core::Kit {
+            name: "work".to_string(),
+            setup_folder: None,
+            model_key: Some("claude-work".to_string()),
+            services: vec!["github".to_string()],
+            variables: Vec::new(),
+        });
+        view.show_page(Page::Kits, window, cx);
+        view.select_kit("work".to_string(), window, cx);
+        view.delete_kit(window, cx);
+    });
+    cx.background_executor
+        .advance_clock(Duration::from_millis(500));
+    cx.run_until_parked();
+    view.read_with(cx, |view, _| {
+        assert!(view.kits.kits.kits.is_empty());
+    });
+    let button = cx
+        .debug_bounds("toast-action")
+        .expect("the Undo button on the toast");
+    cx.simulate_click(button.center(), Modifiers::none());
+    cx.run_until_parked();
+    view.read_with(cx, |view, _| {
+        assert_eq!(view.kits.kits.kits.len(), 1);
+        assert_eq!(view.kits.kits.kits[0].name, "work");
+        assert_eq!(view.kits.selected.as_deref(), Some("work"));
+    });
+}
+
+#[gpui_kit::test]
+fn attention_count_tracks_pending_network_requests_on_ready_sandboxes(cx: &mut TestAppContext) {
+    let (view, cx) = open(cx);
+    listed(&view, vec![sandbox("alpha", Phase::Ready)], cx);
+    view.update(cx, |view, _| {
+        assert_eq!(view.attention_count(), 0);
+        let key = view.selected.clone().expect("alpha is chosen");
+        view.give_requests(key, super::requests::stand_in_requests());
+        assert_eq!(view.attention_count(), 2);
+    });
+}
+
+#[gpui_kit::test]
+fn attach_autocomplete_lists_unattached_services_kits_and_new_service(cx: &mut TestAppContext) {
+    use gpui_kit::component::select::SelectItem as _;
+
+    let (view, cx) = open(cx);
+    listed(&view, vec![sandbox("alpha", Phase::Ready)], cx);
+    view.update(cx, |view, _| {
+        let key = view.selected.clone().expect("alpha is chosen");
+        view.give_stand_in_services(&key);
+        view.kits.kits.kits.push(playpen_core::Kit {
+            name: "work".to_string(),
+            setup_folder: None,
+            model_key: None,
+            services: vec!["github".to_string(), "linear".to_string()],
+            variables: Vec::new(),
+        });
+        let titles: Vec<String> = view
+            .attach_choices()
+            .into_iter()
+            .map(|choice| choice.title().to_string())
+            .collect();
+        assert_eq!(
+            titles,
+            [
+                "linear · api.linear.app",
+                "sentry · sentry.io",
+                "Kit: work",
+                "+ New Service…",
+            ]
+        );
+    });
+}

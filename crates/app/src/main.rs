@@ -28,7 +28,9 @@ fn main() {
     // A command line it knows runs here, headless, and never opens a window.
     let args: Vec<String> = std::env::args().skip(1).collect();
     if let Some(command) = playpen_cli::parse(&args) {
-        let status = command.run(&mut std::io::stdout()).unwrap_or(1);
+        let status = command
+            .run(&mut std::io::stdout(), &mut std::io::stderr())
+            .unwrap_or(1);
         std::process::exit(status);
     }
     let _log = logging::init();

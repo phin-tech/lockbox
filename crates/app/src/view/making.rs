@@ -230,7 +230,7 @@ impl MainView {
             .gap_2()
             .children(self.gateways.iter().map(|gateway| {
                 let name = gateway.name.clone();
-                shell::chip(making.gateway == gateway.name, cx)
+                choice_chip(making.gateway == gateway.name, cx)
                     .id(ElementId::from((
                         ElementId::from("making-gateway"),
                         gateway.name.clone(),
@@ -398,18 +398,28 @@ impl MainView {
             })
     }
 
-    /// The kits as chips, the one last used marked, which fill the form when chosen.
+    /// The kits as toggle chips with a leading check/plus icon, which fill the form when chosen.
     fn kit_choices(&self, making: &Making, working: bool, cx: &Context<Self>) -> Div {
         h_flex()
             .flex_wrap()
             .gap_2()
             .children(self.kits.kits.kits.iter().map(|kit| {
                 let name = kit.name.clone();
-                shell::chip(making.kits.contains(&kit.name), cx)
+                let picked = making.kits.contains(&kit.name);
+                choice_chip(picked, cx)
                     .id(ElementId::from((
                         ElementId::from("use-kit"),
                         kit.name.clone(),
                     )))
+                    .items_center()
+                    .child(
+                        Icon::new(if picked {
+                            assets::IconName::Check
+                        } else {
+                            assets::IconName::Plus
+                        })
+                        .size_3(),
+                    )
                     .child(kit.name.clone())
                     .when(!working, |chip| {
                         chip.on_click(cx.listener(move |this, _, _, cx| this.use_kit(&name, cx)))
@@ -438,7 +448,7 @@ impl MainView {
         if choices.is_empty() {
             return hint(
                 t!(
-                    "None: a service is a provider for something other than a model, such as GitHub. 1Password's OpenShell integration adds them, as does `openshell provider create`."
+                    "None on this gateway yet. Add one in Providers to let sandboxes reach services such as GitHub."
                 ),
                 cx,
             );
@@ -629,28 +639,6 @@ impl MainView {
     pub(super) fn making_panel(&self, making: &Making, cx: &Context<Self>) -> AnyElement {
         let theme = cx.theme();
         let working = matches!(making.state, MakeState::Working(_));
-        let header = Self::panel_header(t!("New Agent"), cx).child(
-            h_flex()
-                .gap_1()
-                .child(
-                    Button::new("cancel-making")
-                        .ghost()
-                        .xsmall()
-                        .disabled(working)
-                        .label(t!("Cancel").into_owned())
-                        .on_click(
-                            cx.listener(|this, _, window, cx| this.cancel_making(window, cx)),
-                        ),
-                )
-                .child(
-                    Button::new("make")
-                        .primary()
-                        .xsmall()
-                        .disabled(working || making.provider.is_none())
-                        .label(t!("Make").into_owned())
-                        .on_click(cx.listener(|this, _, window, cx| this.make(window, cx))),
-                ),
-        );
         // Each folder on a line of its own, with a button to leave it out, and Add Folders… under them.
         let folders = v_flex()
             .gap_1p5()
@@ -682,6 +670,7 @@ impl MainView {
             .child(
                 h_flex().child(
                     Button::new("choose-folders")
+                        .outline()
                         .xsmall()
                         .disabled(working)
                         .icon(assets::IconName::FolderPlus)
@@ -691,20 +680,34 @@ impl MainView {
                         ),
                 ),
             );
+        let agent = making.agent;
         let providers = match making.usable() {
             None => hint(t!("Asking OpenShell…"), cx),
             Some(Err(error)) => div()
                 .text_sm()
                 .text_color(theme.danger)
                 .child(error.clone()),
-            Some(Ok(providers)) if providers.is_empty() => hint(
-                t!(
-                    "The %{gateway} gateway has no provider with a key for %{agent}. Choose another gateway, or add one in Providers, where Add to Gateway… copies one from another gateway.",
-                    gateway = making.gateway.clone(),
-                    agent = making.agent.name()
+            Some(Ok(providers)) if providers.is_empty() => v_flex()
+                .gap_2()
+                .items_start()
+                .child(hint(
+                    t!(
+                        "The %{gateway} gateway has no provider with a key for %{agent}. Choose another gateway, or add one in Providers.",
+                        gateway = making.gateway.clone(),
+                        agent = agent.name()
+                    ),
+                    cx,
+                ))
+                .child(
+                    Button::new("making-add-provider")
+                        .outline()
+                        .xsmall()
+                        .icon(assets::IconName::Plus)
+                        .label(t!("Open Providers…").into_owned())
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.show_page(Page::Providers, window, cx);
+                        })),
                 ),
-                cx,
-            ),
             Some(Ok(providers)) => v_flex().gap_1().children(providers.iter().map(|provider| {
                 let name = provider.name.clone();
                 Radio::new(ElementId::from((ElementId::from("provider"), name.clone())))
@@ -722,41 +725,63 @@ impl MainView {
                     )
             })),
         };
-        let state = match &making.state {
-            MakeState::Choosing => hint(
-                t!(
-                    "The folders are copied in, side by side in /sandbox, where the agent starts, leaving out what each .gitignore does. A git repository goes in with its current branch's history, uncommitted edits too, and Bring Back returns the agent's work as a branch, playpen/<sandbox>. Keys never enter the sandbox: OpenShell puts the model's on the agent's requests to its model, and each service's on requests to that service's hosts, and the sandbox reaches nothing else."
-                ),
-                cx,
-            ),
-            MakeState::Working(step) => h_flex().gap_2().child(div().child(match step {
-                Step::Building => t!(
-                    "Building the %{agent} image. This happens once for each version, and takes a few minutes…",
-                    agent = making.agent.name()
-                ),
-                Step::Pushing => t!("Pushing the image to the registry…"),
-                Step::Creating => t!("Making the sandbox…"),
-                Step::Copying => t!("Copying the folders in…"),
-                Step::Preparing => t!("Setting up %{agent}…", agent = making.agent.name()),
-            }
-            .into_owned())),
-            MakeState::Failed(error) => div().text_sm().text_color(theme.danger).child(error.clone()),
+        let footer_left = match &making.state {
+            MakeState::Choosing => div().into_any_element(),
+            MakeState::Working(step) => h_flex()
+                .gap_2()
+                .items_center()
+                .child(Spinner::new().xsmall())
+                .child(
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        .text_sm()
+                        .text_color(theme.muted_foreground)
+                        .child(
+                            match step {
+                                Step::Building => t!(
+                                    "Building the %{agent} image (first time takes a few minutes)…",
+                                    agent = making.agent.name()
+                                ),
+                                Step::Pushing => t!("Pushing the image to the registry…"),
+                                Step::Creating => t!("Making the sandbox…"),
+                                Step::Copying => t!("Copying the folders in…"),
+                                Step::Preparing => {
+                                    t!("Setting up %{agent}…", agent = making.agent.name())
+                                }
+                            }
+                            .into_owned(),
+                        ),
+                )
+                .into_any_element(),
+            MakeState::Failed(error) => div()
+                .text_sm()
+                .text_color(theme.danger)
+                .child(error.clone())
+                .into_any_element(),
         };
         let body = v_flex()
             .gap_5()
             .p_4()
             .child(
-                section(t!("Agent"), cx).child(
-                    div().w(rems(20.)).child(
-                        Select::new(&making.agents)
-                            .small()
-                            .search_placeholder(t!("Search").into_owned())
-                            .disabled(working),
+                h_flex()
+                    .flex_wrap()
+                    .gap_4()
+                    .items_start()
+                    .child(
+                        section(t!("Agent"), cx).child(
+                            div().w(rems(15.)).child(
+                                Select::new(&making.agents)
+                                    .small()
+                                    .search_placeholder(t!("Search").into_owned())
+                                    .disabled(working),
+                            ),
+                        ),
+                    )
+                    .child(
+                        section(t!("Name"), cx)
+                            .child(div().w(rems(16.)).child(small_field(&making.name))),
                     ),
-                ),
-            )
-            .child(
-                section(t!("Name"), cx).child(div().w(rems(20.)).child(small_field(&making.name))),
             )
             .child(section(t!("Folders"), cx).child(folders))
             .when(self.gateways.len() > 1, |body| {
@@ -772,12 +797,36 @@ impl MainView {
             })
             .child(section(t!("Model key"), cx).child(providers))
             .child(section(t!("Services"), cx).child(self.service_choices(making, working, cx)))
-            .child(state);
-        v_flex()
-            .size_full()
-            .child(header)
-            .child(div().id("making").flex_1().overflow_y_scroll().child(body))
-            .into_any_element()
+            .child(hint(
+                t!(
+                    "Folders are copied into /sandbox (respecting .gitignore) with git history intact so Bring Back returns your agent's work as playpen/<sandbox>. Keys stay in OpenShell."
+                ),
+                cx,
+            ));
+        let cancel = Button::new("cancel-making")
+            .ghost()
+            .small()
+            .disabled(working)
+            .label(t!("Cancel").into_owned())
+            .on_click(cx.listener(|this, _, window, cx| this.cancel_making(window, cx)));
+        let primary = Button::new("make")
+            .primary()
+            .small()
+            .loading(working)
+            .disabled(working || making.provider.is_none())
+            .label(t!("Make Sandbox").into_owned())
+            .on_click(cx.listener(|this, _, window, cx| this.make(window, cx)));
+        self.form_panel(
+            t!("New Agent"),
+            "making",
+            body,
+            footer_left,
+            cancel,
+            primary,
+            working,
+            |this, _, window, cx| this.cancel_making(window, cx),
+            cx,
+        )
     }
 }
 

@@ -83,6 +83,7 @@ impl MainView {
         &mut self,
         ids: Vec<String>,
         approve: bool,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let Some(key) = self.selected.clone() else {
@@ -94,7 +95,8 @@ impl MainView {
         let Ok(openshell) = self.openshell_for(&key.gateway) else {
             return;
         };
-        tracing::info!(sandbox = %key.name, count = ids.len(), approve, "deciding network requests");
+        let count = ids.len();
+        tracing::info!(sandbox = %key.name, count, approve, "deciding network requests");
         self.failed = None;
         self.requests.deciding = ids.iter().cloned().collect();
         let name = key.name.clone();
@@ -107,13 +109,28 @@ impl MainView {
                 }
             })
         });
-        self.requests._deciding = Some(cx.spawn(async move |this, cx| {
+        self.requests._deciding = Some(cx.spawn_in(window, async move |this, cx| {
             let done = done.await;
-            let _ = this.update(cx, |this, cx| {
+            let _ = this.update_in(cx, |this, window, cx| {
                 this.requests.deciding.clear();
-                if let Err(error) = done {
-                    tracing::warn!("couldn't decide a network request: {error}");
-                    this.failed = Some(error.to_string());
+                match done {
+                    Ok(()) => {
+                        let notice = match (approve, count) {
+                            (true, 1) => t!("Approved network request").into_owned(),
+                            (true, count) => {
+                                t!("Approved %{count} network requests", count = count).into_owned()
+                            }
+                            (false, 1) => t!("Rejected network request").into_owned(),
+                            (false, count) => {
+                                t!("Rejected %{count} network requests", count = count).into_owned()
+                            }
+                        };
+                        Toast::new(notice).key("network-requests").show(window, cx);
+                    }
+                    Err(error) => {
+                        tracing::warn!("couldn't decide a network request: {error}");
+                        this.failed = Some(error.to_string());
+                    }
                 }
                 this.look_up_requests(cx);
                 this.look_up_activity(cx);
@@ -125,7 +142,7 @@ impl MainView {
 
     /// Approves every request of the chosen sandbox that's showing as waiting: those the person has seen, never one
     /// that arrived since, as `rule approve-all` would.
-    pub(super) fn approve_all_requests(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn approve_all_requests(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(key) = self.selected.clone() else {
             return;
         };
@@ -135,10 +152,11 @@ impl MainView {
             .into_iter()
             .map(|request| request.id.clone())
             .collect();
-        self.decide_requests(ids, true, cx);
+        self.decide_requests(ids, true, window, cx);
     }
 
-    /// A request in a row: what it would let through, and why OpenShell proposes it, with its buttons when it waits.
+    /// A request in a row: what it would let through, and its full path or rationale when helpful, with balanced
+    /// Reject/Approve buttons while waiting.
     fn request_row(&self, request: &NetworkRequest, cx: &Context<Self>) -> Div {
         let theme = cx.theme();
         let deciding = self.requests.deciding.contains(&request.id);
@@ -150,16 +168,31 @@ impl MainView {
             .map(|program| program.rsplit('/').next().unwrap_or(program).to_string())
             .collect::<Vec<_>>()
             .join(", ");
-        let endpoints = request.endpoints.join(", ");
+        // Strip OpenShell's internal `[L4]` / `[L7]` tag suffix from the main destination chip for readability.
+        let endpoints = request
+            .endpoints
+            .iter()
+            .map(|endpoint| {
+                endpoint
+                    .strip_suffix(" [L4]")
+                    .or_else(|| endpoint.strip_suffix(" [L7]"))
+                    .unwrap_or(endpoint)
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let paths = request.programs.join(", ");
+        let show_paths = paths != programs;
         let status = match &request.status {
             RequestStatus::Pending => None,
             RequestStatus::Approved => Some((t!("Approved").into_owned(), theme.success)),
             RequestStatus::Rejected => Some((t!("Rejected").into_owned(), theme.danger)),
             RequestStatus::Other(status) => Some((status.clone(), theme.muted_foreground)),
         };
+        let decided = status.is_some();
         h_flex()
             .gap_3()
             .items_start()
+            .when(decided, |row| row.opacity(0.75))
             .child(
                 v_flex()
                     .flex_1()
@@ -168,28 +201,26 @@ impl MainView {
                     .child(
                         h_flex()
                             .gap_1p5()
+                            .items_center()
                             .min_w_0()
-                            .child(div().text_sm().font_medium().child(programs))
+                            .child(div().flex_none().text_sm().font_medium().child(programs))
                             .child(
                                 div()
+                                    .flex_none()
                                     .text_sm()
                                     .text_color(theme.muted_foreground)
                                     .child("→"),
                             )
                             .child(shell::code_chip(endpoints, cx)),
                     )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(theme.muted_foreground)
-                            .child(request.programs.join(", ")),
-                    )
-                    .when(!request.rationale.is_empty(), |row| {
+                    .when(show_paths, |row| {
                         row.child(
                             div()
+                                .truncate()
                                 .text_xs()
+                                .font_family(theme.mono_font_family.clone())
                                 .text_color(theme.muted_foreground)
-                                .child(request.rationale.clone()),
+                                .child(paths),
                         )
                     }),
             )
@@ -200,17 +231,17 @@ impl MainView {
                 None => row.child(
                     h_flex()
                         .flex_none()
-                        .gap_1()
+                        .gap_1p5()
                         .child(
                             Button::new(id("reject-request"))
                                 .xsmall()
-                                .ghost()
+                                .outline()
                                 .label(t!("Reject").into_owned())
                                 .disabled(busy)
                                 .on_click(cx.listener({
                                     let id = request.id.clone();
-                                    move |this, _, _, cx| {
-                                        this.decide_requests(vec![id.clone()], false, cx)
+                                    move |this, _, window, cx| {
+                                        this.decide_requests(vec![id.clone()], false, window, cx)
                                     }
                                 })),
                         )
@@ -223,8 +254,8 @@ impl MainView {
                                 .disabled(busy)
                                 .on_click(cx.listener({
                                     let id = request.id.clone();
-                                    move |this, _, _, cx| {
-                                        this.decide_requests(vec![id.clone()], true, cx)
+                                    move |this, _, window, cx| {
+                                        this.decide_requests(vec![id.clone()], true, window, cx)
                                     }
                                 })),
                         ),
@@ -248,22 +279,30 @@ impl MainView {
             .filter(|request| !request.is_pending())
             .collect();
         let busy = !self.requests.deciding.is_empty();
+        let pending_count = pending.len();
         let heading = h_flex()
             .gap_2()
             .items_center()
             .child(
-                div()
+                h_flex()
                     .flex_1()
-                    .text_sm()
-                    .font_semibold()
-                    .child(match pending.len() {
-                        0 => t!("Network requests").into_owned(),
-                        count => {
-                            t!("Network requests waiting · %{count}", count = count).into_owned()
-                        }
+                    .gap_2()
+                    .items_center()
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_semibold()
+                            .child(t!("Network requests").into_owned()),
+                    )
+                    .when(pending_count > 0, |row| {
+                        row.child(
+                            shell::badge(Tag::warning())
+                                .xsmall()
+                                .child(t!("%{count} waiting", count = pending_count).into_owned()),
+                        )
                     }),
             )
-            .when(pending.len() > 1, |heading| {
+            .when(pending_count > 1, |heading| {
                 heading.child(
                     Button::new("approve-all-requests")
                         .xsmall()
@@ -277,19 +316,26 @@ impl MainView {
             });
         Some(
             v_flex()
-                .gap_3()
+                .gap_2p5()
                 .p_3()
                 .rounded(theme.radius * 1.5)
                 .border_1()
-                .border_color(if pending.is_empty() { theme.border } else { theme.warning.opacity(0.5) })
+                .border_color(if pending.is_empty() {
+                    theme.border
+                } else {
+                    theme.warning.opacity(0.55)
+                })
                 .bg(shell::recessed_colour(theme))
                 .child(heading)
-                .children(pending.iter().map(|request| self.request_row(request, cx)))
                 .when(!pending.is_empty(), |card| {
-                    card.child(hint(
-                        t!("Something in the sandbox tried to reach these and was stopped. An approval takes a few seconds to reach the sandbox, and whatever tried has to try again."),
-                        cx,
-                    ))
+                    card.child(v_flex().children(pending.iter().enumerate().map(|(at, request)| {
+                        div()
+                            .py_1p5()
+                            .when(at > 0, |row| {
+                                row.border_t_1().border_color(shell::hairline(theme))
+                            })
+                            .child(self.request_row(request, cx))
+                    })))
                 })
                 .when(!decided.is_empty(), |card| {
                     card.child(
@@ -298,7 +344,30 @@ impl MainView {
                             .pt_2()
                             .border_t_1()
                             .border_color(shell::hairline(theme))
-                            .children(decided.iter().rev().take(5).map(|request| self.request_row(request, cx))),
+                            .children(
+                                decided
+                                    .iter()
+                                    .rev()
+                                    .take(5)
+                                    .map(|request| self.request_row(request, cx)),
+                            ),
+                    )
+                })
+                .when(!pending.is_empty(), |card| {
+                    card.child(
+                        div()
+                            .pt_1()
+                            .border_t_1()
+                            .border_color(shell::hairline(theme))
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(theme.muted_foreground)
+                                    .child(
+                                        t!("Approved rules take a few seconds to reach the sandbox; retry the blocked command once allowed.")
+                                            .into_owned(),
+                                    ),
+                            ),
                     )
                 }),
         )
